@@ -1,0 +1,53 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id            String    @id @default(cuid())
+  accountId     String    @unique          // Unipile account_id
+  name          String    @default("")     // Friendly label
+  status        String    @default("ACTIVE") // ACTIVE | BUSY | COOLDOWN | DISABLED
+  lastUsedAt    DateTime?
+  requestCount  Int       @default(0)      // rolling counter
+  dailyCount    Int       @default(0)      // daily usage counter
+  dailyResetAt  DateTime?                  // when to reset dailyCount
+  cooldownUntil DateTime?                  // null = not in cooldown
+  createdAt     DateTime  @default(now())
+  tasks         Task[]
+}
+
+model Job {
+  id             String   @id @default(cuid())
+  status         String   @default("PENDING") // PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED
+  totalTasks     Int
+  processedCount Int      @default(0)
+  successCount   Int      @default(0)
+  failedCount    Int      @default(0)
+  config         String?  // JSON: { jobDescription, customPrompt, scoringRules, customScoringRules, sheetWebAppUrl, aiModel }
+  createdAt      DateTime @default(now())
+  tasks          Task[]
+}
+
+model Task {
+  id             String   @id @default(cuid())
+  jobId          String
+  url            String
+  status         String   @default("PENDING") // PENDING, PROCESSING, DONE, FAILED
+  result         String?  // JSON string (raw Unipile profile data)
+  analysisResult String?  // JSON string (AI scoring output)
+  errorMessage   String?  // failure reason
+  retryCount     Int      @default(0)
+  accountId      String?  // assigned at processing time
+  createdAt      DateTime @default(now())
+
+  job     Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  account Account? @relation(fields: [accountId], references: [id])
+
+  @@index([jobId])
+  @@index([accountId])
+}
