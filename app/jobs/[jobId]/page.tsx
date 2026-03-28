@@ -448,6 +448,43 @@ function ProfileCard({
                   ))}
                 </div>
               </details>
+
+              {/* Debug Info (collapsible) */}
+              {analysis.__debug && (
+                <details>
+                  <summary className="text-xs text-neutral-500 cursor-pointer hover:text-neutral-400">Debug Info</summary>
+                  <div className="mt-2 space-y-2">
+                    <div className="bg-neutral-900/50 rounded-lg p-2">
+                      <span className="text-[10px] text-neutral-500 font-medium">Model</span>
+                      <p className="text-xs text-neutral-400 font-mono">{analysis.__debug.model}</p>
+                    </div>
+                    {analysis.__debug.usage && (
+                      <div className="bg-neutral-900/50 rounded-lg p-2">
+                        <span className="text-[10px] text-neutral-500 font-medium">Token Usage</span>
+                        <p className="text-xs text-neutral-400 font-mono">
+                          Prompt: {analysis.__debug.usage.prompt_tokens} | Completion: {analysis.__debug.usage.completion_tokens} | Total: {analysis.__debug.usage.total_tokens}
+                        </p>
+                      </div>
+                    )}
+                    {analysis.__debug.preComputed && (
+                      <div className="bg-neutral-900/50 rounded-lg p-2">
+                        <span className="text-[10px] text-neutral-500 font-medium">Pre-computed</span>
+                        <p className="text-xs text-neutral-400 font-mono">
+                          Stability: {String(analysis.__debug.preComputed.stability)} | Location: {String(analysis.__debug.preComputed.location)}
+                        </p>
+                      </div>
+                    )}
+                    <details className="ml-2">
+                      <summary className="text-[10px] text-neutral-600 cursor-pointer hover:text-neutral-500">System Prompt</summary>
+                      <pre className="mt-1 text-[10px] text-neutral-500 bg-neutral-950 rounded p-2 overflow-x-auto max-h-48 whitespace-pre-wrap">{analysis.__debug.systemPrompt}</pre>
+                    </details>
+                    <details className="ml-2">
+                      <summary className="text-[10px] text-neutral-600 cursor-pointer hover:text-neutral-500">User Prompt</summary>
+                      <pre className="mt-1 text-[10px] text-neutral-500 bg-neutral-950 rounded p-2 overflow-x-auto max-h-48 whitespace-pre-wrap">{analysis.__debug.userPrompt}</pre>
+                    </details>
+                  </div>
+                </details>
+              )}
             </div>
           )}
 

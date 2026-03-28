@@ -81,6 +81,13 @@ export interface AnalysisResult {
   strengths: string[];
   gaps: string[];
   flags: string[];
+  __debug?: {
+    systemPrompt: string;
+    userPrompt: string;
+    model: string;
+    usage: any;
+    preComputed: Record<string, any>;
+  };
 }
 
 // ─── Constants ─────────────────────────────────────────────────────
@@ -686,7 +693,7 @@ export async function analyzeProfile(
   // ── Pass 2: LLM evaluation ──
   const systemPrompt = buildSystemPrompt(rules, customRules, config.customPrompt);
   const userPrompt = buildUserPrompt(profileData, config.jobDescription, candidateInfo);
-  const model = config.aiModel || "gpt-4.1-mini";
+  const model = config.aiModel || "gpt-4.1";
 
   console.log(`[Analyzer] Calling OpenAI (${model}), prompt: ${userPrompt.length} chars`);
 
@@ -799,10 +806,17 @@ export async function analyzeProfile(
     strengths: llmResult.strengths || [],
     gaps: llmResult.gaps || [],
     flags: llmResult.flags || [],
+    __debug: {
+      systemPrompt,
+      userPrompt,
+      model,
+      usage: result.usage,
+      preComputed: { stability: stabilityScore, location: locationScore },
+    },
   };
 
   console.log(
-    `[Analyzer] ✓ Score: ${totalScore}/${maxScore} (${scorePercent}%) → ${recommendation}`
+    `[Analyzer] Score: ${totalScore}/${maxScore} (${scorePercent}%) → ${recommendation}`
   );
 
   return merged;

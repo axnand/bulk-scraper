@@ -1,8 +1,64 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 
 type JobStatus = "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "CANCELLED";
+
+// Scoring criteria descriptions matching LinkedIn scraper popup
+const SCORING_RULE_DEFS = [
+  { key: 'stability', label: 'Stability', max: 10, tiers: [
+    { score: 10, color: 'text-emerald-400', text: 'Avg tenure > 2.5 years' },
+    { score: 7, color: 'text-amber-400', text: 'Avg tenure 1.5 – 2.5 years' },
+    { score: 0, color: 'text-rose-400', text: 'Avg tenure < 1.5 years' },
+  ]},
+  { key: 'growth', label: 'Growth', max: 15, tiers: [
+    { score: 15, color: 'text-emerald-400', text: 'Internal promotion (higher role, same company)' },
+    { score: 10, color: 'text-amber-400', text: 'External growth (higher role, new company)' },
+    { score: 0, color: 'text-rose-400', text: 'No upward career movement detected' },
+  ]},
+  { key: 'graduation', label: 'Graduation', max: 15, tiers: [
+    { score: 15, color: 'text-emerald-400', text: 'BTech/BE from Tier 1 institution' },
+    { score: 10, color: 'text-amber-400', text: 'BTech/BE from Tier 2 institution' },
+    { score: 7, color: 'text-amber-400', text: 'Non-BTech from Tier 1 institution' },
+    { score: 5, color: 'text-amber-400', text: 'Non-BTech from Tier 2 institution' },
+    { score: 0, color: 'text-rose-400', text: 'Unranked institution or no degree info' },
+  ]},
+  { key: 'companyType', label: 'Company Type', max: 15, tiers: [
+    { score: 15, color: 'text-emerald-400', text: 'B2B Sales/CRM/SalesTech product company' },
+    { score: 10, color: 'text-amber-400', text: 'B2B SaaS non-CRM (cloud, infra, HR tech, etc.)' },
+    { score: 7, color: 'text-amber-400', text: 'Service-based / IT consulting company' },
+    { score: 0, color: 'text-rose-400', text: 'B2C or unrelated company' },
+  ]},
+  { key: 'mba', label: 'MBA', max: 15, tiers: [
+    { score: 15, color: 'text-emerald-400', text: 'MBA/PGDM from Tier 1 institution' },
+    { score: 10, color: 'text-amber-400', text: 'MBA/PGDM from other institution' },
+    { score: 0, color: 'text-rose-400', text: 'No MBA/PGDM' },
+  ]},
+  { key: 'skillMatch', label: 'Skill Match', max: 10, tiers: [
+    { score: 10, color: 'text-emerald-400', text: '>70% of JD-required skills matched' },
+    { score: 5, color: 'text-amber-400', text: '40–70% of JD-required skills matched' },
+    { score: 0, color: 'text-rose-400', text: '<40% of JD-required skills matched' },
+  ]},
+  { key: 'location', label: 'Location', max: 5, tiers: [
+    { score: 5, color: 'text-emerald-400', text: 'Candidate location matches JD location' },
+    { score: 0, color: 'text-rose-400', text: 'Location does not match' },
+  ]},
+];
+
+interface JdTemplate {
+  id: string;
+  title: string;
+  content: string;
+  scoringRules: Record<string, boolean>;
+  customScoringRules: { id: string; name: string; maxPoints: number; criteria: string; enabled: boolean }[];
+}
+
+interface PromptTemplate {
+  id: string;
+  title: string;
+  content: string;
+}
 
 interface JobResponse {
   id: string;
@@ -39,10 +95,29 @@ export default function Home() {
   const [customScoringRules, setCustomScoringRules] = useState<
     { id: string; name: string; maxPoints: number; criteria: string; enabled: boolean }[]
   >([]);
-  const [aiModel, setAiModel] = useState("gpt-4.1-mini");
+  const [aiModel, setAiModel] = useState("gpt-4.1");
+  const [minScoreThreshold, setMinScoreThreshold] = useState(70);
   const [newRuleName, setNewRuleName] = useState("");
   const [newRuleMax, setNewRuleMax] = useState(10);
   const [newRuleCriteria, setNewRuleCriteria] = useState("");
+
+  // JD Template library state
+  const [jdTemplates, setJdTemplates] = useState<JdTemplate[]>([]);
+  const [jdTemplateName, setJdTemplateName] = useState("");
+
+  // Custom Prompt template library state
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([
+    { id: "__default__", title: "Standard Evaluation", content: "Evaluate the candidate across: Job fit, education tier, graduation year, total experience, average tenure per company, and job switching frequency. Be precise and data-driven. Flag any concerns like frequent job hops, career gaps, or skill mismatches." },
+  ]);
+  const [promptTemplateName, setPromptTemplateName] = useState("");
+
+  // Template selection & editing state
+  const [selectedJdTemplateId, setSelectedJdTemplateId] = useState<string | null>(null);
+  const [editingJdTemplate, setEditingJdTemplate] = useState(false);
+  const [selectedPromptTemplateId, setSelectedPromptTemplateId] = useState<string | null>(null);
+  const [editingPromptTemplate, setEditingPromptTemplate] = useState(false);
+  const [showNewJdForm, setShowNewJdForm] = useState(false);
+  const [showNewPromptForm, setShowNewPromptForm] = useState(false);
 
   // Calculate generic progress percentage
   const progress = jobData
@@ -85,6 +160,130 @@ export default function Home() {
     fetchHistory();
   }, [jobId]);
 
+  // Load templates from localStorage on mount
+  useEffect(() => {
+    try {
+      const savedJdTemplates = localStorage.getItem("bulk-scraper-jd-templates");
+      if (savedJdTemplates) setJdTemplates(JSON.parse(savedJdTemplates));
+      const savedPromptTemplates = localStorage.getItem("bulk-scraper-prompt-templates");
+      if (savedPromptTemplates) {
+        const parsed = JSON.parse(savedPromptTemplates);
+        // Ensure default prompt exists
+        if (!parsed.find((p: PromptTemplate) => p.id === "__default__")) {
+          parsed.unshift({ id: "__default__", title: "Standard Evaluation", content: "Evaluate the candidate across: Job fit, education tier, graduation year, total experience, average tenure per company, and job switching frequency. Be precise and data-driven. Flag any concerns like frequent job hops, career gaps, or skill mismatches." });
+        }
+        setPromptTemplates(parsed);
+      }
+      const savedSettings = localStorage.getItem("bulk-scraper-settings");
+      if (savedSettings) {
+        const s = JSON.parse(savedSettings);
+        if (s.aiModel) setAiModel(s.aiModel);
+        if (s.sheetWebAppUrl) setSheetWebAppUrl(s.sheetWebAppUrl);
+        if (s.minScoreThreshold != null) setMinScoreThreshold(s.minScoreThreshold);
+      }
+    } catch { /* ignore parse errors */ }
+  }, []);
+
+  // Save templates to localStorage on change
+  function saveJdTemplates(templates: JdTemplate[]) {
+    setJdTemplates(templates);
+    localStorage.setItem("bulk-scraper-jd-templates", JSON.stringify(templates));
+  }
+  function savePromptTemplates(templates: PromptTemplate[]) {
+    setPromptTemplates(templates);
+    localStorage.setItem("bulk-scraper-prompt-templates", JSON.stringify(templates));
+  }
+  function saveSettingsToStorage() {
+    localStorage.setItem("bulk-scraper-settings", JSON.stringify({ aiModel, sheetWebAppUrl, minScoreThreshold }));
+  }
+
+  // Load a JD template into the form
+  function loadJdTemplate(template: JdTemplate) {
+    setJobDescription(template.content);
+    setScoringRules(template.scoringRules as typeof scoringRules);
+    setCustomScoringRules(template.customScoringRules || []);
+    setSelectedJdTemplateId(template.id);
+    setEditingJdTemplate(false);
+    setShowNewJdForm(false);
+  }
+
+  // Save current form state as a new JD template
+  function saveCurrentAsJdTemplate() {
+    if (!jdTemplateName.trim() || !jobDescription.trim()) return;
+    const newTemplate: JdTemplate = {
+      id: `jd_${Date.now()}`,
+      title: jdTemplateName,
+      content: jobDescription,
+      scoringRules: { ...scoringRules },
+      customScoringRules: [...customScoringRules],
+    };
+    saveJdTemplates([...jdTemplates, newTemplate]);
+    setJdTemplateName("");
+    setSelectedJdTemplateId(newTemplate.id);
+    setShowNewJdForm(false);
+    setEditingJdTemplate(false);
+  }
+
+  // Update an existing JD template in-place
+  function updateJdTemplate(id: string) {
+    saveJdTemplates(jdTemplates.map(t => t.id === id ? {
+      ...t,
+      content: jobDescription,
+      scoringRules: { ...scoringRules },
+      customScoringRules: [...customScoringRules],
+    } : t));
+    setEditingJdTemplate(false);
+  }
+
+  // Delete a JD template
+  function deleteJdTemplate(id: string) {
+    saveJdTemplates(jdTemplates.filter(t => t.id !== id));
+    if (selectedJdTemplateId === id) {
+      setSelectedJdTemplateId(null);
+      setEditingJdTemplate(false);
+    }
+  }
+
+  // Load a prompt template
+  function loadPromptTemplate(template: PromptTemplate) {
+    setCustomPrompt(template.content);
+    setSelectedPromptTemplateId(template.id);
+    setEditingPromptTemplate(false);
+    setShowNewPromptForm(false);
+  }
+
+  // Save current prompt as a new template
+  function saveCurrentAsPromptTemplate() {
+    if (!promptTemplateName.trim() || !customPrompt.trim()) return;
+    const newTemplate: PromptTemplate = {
+      id: `prompt_${Date.now()}`,
+      title: promptTemplateName,
+      content: customPrompt,
+    };
+    savePromptTemplates([...promptTemplates, newTemplate]);
+    setPromptTemplateName("");
+    setSelectedPromptTemplateId(newTemplate.id);
+    setShowNewPromptForm(false);
+    setEditingPromptTemplate(false);
+  }
+
+  // Update an existing prompt template in-place
+  function updatePromptTemplate(id: string) {
+    if (id === "__default__") return;
+    savePromptTemplates(promptTemplates.map(t => t.id === id ? { ...t, content: customPrompt } : t));
+    setEditingPromptTemplate(false);
+  }
+
+  // Delete a prompt template
+  function deletePromptTemplate(id: string) {
+    if (id === "__default__") return;
+    savePromptTemplates(promptTemplates.filter(t => t.id !== id));
+    if (selectedPromptTemplateId === id) {
+      setSelectedPromptTemplateId(null);
+      setEditingPromptTemplate(false);
+    }
+  }
+
   async function fetchHistory() {
     try {
       const res = await fetch("/api/jobs", { cache: "no-store" });
@@ -107,6 +306,9 @@ export default function Home() {
     setInvalidUrls([]);
     setJobData(null);
 
+    // Persist settings to localStorage
+    saveSettingsToStorage();
+
     try {
       const res = await fetch("/api/jobs", {
         method: "POST",
@@ -120,6 +322,7 @@ export default function Home() {
             customScoringRules: customScoringRules.length > 0 ? customScoringRules : undefined,
             sheetWebAppUrl: sheetWebAppUrl || undefined,
             aiModel,
+            minScoreThreshold,
           }),
         }),
       });
@@ -157,9 +360,20 @@ export default function Home() {
     <main className="space-y-8">
       {/* Header section */}
       <header className="space-y-2">
-        <h1 className="text-4xl font-bold tracking-tight text-white">
-          Bulk URL Processor
-        </h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-4xl font-bold tracking-tight text-white">
+            Bulk URL Processor
+          </h1>
+          <Link
+            href="/accounts"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-neutral-800/80 border border-neutral-700 text-sm font-medium text-neutral-300 hover:bg-neutral-700 hover:text-white transition-all"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+            </svg>
+            Accounts
+          </Link>
+        </div>
         <p className="text-neutral-400">
           Scalable asynchronous background processing for LinkedIn URLs.
         </p>
@@ -202,58 +416,341 @@ export default function Home() {
 
           {/* Advanced Settings Panel */}
           {showAdvanced && (
-            <div className="space-y-4 p-4 rounded-xl bg-neutral-950/50 border border-neutral-800">
-              {/* Job Description */}
-              <div className="space-y-1">
-                <label className="text-sm font-medium text-neutral-300">Job Description *</label>
-                <textarea
-                  rows={4}
-                  value={jobDescription}
-                  onChange={(e) => setJobDescription(e.target.value)}
-                  placeholder="Paste the Job Description here for AI scoring..."
-                  className="w-full resize-none rounded-lg bg-neutral-900/50 border border-neutral-700 p-3 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
-                />
-                <p className="text-xs text-neutral-500">Profiles will be scored against this JD using an 85-point rubric.</p>
-              </div>
+            <div className="space-y-6 p-5 rounded-xl bg-neutral-950/50 border border-neutral-800">
 
-              {/* Custom Prompt */}
-              <div className="space-y-1">
-                <label className="text-sm font-medium text-neutral-300">Custom Recruiter Instructions (optional)</label>
-                <textarea
-                  rows={2}
-                  value={customPrompt}
-                  onChange={(e) => setCustomPrompt(e.target.value)}
-                  placeholder="E.g., Prioritize candidates with B2B SaaS sales experience..."
-                  className="w-full resize-none rounded-lg bg-neutral-900/50 border border-neutral-700 p-3 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
-                />
-              </div>
+              {/* ─── JD TEMPLATES SECTION ─── */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                      <svg className="w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                      Job Description
+                    </h3>
+                    <p className="text-[11px] text-neutral-500 mt-0.5">Select a saved template or write a new JD for AI scoring.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setShowNewJdForm(!showNewJdForm); setSelectedJdTemplateId(null); setJobDescription(""); setScoringRules({ stability: true, growth: true, graduation: true, companyType: true, mba: true, skillMatch: true, location: true }); setCustomScoringRules([]); setEditingJdTemplate(false); }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600/20 border border-indigo-500/30 text-xs font-medium text-indigo-400 hover:bg-indigo-600/30 hover:text-indigo-300 transition-all"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                    New Template
+                  </button>
+                </div>
 
-              {/* Scoring Rules Toggles */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-neutral-300">Scoring Dimensions</label>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {[
-                    { key: 'stability', label: 'Stability', max: 10 },
-                    { key: 'growth', label: 'Growth', max: 15 },
-                    { key: 'graduation', label: 'Graduation', max: 15 },
-                    { key: 'companyType', label: 'Company Type', max: 15 },
-                    { key: 'mba', label: 'MBA', max: 15 },
-                    { key: 'skillMatch', label: 'Skillset Match', max: 10 },
-                    { key: 'location', label: 'Location', max: 5 },
-                  ].map(rule => (
-                    <button
-                      key={rule.key}
-                      type="button"
-                      onClick={() => setScoringRules(prev => ({ ...prev, [rule.key]: !prev[rule.key as keyof typeof prev] }))}
-                      className={`px-3 py-2 rounded-lg text-xs font-medium border transition-all ${
-                        scoringRules[rule.key as keyof typeof scoringRules]
-                          ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
-                          : 'bg-neutral-800/50 border-neutral-700 text-neutral-500 line-through'
+                {/* Template Cards Grid */}
+                {jdTemplates.length > 0 && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {jdTemplates.map(tpl => {
+                      const isActive = selectedJdTemplateId === tpl.id;
+                      return (
+                        <div
+                          key={tpl.id}
+                          className={`group relative rounded-lg border p-3 cursor-pointer transition-all ${
+                            isActive
+                              ? 'bg-indigo-500/10 border-indigo-500/40 ring-1 ring-indigo-500/20'
+                              : 'bg-neutral-900/40 border-neutral-700/50 hover:border-neutral-600 hover:bg-neutral-800/40'
+                          }`}
+                          onClick={() => loadJdTemplate(tpl)}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <div className={`w-2 h-2 rounded-full shrink-0 ${isActive ? 'bg-indigo-400' : 'bg-neutral-600'}`} />
+                                <span className={`text-sm font-medium truncate ${isActive ? 'text-indigo-300' : 'text-neutral-300'}`}>
+                                  {tpl.title}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-neutral-500 mt-1 line-clamp-2 pl-4">
+                                {tpl.content.slice(0, 120)}{tpl.content.length > 120 ? '…' : ''}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); deleteJdTemplate(tpl.id); }}
+                              className="opacity-0 group-hover:opacity-100 text-neutral-500 hover:text-rose-400 transition-all p-1 rounded hover:bg-rose-500/10"
+                              title="Delete template"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            </button>
+                          </div>
+                          {isActive && (
+                            <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-indigo-500/20">
+                              <span className="text-[10px] text-indigo-400/70 flex items-center gap-1">
+                                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                                Active
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {jdTemplates.length === 0 && !showNewJdForm && (
+                  <div className="rounded-lg border border-dashed border-neutral-700/50 p-4 text-center">
+                    <p className="text-xs text-neutral-500">No saved JD templates yet. Click &quot;New Template&quot; to create one.</p>
+                  </div>
+                )}
+
+                {/* JD Editor Area — shows when a template is selected or new template form is open */}
+                {(selectedJdTemplateId || showNewJdForm) && (
+                  <div className="space-y-2 p-3 rounded-lg bg-neutral-900/30 border border-neutral-800/50">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-neutral-400">
+                        {showNewJdForm ? '✎ New Job Description' : editingJdTemplate ? '✎ Editing Template' : '📄 Template Content'}
+                      </span>
+                      {selectedJdTemplateId && !showNewJdForm && (
+                        <button
+                          type="button"
+                          onClick={() => setEditingJdTemplate(!editingJdTemplate)}
+                          className={`text-[11px] px-2 py-0.5 rounded transition-colors ${editingJdTemplate ? 'text-amber-400 bg-amber-500/10' : 'text-indigo-400 hover:text-indigo-300'}`}
+                        >
+                          {editingJdTemplate ? 'Cancel Edit' : 'Edit'}
+                        </button>
+                      )}
+                    </div>
+                    <textarea
+                      rows={5}
+                      value={jobDescription}
+                      onChange={(e) => setJobDescription(e.target.value)}
+                      readOnly={!!(selectedJdTemplateId && !editingJdTemplate && !showNewJdForm)}
+                      placeholder="Paste the Job Description here for AI scoring..."
+                      className={`w-full resize-none rounded-lg border p-3 text-sm text-neutral-200 placeholder:text-neutral-600 focus:outline-none transition-colors ${
+                        selectedJdTemplateId && !editingJdTemplate && !showNewJdForm
+                          ? 'bg-neutral-950/30 border-neutral-800 cursor-default'
+                          : 'bg-neutral-900/50 border-neutral-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500'
                       }`}
-                    >
-                      {rule.label} ({rule.max})
-                    </button>
-                  ))}
+                    />
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] text-neutral-500">Profiles will be scored against this JD using an 85-point rubric.</p>
+                      <div className="flex items-center gap-2">
+                        {editingJdTemplate && selectedJdTemplateId && (
+                          <button
+                            type="button"
+                            onClick={() => updateJdTemplate(selectedJdTemplateId)}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-emerald-600/20 border border-emerald-500/30 text-[11px] font-medium text-emerald-400 hover:bg-emerald-600/30 transition-colors"
+                          >
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                            Save Changes
+                          </button>
+                        )}
+                        {showNewJdForm && jobDescription.trim() && (
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={jdTemplateName}
+                              onChange={(e) => setJdTemplateName(e.target.value)}
+                              placeholder="Template name..."
+                              className="rounded-md bg-neutral-900/50 border border-neutral-700 px-2.5 py-1 text-[11px] text-neutral-300 placeholder:text-neutral-600 focus:border-indigo-500 focus:outline-none w-36"
+                            />
+                            <button
+                              type="button"
+                              onClick={saveCurrentAsJdTemplate}
+                              disabled={!jdTemplateName.trim()}
+                              className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-indigo-600/20 border border-indigo-500/30 text-[11px] font-medium text-indigo-400 hover:bg-indigo-600/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>
+                              Save Template
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <hr className="border-neutral-800/50" />
+
+              {/* ─── PROMPT TEMPLATES SECTION ─── */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                      <svg className="w-4 h-4 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
+                      Recruiter Instructions
+                    </h3>
+                    <p className="text-[11px] text-neutral-500 mt-0.5">Custom prompts to guide AI evaluation. Select a saved one or create new.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setShowNewPromptForm(!showNewPromptForm); setSelectedPromptTemplateId(null); setCustomPrompt(""); setEditingPromptTemplate(false); }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600/20 border border-violet-500/30 text-xs font-medium text-violet-400 hover:bg-violet-600/30 hover:text-violet-300 transition-all"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                    New Prompt
+                  </button>
+                </div>
+
+                {/* Prompt Template Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {promptTemplates.map(tpl => {
+                    const isActive = selectedPromptTemplateId === tpl.id;
+                    const isDefault = tpl.id === "__default__";
+                    return (
+                      <div
+                        key={tpl.id}
+                        className={`group relative rounded-lg border p-3 cursor-pointer transition-all ${
+                          isActive
+                            ? 'bg-violet-500/10 border-violet-500/40 ring-1 ring-violet-500/20'
+                            : 'bg-neutral-900/40 border-neutral-700/50 hover:border-neutral-600 hover:bg-neutral-800/40'
+                        }`}
+                        onClick={() => loadPromptTemplate(tpl)}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <div className={`w-2 h-2 rounded-full shrink-0 ${isActive ? 'bg-violet-400' : 'bg-neutral-600'}`} />
+                              <span className={`text-sm font-medium truncate ${isActive ? 'text-violet-300' : 'text-neutral-300'}`}>
+                                {tpl.title}
+                              </span>
+                              {isDefault && (
+                                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-neutral-700/50 text-neutral-400 font-medium uppercase tracking-wider">Default</span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-neutral-500 mt-1 line-clamp-2 pl-4">
+                              {tpl.content.slice(0, 120)}{tpl.content.length > 120 ? '…' : ''}
+                            </p>
+                          </div>
+                          {!isDefault && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); deletePromptTemplate(tpl.id); }}
+                              className="opacity-0 group-hover:opacity-100 text-neutral-500 hover:text-rose-400 transition-all p-1 rounded hover:bg-rose-500/10"
+                              title="Delete template"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            </button>
+                          )}
+                        </div>
+                        {isActive && (
+                          <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-violet-500/20">
+                            <span className="text-[10px] text-violet-400/70 flex items-center gap-1">
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                              Active
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Prompt Editor Area */}
+                {(selectedPromptTemplateId || showNewPromptForm) && (
+                  <div className="space-y-2 p-3 rounded-lg bg-neutral-900/30 border border-neutral-800/50">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-neutral-400">
+                        {showNewPromptForm ? '✎ New Prompt' : editingPromptTemplate ? '✎ Editing Prompt' : '💬 Prompt Content'}
+                      </span>
+                      {selectedPromptTemplateId && selectedPromptTemplateId !== "__default__" && !showNewPromptForm && (
+                        <button
+                          type="button"
+                          onClick={() => setEditingPromptTemplate(!editingPromptTemplate)}
+                          className={`text-[11px] px-2 py-0.5 rounded transition-colors ${editingPromptTemplate ? 'text-amber-400 bg-amber-500/10' : 'text-violet-400 hover:text-violet-300'}`}
+                        >
+                          {editingPromptTemplate ? 'Cancel Edit' : 'Edit'}
+                        </button>
+                      )}
+                    </div>
+                    <textarea
+                      rows={3}
+                      value={customPrompt}
+                      onChange={(e) => setCustomPrompt(e.target.value)}
+                      readOnly={!!(selectedPromptTemplateId && !editingPromptTemplate && !showNewPromptForm)}
+                      placeholder="E.g., Prioritize candidates with B2B SaaS sales experience..."
+                      className={`w-full resize-none rounded-lg border p-3 text-sm text-neutral-200 placeholder:text-neutral-600 focus:outline-none transition-colors ${
+                        selectedPromptTemplateId && !editingPromptTemplate && !showNewPromptForm
+                          ? 'bg-neutral-950/30 border-neutral-800 cursor-default'
+                          : 'bg-neutral-900/50 border-neutral-700 focus:border-violet-500 focus:ring-1 focus:ring-violet-500'
+                      }`}
+                    />
+                    <div className="flex items-center justify-end gap-2">
+                      {editingPromptTemplate && selectedPromptTemplateId && selectedPromptTemplateId !== "__default__" && (
+                        <button
+                          type="button"
+                          onClick={() => updatePromptTemplate(selectedPromptTemplateId)}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-emerald-600/20 border border-emerald-500/30 text-[11px] font-medium text-emerald-400 hover:bg-emerald-600/30 transition-colors"
+                        >
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                          Save Changes
+                        </button>
+                      )}
+                      {showNewPromptForm && customPrompt.trim() && (
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="text"
+                            value={promptTemplateName}
+                            onChange={(e) => setPromptTemplateName(e.target.value)}
+                            placeholder="Prompt name..."
+                            className="rounded-md bg-neutral-900/50 border border-neutral-700 px-2.5 py-1 text-[11px] text-neutral-300 placeholder:text-neutral-600 focus:border-violet-500 focus:outline-none w-36"
+                          />
+                          <button
+                            type="button"
+                            onClick={saveCurrentAsPromptTemplate}
+                            disabled={!promptTemplateName.trim()}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-violet-600/20 border border-violet-500/30 text-[11px] font-medium text-violet-400 hover:bg-violet-600/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>
+                            Save Prompt
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <hr className="border-neutral-800/50" />
+
+              {/* ─── SCORING DIMENSIONS ─── */}
+              <div className="space-y-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                    <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                    Scoring Dimensions
+                  </h3>
+                  <p className="text-[11px] text-neutral-500 mt-0.5">Toggle dimensions and click &quot;?&quot; to see scoring tiers.</p>
+                </div>
+                <div className="space-y-2">
+                  {SCORING_RULE_DEFS.map(rule => {
+                    const enabled = scoringRules[rule.key as keyof typeof scoringRules];
+                    return (
+                      <div key={rule.key} className={`rounded-lg border transition-all ${enabled ? 'bg-neutral-900/50 border-neutral-700' : 'bg-neutral-900/20 border-neutral-800 opacity-60'}`}>
+                        <div className="flex items-center gap-2 px-3 py-2">
+                          <button
+                            type="button"
+                            onClick={() => setScoringRules(prev => ({ ...prev, [rule.key]: !prev[rule.key as keyof typeof prev] }))}
+                            className={`w-8 h-5 rounded-full transition-colors shrink-0 ${enabled ? 'bg-emerald-500' : 'bg-neutral-600'}`}
+                          >
+                            <div className={`w-4 h-4 rounded-full bg-white transform transition-transform ${enabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                          </button>
+                          <span className={`text-xs font-medium flex-1 ${enabled ? 'text-neutral-200' : 'text-neutral-500 line-through'}`}>
+                            {rule.label}
+                          </span>
+                          <span className="text-xs text-neutral-500 font-mono">/{rule.max}</span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              const el = (e.currentTarget.closest('[data-rule-card]') || e.currentTarget.parentElement?.parentElement) as HTMLElement;
+                              el?.querySelector('[data-tiers]')?.classList.toggle('hidden');
+                            }}
+                            className="text-[10px] text-indigo-400 hover:text-indigo-300 px-1"
+                          >?</button>
+                        </div>
+                        <div data-tiers className="hidden px-3 pb-2 space-y-1 border-t border-neutral-800/50 pt-1.5">
+                          {rule.tiers.map((tier, i) => (
+                            <div key={i} className="flex items-center gap-2 text-[10px]">
+                              <span className={`w-6 text-center font-mono font-bold ${tier.color}`}>{tier.score}</span>
+                              <span className="text-neutral-400">{tier.text}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
                 <p className="text-xs text-neutral-500">
                   Max Score: {Object.entries(scoringRules)
@@ -264,61 +761,82 @@ export default function Home() {
                 </p>
               </div>
 
-              {/* Custom Scoring Rules */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-neutral-300">Custom Rules</label>
+              <hr className="border-neutral-800/50" />
+
+              {/* ─── CUSTOM SCORING RULES ─── */}
+              <div className="space-y-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                    <svg className="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
+                    Custom Rules
+                  </h3>
+                  <p className="text-[11px] text-neutral-500 mt-0.5">Add your own scoring criteria for the AI to evaluate.</p>
+                </div>
                 {customScoringRules.length > 0 && (
                   <div className="space-y-2">
                     {customScoringRules.map(rule => (
-                      <div key={rule.id} className="flex items-center gap-2 p-2 rounded-lg bg-neutral-800/30 border border-neutral-700/50">
-                        <button
-                          type="button"
-                          onClick={() => setCustomScoringRules(prev =>
-                            prev.map(r => r.id === rule.id ? { ...r, enabled: !r.enabled } : r)
-                          )}
-                          className={`w-8 h-5 rounded-full transition-colors ${
-                            rule.enabled ? 'bg-emerald-500' : 'bg-neutral-600'
-                          }`}
-                        >
-                          <div className={`w-4 h-4 rounded-full bg-white transform transition-transform ${
-                            rule.enabled ? 'translate-x-3.5' : 'translate-x-0.5'
-                          }`} />
-                        </button>
-                        <span className={`text-sm flex-1 ${rule.enabled ? 'text-neutral-200' : 'text-neutral-500 line-through'}`}>
-                          {rule.name} (/{rule.maxPoints})
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setCustomScoringRules(prev => prev.filter(r => r.id !== rule.id))}
-                          className="text-neutral-500 hover:text-rose-400 text-xs"
-                        >
-                          ✕
-                        </button>
+                      <div key={rule.id} className={`rounded-lg border transition-all ${rule.enabled ? 'bg-neutral-900/50 border-neutral-700' : 'bg-neutral-900/20 border-neutral-800 opacity-60'}`}>
+                        <div className="flex items-center gap-2 px-3 py-2.5">
+                          <button
+                            type="button"
+                            onClick={() => setCustomScoringRules(prev =>
+                              prev.map(r => r.id === rule.id ? { ...r, enabled: !r.enabled } : r)
+                            )}
+                            className={`w-8 h-5 rounded-full transition-colors shrink-0 ${
+                              rule.enabled ? 'bg-emerald-500' : 'bg-neutral-600'
+                            }`}
+                          >
+                            <div className={`w-4 h-4 rounded-full bg-white transform transition-transform ${
+                              rule.enabled ? 'translate-x-3.5' : 'translate-x-0.5'
+                            }`} />
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className={`text-xs font-medium ${rule.enabled ? 'text-neutral-200' : 'text-neutral-500 line-through'}`}>
+                                {rule.name}
+                              </span>
+                              <span className="text-xs text-neutral-500 font-mono">/{rule.maxPoints}</span>
+                            </div>
+                            <p className="text-[11px] text-neutral-500 mt-0.5 leading-relaxed">
+                              {rule.criteria}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setCustomScoringRules(prev => prev.filter(r => r.id !== rule.id))}
+                            className="text-neutral-600 hover:text-rose-400 transition-colors p-1 rounded hover:bg-rose-500/10"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
                 )}
-                <div className="grid grid-cols-[1fr_60px_2fr_auto] gap-2 items-end">
-                  <input
-                    type="text"
-                    value={newRuleName}
-                    onChange={(e) => setNewRuleName(e.target.value)}
-                    placeholder="Rule name"
-                    className="rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-indigo-500 focus:outline-none"
-                  />
-                  <input
-                    type="number"
-                    value={newRuleMax}
-                    onChange={(e) => setNewRuleMax(parseInt(e.target.value) || 10)}
-                    placeholder="Max"
-                    className="rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-xs text-neutral-200 focus:border-indigo-500 focus:outline-none"
-                  />
-                  <input
-                    type="text"
+                <div className="p-3 rounded-lg bg-neutral-900/30 border border-neutral-800/50 space-y-2">
+                  <span className="text-[11px] font-medium text-neutral-400">Add New Rule</span>
+                  <div className="grid grid-cols-[1fr_60px] gap-2">
+                    <input
+                      type="text"
+                      value={newRuleName}
+                      onChange={(e) => setNewRuleName(e.target.value)}
+                      placeholder="Rule name"
+                      className="rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-amber-500 focus:outline-none"
+                    />
+                    <input
+                      type="number"
+                      value={newRuleMax}
+                      onChange={(e) => setNewRuleMax(parseInt(e.target.value) || 10)}
+                      placeholder="Max"
+                      className="rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-xs text-neutral-200 focus:border-amber-500 focus:outline-none"
+                    />
+                  </div>
+                  <textarea
+                    rows={2}
                     value={newRuleCriteria}
                     onChange={(e) => setNewRuleCriteria(e.target.value)}
-                    placeholder="Criteria description for AI"
-                    className="rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-indigo-500 focus:outline-none"
+                    placeholder="Describe the criteria for the AI to evaluate (e.g., 'Score higher if candidate has experience with enterprise sales cycles exceeding $100k ACV')"
+                    className="w-full resize-none rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-amber-500 focus:outline-none"
                   />
                   <button
                     type="button"
@@ -333,40 +851,71 @@ export default function Home() {
                       }]);
                       setNewRuleName(""); setNewRuleCriteria(""); setNewRuleMax(10);
                     }}
-                    className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-500 transition-colors"
+                    disabled={!newRuleName.trim() || !newRuleCriteria.trim()}
+                    className="w-full px-3 py-2 rounded-lg bg-amber-600/20 border border-amber-500/30 text-amber-400 text-xs font-medium hover:bg-amber-600/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
                   >
-                    +
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                    Add Rule
                   </button>
                 </div>
               </div>
 
-              {/* AI Model Selector */}
-              <div className="space-y-1">
-                <label className="text-sm font-medium text-neutral-300">AI Model</label>
-                <select
-                  value={aiModel}
-                  onChange={(e) => setAiModel(e.target.value)}
-                  className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
-                >
-                  <option value="gpt-4.1">GPT-4.1 (Most Capable)</option>
-                  <option value="gpt-4.1-mini">GPT-4.1 Mini (Fast & Cheap)</option>
-                  <option value="gpt-4o">GPT-4o</option>
-                  <option value="gpt-4o-mini">GPT-4o Mini</option>
-                </select>
-                <p className="text-xs text-neutral-500">Higher models are more accurate but cost more per profile.</p>
-              </div>
+              <hr className="border-neutral-800/50" />
 
-              {/* Google Sheets URL */}
-              <div className="space-y-1">
-                <label className="text-sm font-medium text-neutral-300">Google Sheets Web App URL (optional)</label>
-                <input
-                  type="url"
-                  value={sheetWebAppUrl}
-                  onChange={(e) => setSheetWebAppUrl(e.target.value)}
-                  placeholder="https://script.google.com/macros/s/.../exec"
-                  className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
-                />
-                <p className="text-xs text-neutral-500">Auto-exports scored profiles to your Google Sheet.</p>
+              {/* ─── SETTINGS ─── */}
+              <div className="space-y-4">
+                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                  <svg className="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                  Settings
+                </h3>
+
+                {/* AI Model Selector */}
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-neutral-400">AI Model</label>
+                  <select
+                    value={aiModel}
+                    onChange={(e) => setAiModel(e.target.value)}
+                    className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
+                  >
+                    <option value="gpt-4.1">GPT-4.1 (Most Capable)</option>
+                    <option value="gpt-4.1-mini">GPT-4.1 Mini (Fast &amp; Cheap)</option>
+                    <option value="gpt-4o">GPT-4o</option>
+                    <option value="gpt-4o-mini">GPT-4o Mini</option>
+                  </select>
+                  <p className="text-[11px] text-neutral-500">Higher models are more accurate but cost more per profile.</p>
+                </div>
+
+                {/* Google Sheets URL */}
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-neutral-400">Google Sheets Web App URL (optional)</label>
+                  <input
+                    type="url"
+                    value={sheetWebAppUrl}
+                    onChange={(e) => setSheetWebAppUrl(e.target.value)}
+                    placeholder="https://script.google.com/macros/s/.../exec"
+                    className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
+                  />
+                  <p className="text-[11px] text-neutral-500">Auto-exports scored profiles to your Google Sheet.</p>
+                </div>
+
+                {/* Min Score Threshold */}
+                {sheetWebAppUrl && (
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-neutral-400">Min Score Threshold for Export (%)</label>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={minScoreThreshold}
+                        onChange={(e) => setMinScoreThreshold(parseInt(e.target.value))}
+                        className="flex-1 accent-indigo-500"
+                      />
+                      <span className="text-sm font-mono text-neutral-300 w-12 text-right">{minScoreThreshold}%</span>
+                    </div>
+                    <p className="text-[11px] text-neutral-500">Only profiles scoring at or above this threshold will be exported to Google Sheets.</p>
+                  </div>
+                )}
               </div>
             </div>
           )}

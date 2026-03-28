@@ -6,7 +6,7 @@ const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "Bulk URL Processor",
-  description: "Scalable async background processing with Next.js and BullMQ",
+  description: "Bulk LinkedIn profile scraper with AI-powered candidate analysis",
 };
 
 export default function RootLayout({

@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseAndValidateUrls } from "@/lib/validators";
-import { enqueueTasks } from "@/lib/queue";
+import { triggerProcessing } from "@/lib/trigger";
 
 export const dynamic = "force-dynamic";
 
@@ -62,7 +62,8 @@ export async function POST(req: NextRequest) {
                 customScoringRules: body.customScoringRules || [],
                 sheetWebAppUrl: body.sheetWebAppUrl || "",
                 jdTitle: body.jdTitle || "Bulk Analysis",
-                aiModel: body.aiModel || "gpt-4.1-mini",
+                aiModel: body.aiModel || "gpt-4.1",
+                minScoreThreshold: body.minScoreThreshold ?? 0,
             });
         }
 
@@ -89,23 +90,11 @@ export async function POST(req: NextRequest) {
             return newJob;
         });
 
-        // 2. Fetch the newly created tasks to get their IDs
-        const tasks = await prisma.task.findMany({
-            where: { jobId: job.id },
-            select: { id: true, url: true, jobId: true },
+        // 3. Kick off processing immediately via after()
+        after(async () => {
+            await triggerProcessing();
         });
 
-        // 3. Enqueue tasks into BullMQ
-        // Map db tasks to queue payload format
-        const queuePayload = tasks.map((task: any) => ({
-            taskId: task.id,
-            url: task.url,
-            jobId: task.jobId,
-        }));
-
-        await enqueueTasks(queuePayload);
-
-        // 4. Return immediately to keep API non-blocking
         return NextResponse.json({
             message: "Job created successfully",
             jobId: job.id,

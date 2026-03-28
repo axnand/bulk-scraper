@@ -1,3 +1,5 @@
+import { prisma } from "./prisma";
+
 export const CONFIG = {
   // Rate limiting per account
   MAX_REQUESTS_PER_MINUTE: 10,
@@ -13,9 +15,40 @@ export const CONFIG = {
   // Retry settings
   MAX_RETRIES: 3,
 
-  // Worker concurrency (parallel tasks per worker process)
-  WORKER_CONCURRENCY: 3,
-
-  // Requeue delay when no account available (30 seconds)
-  REQUEUE_DELAY_MS: 30 * 1000,
+  // Stale task threshold (5 minutes)
+  STALE_TASK_MS: 5 * 60 * 1000,
 };
+
+/**
+ * Get dynamic concurrency based on available accounts.
+ * Returns the number of accounts that can process tasks right now.
+ */
+export async function getWorkerConcurrency(): Promise<number> {
+  try {
+    const now = new Date();
+    const activeCount = await prisma.account.count({
+      where: {
+        status: "ACTIVE",
+        dailyCount: { lt: CONFIG.DAILY_SAFE_LIMIT },
+        minuteCount: { lt: CONFIG.MAX_REQUESTS_PER_MINUTE },
+        OR: [
+          { cooldownUntil: null },
+          { cooldownUntil: { lt: now } },
+        ],
+      },
+    });
+    return Math.max(1, Math.min(activeCount, 10));
+  } catch {
+    return 3;
+  }
+}
+
+/**
+ * Sleep for a random jitter duration (anti-detection).
+ */
+export function jitter(): Promise<void> {
+  const ms =
+    CONFIG.JITTER_MIN_MS +
+    Math.random() * (CONFIG.JITTER_MAX_MS - CONFIG.JITTER_MIN_MS);
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

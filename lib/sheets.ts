@@ -1,14 +1,31 @@
 /**
- * Google Sheets Export — Ported from linkedInScraper Chrome Extension
+ * Google Sheets Export — Matches linkedInScraper Chrome Extension format
  *
  * Appends a candidate row to a Google Sheet via a Google Apps Script Web App.
- * Sends { jdTitle, columns, rowData } so the script can create per-JD tabs.
+ * Sends { jdTitle, columns, rowData } where columns are {key, label, group?}
+ * objects so the script can create per-JD tabs with grouped headers.
  */
+
+export interface SheetColumn {
+  key: string;
+  label: string;
+  group?: string;
+}
 
 export interface SheetExportPayload {
   jdTitle: string;
-  columns: string[];
+  columns: SheetColumn[];
   rowData: Record<string, any>;
+}
+
+export interface ScoringRulesConfig {
+  stability?: boolean;
+  growth?: boolean;
+  graduation?: boolean;
+  companyType?: boolean;
+  mba?: boolean;
+  skillMatch?: boolean;
+  location?: boolean;
 }
 
 export async function exportToSheet(
@@ -44,7 +61,7 @@ export async function exportToSheet(
     }
 
     if (result.status === "ok") {
-      console.log("[Sheets] ✅ Row appended successfully");
+      console.log("[Sheets] Row appended successfully");
       return { success: true, duplicate: result.duplicate || false };
     }
 
@@ -55,70 +72,130 @@ export async function exportToSheet(
   }
 }
 
+// Helper: preserve 0 as 0, but convert "" / null / undefined to ""
+function sv(v: any): any {
+  return v !== "" && v != null ? v : "";
+}
+
 /**
  * Build a standard row payload from an analysis result for sheet export.
+ * Matches the LinkedIn scraper's dynamic column schema format exactly.
+ * Only includes columns for enabled scoring rules.
  */
 export function buildSheetPayload(
   candidateUrl: string,
   analysisResult: any,
-  jdTitle: string
+  jdTitle: string,
+  scoringRules?: ScoringRulesConfig
 ): SheetExportPayload {
   const info = analysisResult.candidateInfo || {};
-  const scoring = analysisResult.scoring || {};
+  const sc = analysisResult.scoring || {};
+  const rules = scoringRules || {};
+  const customRules = analysisResult.customScoringRules || [];
 
-  const columns = [
-    "Name", "LinkedIn URL", "Current Org", "Current Designation",
-    "Total Experience (yrs)", "Companies Switched", "Avg Tenure (yrs)",
-    "Location", "BTech/BE", "Graduation", "MBA", "Graduation Year",
-    "Stability", "Growth (Same Co)", "Growth (Change)",
-    "Grad Tier 1", "Grad Tier 2", "Sales/CRM", "Other B2B",
-    "MBA A", "MBA Others", "Skillset Match", "Location Match",
-    "Total Score", "Max Score", "Score %", "Recommendation",
-    "Strengths", "Gaps", "Flags", "Remarks",
+  // ── Build dynamic columns schema (only enabled rules get columns) ──
+  const columns: SheetColumn[] = [
+    { key: "date", label: "Date" },
+    { key: "name", label: "Name" },
+    { key: "linkedinProfile", label: "LinkedIn Profile" },
+    { key: "btech", label: "BTech" },
+    { key: "mba", label: "MBA" },
+    { key: "currentOrg", label: "Current Org" },
+    { key: "totalExperienceYears", label: "Total Experience (In Yrs)" },
+    { key: "companiesSwitched", label: "Number of Companies Switched" },
+    { key: "currentLocation", label: "Current Location" },
   ];
 
-  // Add custom rule columns
-  const customRules = analysisResult.customScoringRules || [];
-  for (const r of customRules) {
-    columns.push(r.name);
+  // Scoring columns — only for enabled rules
+  if (rules.stability !== false) {
+    columns.push({ key: "stability", label: "Stability (10)" });
+  }
+  if (rules.location !== false) {
+    columns.push({ key: "locationMatch", label: "Location (5)" });
+  }
+  if (rules.growth !== false) {
+    columns.push(
+      { key: "promotionSameCompany", label: "Same Company (15)", group: "Growth" },
+      { key: "promotionWithChange", label: "With Change (10)", group: "Growth" },
+    );
+  }
+  if (rules.graduation !== false) {
+    columns.push(
+      { key: "gradTier1", label: "Tier 1 (15)", group: "Graduation" },
+      { key: "gradTier2", label: "Tier 2 (10)", group: "Graduation" },
+    );
+  }
+  if (rules.companyType !== false) {
+    columns.push(
+      { key: "salesCRM", label: "Sales/CRM (15)", group: "Company Type" },
+      { key: "otherB2B", label: "Other B2B (10)", group: "Company Type" },
+    );
+  }
+  if (rules.mba !== false) {
+    columns.push(
+      { key: "mbaA", label: "MBA A (15)", group: "MBA" },
+      { key: "mbaOthers", label: "MBA Others (10)", group: "MBA" },
+    );
+  }
+  if (rules.skillMatch !== false) {
+    columns.push({ key: "skillsetMatch", label: "Skill Match (10)" });
   }
 
+  // Custom scoring rules (dynamic)
+  for (const r of customRules) {
+    columns.push({ key: `custom_${r.id}`, label: `${r.name} (${r.maxPoints})` });
+  }
+
+  // Manual entry + summary columns (always present)
+  columns.push(
+    { key: "currentCTC", label: "Current CTC" },
+    { key: "joiningCTCCurrentOrg", label: "Joining CTC in Current Org" },
+    { key: "expectedCTC", label: "Expected CTC" },
+    { key: "offerInHand", label: "Offer in Hand (if any)" },
+    { key: "remarks", label: "Remarks" },
+    { key: "totalScore", label: "Score" },
+    { key: "scorePercent", label: "Score %" },
+    { key: "source", label: "Source" },
+  );
+
+  // ── Build row data (all keys — Apps Script maps by column key) ──
   const rowData: Record<string, any> = {
-    "Name": info.name || "",
-    "LinkedIn URL": candidateUrl,
-    "Current Org": info.currentOrg || "",
-    "Current Designation": info.currentDesignation || "",
-    "Total Experience (yrs)": info.totalExperienceYears || 0,
-    "Companies Switched": info.companiesSwitched || 0,
-    "Avg Tenure (yrs)": info.stabilityAvgYears || 0,
-    "Location": info.currentLocation || "",
-    "BTech/BE": info.btech || "",
-    "Graduation": info.graduation || "",
-    "MBA": info.mba || "",
-    "Graduation Year": info.graduationYear || "",
-    "Stability": scoring.stability ?? "",
-    "Growth (Same Co)": scoring.promotionSameCompany ?? "",
-    "Growth (Change)": scoring.promotionWithChange ?? "",
-    "Grad Tier 1": scoring.gradTier1 ?? "",
-    "Grad Tier 2": scoring.gradTier2 ?? "",
-    "Sales/CRM": scoring.salesCRM ?? "",
-    "Other B2B": scoring.otherB2B ?? "",
-    "MBA A": scoring.mbaA ?? "",
-    "MBA Others": scoring.mbaOthers ?? "",
-    "Skillset Match": scoring.skillsetMatch ?? "",
-    "Location Match": scoring.locationMatch ?? "",
-    "Total Score": analysisResult.totalScore ?? 0,
-    "Max Score": analysisResult.maxScore ?? 0,
-    "Score %": analysisResult.scorePercent ?? 0,
-    "Recommendation": analysisResult.recommendation || "",
-    "Strengths": (analysisResult.strengths || []).join("; "),
-    "Gaps": (analysisResult.gaps || []).join("; "),
-    "Flags": (analysisResult.flags || []).join("; "),
-    "Remarks": analysisResult.remarks || "",
+    date: new Date().toLocaleDateString(),
+    name: info.name || "",
+    linkedinProfile: candidateUrl,
+    btech: info.btech || "",
+    mba: info.mba || "",
+    currentOrg: info.currentOrg || "",
+    totalExperienceYears: sv(info.totalExperienceYears),
+    companiesSwitched: sv(info.companiesSwitched),
+    currentLocation: info.currentLocation || "",
+    stability: sv(sc.stability),
+    locationMatch: sv(sc.locationMatch),
+    promotionSameCompany: sv(sc.promotionSameCompany),
+    promotionWithChange: sv(sc.promotionWithChange),
+    gradTier1: sv(sc.gradTier1),
+    gradTier2: sv(sc.gradTier2),
+    salesCRM: sv(sc.salesCRM),
+    otherB2B: sv(sc.otherB2B),
+    mbaA: sv(sc.mbaA),
+    mbaOthers: sv(sc.mbaOthers),
+    skillsetMatch: sv(sc.skillsetMatch),
+    currentCTC: "",
+    joiningCTCCurrentOrg: "",
+    expectedCTC: "",
+    offerInHand: "",
+    remarks: analysisResult.remarks || "",
+    totalScore:
+      analysisResult.totalScore != null && analysisResult.maxScore != null
+        ? `${analysisResult.totalScore}/${analysisResult.maxScore}`
+        : sv(analysisResult.totalScore),
+    scorePercent: sv(analysisResult.scorePercent),
+    source: "Bulk Scraper",
   };
 
+  // Add custom rule scores
   for (const r of customRules) {
-    rowData[r.name] = scoring[`custom_${r.id}`] ?? "";
+    rowData[`custom_${r.id}`] = sv(sc[`custom_${r.id}`]);
   }
 
   return { jdTitle, columns, rowData };

@@ -56,18 +56,22 @@ export function extractIdentifier(url: string): string | null {
  *
  * @param unipileAccountId - The Unipile account_id (not our DB id)
  * @param identifier - LinkedIn public identifier (e.g., "satyanadella")
+ * @param accountDsn - Per-account Unipile DSN (falls back to env)
+ * @param accountApiKey - Per-account Unipile API key (falls back to env)
  * @returns Parsed profile JSON
  * @throws RateLimitError | ServerError | ClientError | NetworkError
  */
 export async function fetchProfile(
   unipileAccountId: string,
-  identifier: string
+  identifier: string,
+  accountDsn?: string,
+  accountApiKey?: string
 ): Promise<any> {
-  const dsn = process.env.UNIPILE_DSN;
-  const apiKey = process.env.UNIPILE_API_KEY;
+  const dsn = accountDsn || process.env.UNIPILE_DSN;
+  const apiKey = accountApiKey || process.env.UNIPILE_API_KEY;
 
   if (!dsn || !apiKey) {
-    throw new Error("UNIPILE_DSN and UNIPILE_API_KEY must be set in environment");
+    throw new Error("Unipile DSN and API key must be provided (via account or environment)");
   }
 
   const url = `${dsn}/api/v1/users/${encodeURIComponent(identifier)}?account_id=${encodeURIComponent(unipileAccountId)}&linkedin_sections=*`;
