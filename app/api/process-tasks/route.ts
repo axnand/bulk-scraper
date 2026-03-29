@@ -91,12 +91,10 @@ async function processOneTask(
     .catch(() => null);
 
   if (!claimed) {
-    // Another invocation grabbed this task
     await releaseAccount(account.id, false);
     return;
   }
 
-  // Skip if parent job is cancelled
   if (task.job.status === "CANCELLED") {
     await prisma.task.update({
       where: { id: task.id },
@@ -106,7 +104,6 @@ async function processOneTask(
     return;
   }
 
-  // Mark job as PROCESSING if it's still PENDING
   if (task.job.status === "PENDING") {
     await prisma.job
       .update({
@@ -116,19 +113,16 @@ async function processOneTask(
       .catch(() => {});
   }
 
+  let success = false;
   try {
-    // Validate identifier
     const identifier = extractIdentifier(task.url);
     if (!identifier) {
       await markTaskFailed(task.id, task.jobId, "Invalid LinkedIn URL format");
-      await releaseAccount(account.id, false);
       return;
     }
 
-    // Anti-detection jitter
     await jitter();
 
-    // Fetch profile from Unipile
     const profileData = await fetchProfile(
       account.accountId,
       identifier,
@@ -136,7 +130,6 @@ async function processOneTask(
       account.apiKey || undefined
     );
 
-    // Save candidate profile (permanent record)
     const candidateProfile = await prisma.candidateProfile.create({
       data: {
         linkedinUrl: task.url,
@@ -147,7 +140,6 @@ async function processOneTask(
       },
     });
 
-    // AI Analysis phase
     let analysisResultJson: string | null = null;
     const jobConfig = await getJobConfig(task.jobId);
 
@@ -157,7 +149,6 @@ async function processOneTask(
         const analysisResult = await analyzeProfile(profileData, jobConfig);
         analysisResultJson = JSON.stringify(analysisResult);
 
-        // Save analysis record (permanent, never deleted)
         await prisma.analysisRecord.create({
           data: {
             candidateId: candidateProfile.id,
@@ -179,7 +170,6 @@ async function processOneTask(
           },
         });
 
-        // Sheet Export
         const sheetUrl = (jobConfig as any).sheetWebAppUrl;
         if (sheetUrl) {
           const minThreshold = (jobConfig as any).minScoreThreshold ?? 0;
@@ -201,7 +191,6 @@ async function processOneTask(
       }
     }
 
-    // Mark task as DONE
     await prisma.task.update({
       where: { id: task.id },
       data: {
@@ -227,32 +216,26 @@ async function processOneTask(
       });
     }
 
-    await releaseAccount(account.id, true);
+    success = true;
   } catch (error: any) {
-    // ── Error handling ──
     if (error instanceof RateLimitError) {
       console.warn(`[Process] Account rate limited: ${error.message}`);
       await cooldownAccount(account.id);
-      await releaseAccount(account.id, true);
-      // Put task back to PENDING for retry
       await prisma.task.update({
         where: { id: task.id },
         data: { status: "PENDING", retryCount: { increment: 1 } },
       });
     } else if (error instanceof ServerError || error instanceof NetworkError) {
       console.warn(`[Process] Retryable error: ${error.message}`);
-      await releaseAccount(account.id, true);
       await prisma.task.update({
         where: { id: task.id },
         data: { status: "PENDING", retryCount: { increment: 1 } },
       });
     } else if (error instanceof ClientError) {
       console.error(`[Process] Non-retryable error: ${error.message}`);
-      await releaseAccount(account.id, true);
       await markTaskFailed(task.id, task.jobId, error.message);
     } else {
       console.error(`[Process] Unknown error:`, error);
-      await releaseAccount(account.id, true);
       if (task.retryCount >= CONFIG.MAX_RETRIES) {
         await markTaskFailed(
           task.id,
@@ -266,6 +249,11 @@ async function processOneTask(
         });
       }
     }
+  } finally {
+    // ALWAYS release the account — prevents accounts stuck in BUSY
+    await releaseAccount(account.id, success).catch((err) => {
+      console.error(`[Process] Failed to release account ${account.id}:`, err);
+    });
   }
 }
 
@@ -339,6 +327,8 @@ export async function POST(req: NextRequest) {
     if (remaining > 0) {
       console.log(`[Process] ${remaining} tasks remaining, triggering next cycle...`);
       after(async () => {
+        // Wait for minute rate-limit windows to expire before next cycle
+        await new Promise((r) => setTimeout(r, 5000));
         await triggerProcessing();
       });
     }
