@@ -57,3 +57,48 @@ model Task {
   @@index([jobId])
   @@index([accountId])
 }
+
+model CandidateProfile {
+  id          String    @id @default(cuid())
+  linkedinUrl String    // full LinkedIn URL
+  name        String    @default("")
+  headline    String    @default("")
+  location    String    @default("")
+  rawProfile  String?   @db.Text // full Unipile JSON (nullable — cleared on free tier to save space)
+  scrapedAt   DateTime  @default(now())
+
+  analyses    AnalysisRecord[]
+
+  @@index([linkedinUrl])
+  @@index([scrapedAt])
+}
+
+model AnalysisRecord {
+  id             String   @id @default(cuid())
+  candidateId    String
+  linkedinUrl    String   // denormalized for fast queries
+  candidateName  String   @default("")
+
+  // Job context — WHY this analysis happened
+  jobTitle       String
+  jobDescription String   @db.Text
+  scoringConfig  String   @db.Text // JSON: rules, custom rules, model, prompt
+
+  // Analysis output with all reasoning
+  analysisData   String   @db.Text // full AnalysisResult JSON
+
+  // Denormalized for sorting/filtering/dashboards
+  totalScore     Int
+  maxScore       Int
+  scorePercent   Float
+  recommendation String   // "Strong Fit" / "Moderate Fit" / "Not a Fit"
+
+  analyzedAt     DateTime @default(now())
+
+  candidate      CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([linkedinUrl])
+  @@index([analyzedAt])
+  @@index([scorePercent])
+  @@index([candidateId])
+}

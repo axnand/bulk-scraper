@@ -323,6 +323,7 @@ export default function Home() {
             sheetWebAppUrl: sheetWebAppUrl || undefined,
             aiModel,
             minScoreThreshold,
+            jdTitle: jdTemplates.find(t => t.id === selectedJdTemplateId)?.title || "Bulk Analysis",
           }),
         }),
       });

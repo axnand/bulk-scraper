@@ -17,6 +17,14 @@ export const CONFIG = {
 
   // Stale task threshold (5 minutes)
   STALE_TASK_MS: 5 * 60 * 1000,
+
+  // Task/Job cleanup after completion (48 hours)
+  TASK_CLEANUP_MS: 48 * 60 * 60 * 1000,
+
+  // Raw profile retention — 0 means keep forever (set via DATA_RETENTION_DAYS env var)
+  get DATA_RETENTION_DAYS(): number {
+    return parseInt(process.env.DATA_RETENTION_DAYS || "0", 10);
+  },
 };
 
 /**

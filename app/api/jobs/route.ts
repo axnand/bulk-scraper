@@ -67,30 +67,29 @@ export async function POST(req: NextRequest) {
             });
         }
 
-        // 2. Create Job and Tasks in a transaction
-        const job = await prisma.$transaction(async (tx: any) => {
-            // Create the Job entry
-            const newJob = await tx.job.create({
-                data: {
-                    totalTasks: valid.length,
-                    status: "PENDING",
-                    config: config || null,
-                },
-            });
+        // 2. Create the Job first
+        const job = await prisma.job.create({
+            data: {
+                totalTasks: valid.length,
+                status: "PENDING",
+                config: config || null,
+            },
+        });
 
-            // Create Task entries using createMany to be efficient
-            await tx.task.createMany({
-                data: valid.map((url) => ({
-                    jobId: newJob.id,
+        // 3. Batch-insert tasks in chunks to avoid DB timeouts
+        const BATCH_SIZE = 100;
+        for (let i = 0; i < valid.length; i += BATCH_SIZE) {
+            const batch = valid.slice(i, i + BATCH_SIZE);
+            await prisma.task.createMany({
+                data: batch.map((url) => ({
+                    jobId: job.id,
                     url,
                     status: "PENDING",
                 })),
             });
+        }
 
-            return newJob;
-        });
-
-        // 3. Kick off processing immediately via after()
+        // 4. Kick off processing immediately via after()
         after(async () => {
             await triggerProcessing();
         });

@@ -45,29 +45,27 @@ async function markTaskFailed(
   jobId: string,
   errorMessage: string
 ) {
-  await prisma.$transaction(async (tx: any) => {
-    await tx.task.update({
-      where: { id: taskId },
-      data: { status: "FAILED", errorMessage },
-    });
-
-    const updatedJob = await tx.job.update({
-      where: { id: jobId },
-      data: {
-        processedCount: { increment: 1 },
-        failedCount: { increment: 1 },
-      },
-    });
-
-    if (updatedJob.processedCount >= updatedJob.totalTasks) {
-      const finalStatus =
-        updatedJob.successCount > 0 ? "COMPLETED" : "FAILED";
-      await tx.job.update({
-        where: { id: jobId },
-        data: { status: finalStatus },
-      });
-    }
+  await prisma.task.update({
+    where: { id: taskId },
+    data: { status: "FAILED", errorMessage },
   });
+
+  const updatedJob = await prisma.job.update({
+    where: { id: jobId },
+    data: {
+      processedCount: { increment: 1 },
+      failedCount: { increment: 1 },
+    },
+  });
+
+  if (updatedJob.processedCount >= updatedJob.totalTasks) {
+    const finalStatus =
+      updatedJob.successCount > 0 ? "COMPLETED" : "FAILED";
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { status: finalStatus },
+    });
+  }
 }
 
 /**
@@ -138,6 +136,17 @@ async function processOneTask(
       account.apiKey || undefined
     );
 
+    // Save candidate profile (permanent record)
+    const candidateProfile = await prisma.candidateProfile.create({
+      data: {
+        linkedinUrl: task.url,
+        name: `${profileData.first_name || ""} ${profileData.last_name || ""}`.trim(),
+        headline: profileData.headline || "",
+        location: profileData.location || "",
+        rawProfile: JSON.stringify(profileData),
+      },
+    });
+
     // AI Analysis phase
     let analysisResultJson: string | null = null;
     const jobConfig = await getJobConfig(task.jobId);
@@ -147,6 +156,28 @@ async function processOneTask(
       try {
         const analysisResult = await analyzeProfile(profileData, jobConfig);
         analysisResultJson = JSON.stringify(analysisResult);
+
+        // Save analysis record (permanent, never deleted)
+        await prisma.analysisRecord.create({
+          data: {
+            candidateId: candidateProfile.id,
+            linkedinUrl: task.url,
+            candidateName: analysisResult.candidateInfo?.name || candidateProfile.name,
+            jobTitle: (jobConfig as any).jdTitle || "Untitled",
+            jobDescription: jobConfig.jobDescription,
+            scoringConfig: JSON.stringify({
+              scoringRules: jobConfig.scoringRules,
+              customScoringRules: jobConfig.customScoringRules,
+              aiModel: (jobConfig as any).aiModel,
+              customPrompt: jobConfig.customPrompt,
+            }),
+            analysisData: analysisResultJson,
+            totalScore: analysisResult.totalScore,
+            maxScore: analysisResult.maxScore,
+            scorePercent: analysisResult.scorePercent,
+            recommendation: analysisResult.recommendation,
+          },
+        });
 
         // Sheet Export
         const sheetUrl = (jobConfig as any).sheetWebAppUrl;
@@ -171,32 +202,30 @@ async function processOneTask(
     }
 
     // Mark task as DONE
-    await prisma.$transaction(async (tx: any) => {
-      await tx.task.update({
-        where: { id: task.id },
-        data: {
-          status: "DONE",
-          result: JSON.stringify(profileData),
-          analysisResult: analysisResultJson,
-          accountId: account.id,
-        },
-      });
-
-      const updatedJob = await tx.job.update({
-        where: { id: task.jobId },
-        data: {
-          processedCount: { increment: 1 },
-          successCount: { increment: 1 },
-        },
-      });
-
-      if (updatedJob.processedCount >= updatedJob.totalTasks) {
-        await tx.job.update({
-          where: { id: task.jobId },
-          data: { status: "COMPLETED" },
-        });
-      }
+    await prisma.task.update({
+      where: { id: task.id },
+      data: {
+        status: "DONE",
+        result: JSON.stringify(profileData),
+        analysisResult: analysisResultJson,
+        accountId: account.id,
+      },
     });
+
+    const updatedJob = await prisma.job.update({
+      where: { id: task.jobId },
+      data: {
+        processedCount: { increment: 1 },
+        successCount: { increment: 1 },
+      },
+    });
+
+    if (updatedJob.processedCount >= updatedJob.totalTasks) {
+      await prisma.job.update({
+        where: { id: task.jobId },
+        data: { status: "COMPLETED" },
+      });
+    }
 
     await releaseAccount(account.id, true);
   } catch (error: any) {
@@ -204,7 +233,7 @@ async function processOneTask(
     if (error instanceof RateLimitError) {
       console.warn(`[Process] Account rate limited: ${error.message}`);
       await cooldownAccount(account.id);
-      await releaseAccount(account.id, false);
+      await releaseAccount(account.id, true);
       // Put task back to PENDING for retry
       await prisma.task.update({
         where: { id: task.id },
@@ -212,18 +241,18 @@ async function processOneTask(
       });
     } else if (error instanceof ServerError || error instanceof NetworkError) {
       console.warn(`[Process] Retryable error: ${error.message}`);
-      await releaseAccount(account.id, false);
+      await releaseAccount(account.id, true);
       await prisma.task.update({
         where: { id: task.id },
         data: { status: "PENDING", retryCount: { increment: 1 } },
       });
     } else if (error instanceof ClientError) {
       console.error(`[Process] Non-retryable error: ${error.message}`);
-      await releaseAccount(account.id, false);
+      await releaseAccount(account.id, true);
       await markTaskFailed(task.id, task.jobId, error.message);
     } else {
       console.error(`[Process] Unknown error:`, error);
-      await releaseAccount(account.id, false);
+      await releaseAccount(account.id, true);
       if (task.retryCount >= CONFIG.MAX_RETRIES) {
         await markTaskFailed(
           task.id,
@@ -302,12 +331,13 @@ export async function POST(req: NextRequest) {
     const succeeded = results.filter((r) => r.status === "fulfilled").length;
     const failed = results.filter((r) => r.status === "rejected").length;
 
-    // 6. Check if more pending tasks remain — self-chain via after()
+    // 6. Check if more pending tasks remain and re-trigger
     const remaining = await prisma.task.count({
       where: { status: "PENDING" },
     });
 
     if (remaining > 0) {
+      console.log(`[Process] ${remaining} tasks remaining, triggering next cycle...`);
       after(async () => {
         await triggerProcessing();
       });

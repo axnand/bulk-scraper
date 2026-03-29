@@ -93,17 +93,22 @@ export async function releaseAccount(id: string, success: boolean) {
   const oneMinuteFromNow = new Date(now.getTime() + 60_000);
 
   try {
+    const dataUpdate: any = {
+      status: "ACTIVE",
+      lastUsedAt: now,
+    };
+
+    if (success) {
+      dataUpdate.requestCount = { increment: 1 };
+      dataUpdate.dailyCount = { increment: 1 };
+      dataUpdate.minuteCount = { increment: 1 };
+      dataUpdate.dailyResetAt = endOfDay;
+      dataUpdate.minuteResetAt = oneMinuteFromNow;
+    }
+
     await prisma.account.update({
       where: { id },
-      data: {
-        status: "ACTIVE",
-        requestCount: { increment: 1 },
-        dailyCount: { increment: 1 },
-        minuteCount: { increment: 1 },
-        lastUsedAt: now,
-        dailyResetAt: endOfDay,
-        minuteResetAt: oneMinuteFromNow,
-      },
+      data: dataUpdate,
     });
   } catch (error) {
     console.error(`[AccountService] Failed to release account ${id}:`, error);

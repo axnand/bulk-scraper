@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { recoverStaleState, refreshCooldowns } from "@/lib/services/account.service";
 import { triggerProcessing } from "@/lib/trigger";
+import { CONFIG } from "@/lib/config";
 
 export const maxDuration = 30;
 export const dynamic = "force-dynamic";
@@ -37,7 +38,7 @@ export async function GET(req: NextRequest) {
     await refreshCooldowns();
 
     // 3. Clean up completed/failed jobs older than 48 hours
-    const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const cutoff = new Date(Date.now() - CONFIG.TASK_CLEANUP_MS);
     const staleJobs = await prisma.job.findMany({
       where: {
         status: { in: ["COMPLETED", "FAILED"] },
@@ -64,7 +65,29 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // 4. Check for pending tasks and re-trigger if needed
+    // 4. Optional: clear raw profiles older than DATA_RETENTION_DAYS to save storage
+    let clearedProfiles = 0;
+    const retentionDays = CONFIG.DATA_RETENTION_DAYS;
+    if (retentionDays > 0) {
+      const profileCutoff = new Date(
+        Date.now() - retentionDays * 24 * 60 * 60 * 1000
+      );
+      const cleared = await prisma.candidateProfile.updateMany({
+        where: {
+          scrapedAt: { lt: profileCutoff },
+          rawProfile: { not: null },
+        },
+        data: { rawProfile: null },
+      });
+      clearedProfiles = cleared.count;
+      if (clearedProfiles > 0) {
+        console.log(
+          `[Cron Safety Net] Cleared rawProfile from ${clearedProfiles} old candidate records`
+        );
+      }
+    }
+
+    // 5. Check for pending tasks and re-trigger if needed
     const pendingCount = await prisma.task.count({
       where: { status: "PENDING" },
     });
@@ -83,6 +106,7 @@ export async function GET(req: NextRequest) {
       checkedAccounts: recovery.checkedAccounts,
       cleanedJobs: staleJobs.length,
       cleanedTasks,
+      clearedProfiles,
     });
   } catch (error) {
     console.error("[Cron Safety Net] Error:", error);

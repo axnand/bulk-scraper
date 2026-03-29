@@ -14,15 +14,14 @@ export function getBaseUrl(): string {
 
 export async function triggerProcessing(): Promise<void> {
   const base = getBaseUrl();
-  try {
-    await fetch(`${base}/api/process-tasks`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.CRON_SECRET}`,
-        "Content-Type": "application/json",
-      },
-    });
-  } catch (err) {
+  // Fire and forget without awaiting to prevent holding up the after() context for 60 seconds
+  fetch(`${base}/api/process-tasks`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.CRON_SECRET}`,
+      "Content-Type": "application/json",
+    },
+  }).catch((err) => {
     console.error("[Trigger] Failed to trigger processing:", err);
-  }
+  });
 }

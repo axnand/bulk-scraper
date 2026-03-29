@@ -31,6 +31,7 @@ export default function JobResultsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -127,20 +128,39 @@ export default function JobResultsPage() {
       {/* Completed Profiles */}
       {completedTasks.length > 0 && (
         <section className="space-y-3">
-          <h2 className="text-lg font-semibold text-white">
-            Scraped Profiles ({completedTasks.length})
-          </h2>
-          <div className="space-y-3">
-            {completedTasks.map((task) => (
-              <ProfileCard
-                key={task.id}
-                task={task}
-                expanded={expandedTask === task.id}
-                onToggle={() =>
-                  setExpandedTask(expandedTask === task.id ? null : task.id)
-                }
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold text-white shrink-0">
+              Scraped Profiles ({completedTasks.length})
+            </h2>
+            {completedTasks.length > 1 && (
+              <input
+                type="text"
+                placeholder="Search by name..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="bg-neutral-900/50 border border-neutral-700 rounded-lg px-3 py-1.5 text-sm text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-indigo-500 w-full max-w-xs"
               />
-            ))}
+            )}
+          </div>
+          <div className="space-y-3">
+            {completedTasks
+              .filter((task) => {
+                if (!search.trim()) return true;
+                const profile = task.result;
+                if (!profile) return false;
+                const fullName = `${profile.first_name || ""} ${profile.last_name || ""}`.toLowerCase();
+                return fullName.includes(search.toLowerCase().trim());
+              })
+              .map((task) => (
+                <ProfileCard
+                  key={task.id}
+                  task={task}
+                  expanded={expandedTask === task.id}
+                  onToggle={() =>
+                    setExpandedTask(expandedTask === task.id ? null : task.id)
+                  }
+                />
+              ))}
           </div>
         </section>
       )}
@@ -225,9 +245,20 @@ function ProfileCard({
         onClick={onToggle}
         className="w-full text-left p-4 flex items-center gap-4 hover:bg-neutral-800/30 transition-colors"
       >
-        {/* Avatar placeholder */}
-        <div className="h-12 w-12 rounded-full bg-gradient-to-br from-indigo-500 to-cyan-400 flex items-center justify-center text-white font-bold text-lg shrink-0">
-          {(profile.first_name || "?")[0]}
+        {/* Avatar */}
+        <div className="h-12 w-12 rounded-full bg-gradient-to-br from-indigo-500 to-cyan-400 flex items-center justify-center text-white font-bold text-lg shrink-0 overflow-hidden">
+          {profile.profile_picture_url ? (
+            <img
+              src={`/api/proxy-image?url=${encodeURIComponent(profile.profile_picture_url)}`}
+              alt={name}
+              className="h-full w-full object-cover"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = 'none';
+              }}
+            />
+          ) : (
+            `${(profile.first_name || "?")[0]}${(profile.last_name || "")[0] || ""}`
+          )}
         </div>
 
         <div className="flex-1 min-w-0">
@@ -508,38 +539,35 @@ function ProfileCard({
 
           {/* Experience */}
           {profile.work_experience && profile.work_experience.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-neutral-500 uppercase tracking-wider mb-2">Experience</p>
-              <div className="space-y-2">
-                {profile.work_experience.slice(0, 3).map((exp: any, i: number) => (
-                  <div key={i} className="bg-neutral-900/50 rounded-lg p-3">
-                    <p className="text-sm font-medium text-neutral-200">{exp.position || 'Untitled Role'}</p>
-                    <p className="text-xs text-neutral-400">{exp.company || ''}</p>
-                    {exp.start && (
-                      <p className="text-xs text-neutral-500 mt-0.5">{exp.start} – {exp.end || 'Present'}</p>
-                    )}
-                  </div>
-                ))}
-                {profile.work_experience.length > 3 && (
-                  <p className="text-xs text-neutral-500">+{profile.work_experience.length - 3} more</p>
-                )}
-              </div>
-            </div>
+            <ExpandableList
+              title="Experience"
+              items={profile.work_experience}
+              initialCount={3}
+              renderItem={(exp: any, i: number) => (
+                <div key={i} className="bg-neutral-900/50 rounded-lg p-3">
+                  <p className="text-sm font-medium text-neutral-200">{exp.position || 'Untitled Role'}</p>
+                  <p className="text-xs text-neutral-400">{exp.company || ''}</p>
+                  {exp.start && (
+                    <p className="text-xs text-neutral-500 mt-0.5">{exp.start} – {exp.end || 'Present'}</p>
+                  )}
+                </div>
+              )}
+            />
           )}
 
           {/* Education */}
           {profile.education && profile.education.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-neutral-500 uppercase tracking-wider mb-2">Education</p>
-              <div className="space-y-2">
-                {profile.education.slice(0, 2).map((edu: any, i: number) => (
-                  <div key={i} className="bg-neutral-900/50 rounded-lg p-3">
-                    <p className="text-sm font-medium text-neutral-200">{edu.school || 'Unknown School'}</p>
-                    <p className="text-xs text-neutral-400">{edu.degree || ''}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <ExpandableList
+              title="Education"
+              items={profile.education}
+              initialCount={2}
+              renderItem={(edu: any, i: number) => (
+                <div key={i} className="bg-neutral-900/50 rounded-lg p-3">
+                  <p className="text-sm font-medium text-neutral-200">{edu.school || 'Unknown School'}</p>
+                  <p className="text-xs text-neutral-400">{edu.degree || ''}</p>
+                </div>
+              )}
+            />
           )}
 
           {/* Raw JSON toggle */}
@@ -579,6 +607,39 @@ function StatCard({ label, value, color }: { label: string; value: number; color
     <div className="glassmorphism rounded-xl p-3 text-center">
       <p className="text-xs text-neutral-500 uppercase tracking-wider">{label}</p>
       <p className={`text-2xl font-bold ${color}`}>{value}</p>
+    </div>
+  );
+}
+
+function ExpandableList({
+  title,
+  items,
+  initialCount,
+  renderItem,
+}: {
+  title: string;
+  items: any[];
+  initialCount: number;
+  renderItem: (item: any, index: number) => React.ReactNode;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? items : items.slice(0, initialCount);
+  const remaining = items.length - initialCount;
+
+  return (
+    <div>
+      <p className="text-xs font-medium text-neutral-500 uppercase tracking-wider mb-2">{title}</p>
+      <div className="space-y-2">
+        {visible.map((item, i) => renderItem(item, i))}
+        {remaining > 0 && (
+          <button
+            onClick={() => setShowAll(!showAll)}
+            className="text-xs text-indigo-400 hover:text-indigo-300 font-medium transition-colors"
+          >
+            {showAll ? "Show less" : `+${remaining} more`}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
