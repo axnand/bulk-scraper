@@ -14,15 +14,18 @@ export function getBaseUrl(): string {
 
 export async function triggerProcessing(): Promise<void> {
   const base = getBaseUrl();
+  const url = `${base}/api/process-tasks`;
+  console.log(`[Trigger] Calling ${url} (CRON_SECRET set: ${!!process.env.CRON_SECRET})`);
   try {
-    const res = await fetch(`${base}/api/process-tasks`, {
+    const res = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.CRON_SECRET}`,
         "Content-Type": "application/json",
       },
     });
-    console.log(`[Trigger] Processing triggered: ${res.status}`);
+    const body = await res.text();
+    console.log(`[Trigger] Response: ${res.status} - ${body}`);
   } catch (err) {
     console.error("[Trigger] Failed to trigger processing:", err);
   }

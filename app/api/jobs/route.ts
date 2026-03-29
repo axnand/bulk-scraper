@@ -90,8 +90,11 @@ export async function POST(req: NextRequest) {
         }
 
         // 4. Kick off processing immediately via after()
+        console.log(`[Jobs] Job ${job.id} created, scheduling after() trigger...`);
         after(async () => {
+            console.log(`[Jobs] after() callback fired for job ${job.id}`);
             await triggerProcessing();
+            console.log(`[Jobs] after() callback completed for job ${job.id}`);
         });
 
         return NextResponse.json({
