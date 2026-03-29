@@ -324,11 +324,11 @@ async function processLoop(): Promise<void> {
 
       if (result.processed === 0) {
         // No accounts available — wait for them to free up
-        console.log("[Process] No accounts available, waiting 10s...");
-        await new Promise((r) => setTimeout(r, 10000));
+        console.log("[Process] No accounts available, waiting 5s...");
+        await new Promise((r) => setTimeout(r, 5000));
       } else {
         // Brief pause for rate-limit windows
-        await new Promise((r) => setTimeout(r, 5000));
+        await new Promise((r) => setTimeout(r, 1000));
       }
     } catch (error) {
       console.error("[Process] Cycle error:", error);
