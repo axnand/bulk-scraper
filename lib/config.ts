@@ -6,8 +6,8 @@ export const CONFIG = {
   DAILY_SAFE_LIMIT: 100,
 
   // Anti-detection jitter (random delay before each API call)
-  JITTER_MIN_MS: 200,
-  JITTER_MAX_MS: 800,
+  JITTER_MIN_MS: 500,
+  JITTER_MAX_MS: 1500,
 
   // Cooldown on 429 (15 minutes)
   COOLDOWN_DURATION_MS: 15 * 60 * 1000,

@@ -80,8 +80,7 @@ async function processOneTask(
     retryCount: number;
     job: { status: string; id: string };
   },
-  account: { id: string; accountId: string; dsn: string | null; apiKey: string | null },
-  jobConfig?: AnalysisConfig | null
+  account: { id: string; accountId: string; dsn: string | null; apiKey: string | null }
 ): Promise<void> {
   // Optimistic claim — only succeeds if task is still PENDING
   const claimed = await prisma.task
@@ -142,6 +141,7 @@ async function processOneTask(
     });
 
     let analysisResultJson: string | null = null;
+    const jobConfig = await getJobConfig(task.jobId);
 
     if (jobConfig?.jobDescription) {
       console.log(`[Process] Running AI analysis for task ${task.id}...`);
@@ -181,9 +181,7 @@ async function processOneTask(
               jdTitle,
               jobConfig.scoringRules
             );
-            exportToSheet(sheetUrl, payload).catch((err) =>
-              console.error(`[Process] Sheet export failed for task ${task.id}:`, err.message)
-            );
+            await exportToSheet(sheetUrl, payload);
           }
         }
       } catch (analysisErr: any) {
@@ -293,24 +291,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ message: "No pending tasks" });
     }
 
-    // 4. Pre-fetch job configs (one DB query per unique job, not per task)
-    const jobIds = [...new Set(pendingTasks.map((t) => t.jobId))];
-    const jobConfigs = new Map<string, AnalysisConfig | null>();
-    await Promise.all(
-      jobIds.map(async (jid) => {
-        const cfg = await getJobConfig(jid);
-        jobConfigs.set(jid, cfg);
-      })
-    );
-
-    // 5. Acquire accounts (one per task)
+    // 4. Acquire accounts (one per task)
     const accounts = await acquireAccounts(pendingTasks.length);
     if (accounts.length === 0) {
       console.log("[Process] No accounts available. Will retry via cron.");
       return NextResponse.json({ message: "No accounts available" });
     }
 
-    // 6. Pair tasks with accounts and process in parallel
+    // 5. Pair tasks with accounts and process in parallel
     const pairs = pendingTasks
       .slice(0, accounts.length)
       .map((task, i) => ({ task, account: accounts[i] }));
@@ -325,9 +313,7 @@ export async function POST(req: NextRequest) {
     );
 
     const results = await Promise.allSettled(
-      pairs.map(({ task, account }) =>
-        processOneTask(task, account, jobConfigs.get(task.jobId))
-      )
+      pairs.map(({ task, account }) => processOneTask(task, account))
     );
 
     const succeeded = results.filter((r) => r.status === "fulfilled").length;
@@ -342,7 +328,7 @@ export async function POST(req: NextRequest) {
       console.log(`[Process] ${remaining} tasks remaining, triggering next cycle...`);
       after(async () => {
         // Wait for minute rate-limit windows to expire before next cycle
-        await new Promise((r) => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 5000));
         await triggerProcessing();
       });
     }

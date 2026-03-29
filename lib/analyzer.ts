@@ -123,37 +123,57 @@ const RULE_POINTS: Record<string, number> = {
 // ─── LLM Rule Prompt Blocks ───────────────────────────────────────
 
 const RULE_PROMPTS: Record<string, string> = {
-  growth: `GROWTH (Max: 15) — MUTUALLY EXCLUSIVE. Full-time roles only (ignore internships/trainee/part-time).
-   Seniority ladder (low→high): Executive/Associate → Senior Executive/Specialist → Lead/Team Lead → Manager → Senior Manager → Director/AVP → VP/Head → CXO/Partner
-   - Internal promotion (up ≥1 level, SAME company) → promotionSameCompany=15, promotionWithChange=""
-   - External growth only (higher level at NEW company, no internal promotion) → promotionSameCompany="", promotionWithChange=10
-   - Both internal + external → promotionSameCompany=15, promotionWithChange=""
-   - Neither (lateral moves, no upward movement, or insufficient data) → both ""
-   Note: title variation without level change is NOT a promotion.`,
+  growth: `GROWTH (Max: 15) — MUTUALLY EXCLUSIVE. Evaluate ONLY full-time roles. IGNORE internships, trainee positions, and part-time roles entirely — they do not exist for this evaluation.
 
-  graduation: `GRADUATION (Max: 15) — MUTUALLY EXCLUSIVE — UNDERGRADUATE degree only (NOT MBA — scored separately).
-   Step 1 — Degree type: "BTech/BE" = BTech, B.Tech, BE, B.E., BS/BSc in CS or Engineering only. Everything else (BCA, BBA, BCom, BA, BSc non-CS, BMS, etc.) = "Non-BTech".
-   Step 2 — Institution tier: Tier 1 = premier national/global. Tier 2 = well-known reputable. Neither = all others.
-   Score table:
-   | Degree    | Tier 1 | Tier 2 | Neither |
-   |-----------|--------|--------|---------|
-   | BTech/BE  | gradTier1=15 | gradTier2=10 | both "" |
-   | Non-BTech | gradTier1=7  | gradTier2=5  | both "" |`,
+   USE THIS SENIORITY LADDER TO COMPARE TITLES (lowest → highest):
+   Executive/Associate → Senior Executive/Specialist → Lead/Team Lead → Manager/Assistant Manager → Senior Manager → Director/AVP → VP/Head → CXO/Partner
 
-  companyType: `COMPANY TYPE (Max: 15) — MUTUALLY EXCLUSIVE, based on CURRENT/most recent company.
-   - Product B2B CRM/SalesTech → salesCRM=15, otherB2B=""
-   - Product B2B SaaS non-CRM (cloud, infra, dev tools, data, HR tech, fintech, AI/ML, cybersecurity) → salesCRM="", otherB2B=10
-   - Service-based/IT consulting → salesCRM="", otherB2B=7
+   RULES:
+   - Internal promotion = moved UP at least one seniority level within the SAME company (e.g. "Sales Executive" → "Senior Sales Executive" at same company). A mere title variation without level change (e.g. "Sales Executive" → "Sales Executive - Key Accounts") is NOT a promotion.
+   - External growth = joined a NEW company at a HIGHER seniority level than the previous full-time role (e.g. "Senior Executive at Company A" → "Manager at Company B").
+   - Lateral move = same seniority level at a different company or different function at same level. This is NOT growth.
+
+   SCORING:
+   - Internal promotion found → promotionSameCompany=15, promotionWithChange=""
+   - Only external growth found (no internal promotion) → promotionSameCompany="", promotionWithChange=10
+   - BOTH internal AND external → promotionSameCompany=15, promotionWithChange=""
+   - NEITHER (no clear upward movement, or insufficient data) → both ""`,
+
+  graduation: `GRADUATION (Max: 15) — MUTUALLY EXCLUSIVE — Evaluate ONLY the UNDERGRADUATE degree. Do NOT use the MBA/PGDM institution here — MBA is scored separately.
+
+   YOU MUST FOLLOW THESE TWO STEPS IN ORDER:
+
+   STEP 1 — CLASSIFY THE DEGREE TYPE:
+   - "BTech/BE-equivalent" means ONLY: BTech, B.Tech, BE, B.E., BS/BSc in Computer Science or Engineering (4-year engineering/technology degrees).
+   - "Non-BTech" means ALL other undergrad degrees: BCA, BBA, BCom, BA, BSc (non-CS/non-engineering), B.Sc IT, BMS, Management, Finance, Arts, etc. These are NOT equivalent to BTech/BE even if the institution is prestigious. A Bachelor of Management is Non-BTech. A Bachelor of Commerce is Non-BTech.
+
+   STEP 2 — CLASSIFY THE INSTITUTION TIER, THEN LOOK UP SCORE:
+   Use your knowledge to classify the UNDERGRADUATE institution as Tier 1 (premier national/global institutions), Tier 2 (well-known reputable institutions), or neither. Do NOT use the MBA institution for this rule.
+
+   SCORE LOOKUP TABLE (degree type × institution tier):
+   | Degree Type  | Tier 1 Institution | Tier 2 Institution | Neither |
+   |-------------|-------------------|-------------------|---------|
+   | BTech/BE    | gradTier1=15      | gradTier2=10      | both "" |
+   | Non-BTech   | gradTier1=7       | gradTier2=5       | both "" |
+
+   IMPORTANT: Non-BTech from Tier 2 is ALWAYS 5, never 10. Only BTech/BE from Tier 2 gets 10. If the degree is BBA, BCom, BMS, Management, Finance, or anything other than BTech/BE/BS-Engineering, the maximum possible Tier 2 score is 5.`,
+
+  companyType: `COMPANY TYPE (Max: 15) — MUTUALLY EXCLUSIVE, based on CURRENT/most recent company
+   - Product B2B Retail/CRM/SalesTech company → salesCRM=15, otherB2B=""
+   - Product B2B SaaS non-CRM (cloud, infra, developer tools, data platforms, HR tech, fintech B2B, AI/ML platforms, cybersecurity, analytics) → salesCRM="", otherB2B=10
+   - Service-based/IT consulting company → salesCRM="", otherB2B=7
    - Product B2C or unrelated → both ""
-   If evidence strongly implies B2B SaaS, classify accordingly — do NOT default to 0.`,
+   Use your knowledge to classify the company. If the company name or candidate's role strongly implies a B2B SaaS product company (e.g. selling software to businesses), classify it as B2B SaaS even if you are not 100% familiar with the company. Do NOT default to 0 when there is reasonable evidence — score based on the best available classification.
+   Examples for reference only: Salesforce/HubSpot/Zoho/Freshworks = B2B SalesTech/CRM, AWS/Atlassian/Datadog/Snowflake/Darktrace/FieldAssist/LeadSquared = B2B SaaS non-CRM, TCS/Infosys/Wipro/Accenture = Service-based, Swiggy/Netflix/Zomato = B2C.`,
 
   mba: `MBA (Max: 15) — MUTUALLY EXCLUSIVE
-   - MBA/PGDM from Tier 1 (premier national/global business school) → mbaA=15, mbaOthers=""
+   - MBA/PGDM from Tier 1 institution → mbaA=15, mbaOthers=""
    - MBA/PGDM from other institution → mbaA="", mbaOthers=10
-   - No MBA/PGDM → both ""`,
+   - No MBA/PGDM → both ""
+   Use your knowledge to classify the MBA institution as Tier 1 (premier national/global business schools) or other.`,
 
-  skillMatch: `SKILLSET MATCH (Max: 10) — Extract KEY SKILLS required by JD, then check which the candidate has (from experience, skills, certifications). Compare against JD requirements, not just candidate's listed skills.
-   - >70% JD-required skills matched → 10
+  skillMatch: `SKILLSET MATCH (Max: 10) — First extract the KEY SKILLS/COMPETENCIES required by the Job Description (e.g. lead generation, CRM, B2B SaaS, ABM, sales tools, domain expertise, languages, certifications, etc.). Then check which of those JD-required skills the candidate actually possesses based on their experience, education, skills section, and certifications. Do NOT just list the candidate's own LinkedIn skills — compare candidate capabilities against what the JD asks for.
+   - >70% of JD-required skills/competencies matched → 10
    - 40-70% matched → 5
    - <40% matched → 0`,
 };
@@ -278,7 +298,7 @@ export function computeCareerStats(workExperience: any[]): CareerStats {
 
 // ─── Candidate Info Extraction (Deterministic) ────────────────────
 
-function extractCandidateInfo(profileData: any, careerStats: CareerStats): CandidateInfo {
+function extractCandidateInfo(profileData: any): CandidateInfo {
   const education = profileData.education || [];
   const experience = profileData.work_experience || [];
 
@@ -329,6 +349,8 @@ function extractCandidateInfo(profileData: any, careerStats: CareerStats): Candi
       }
     }
   }
+
+  const careerStats = computeCareerStats(experience);
 
   return {
     name: `${profileData.first_name || ""} ${profileData.last_name || ""}`.trim(),
@@ -499,66 +521,128 @@ Be strict and evidence-based. Do NOT assume missing data. Do NOT give benefit of
   return prompt;
 }
 
-function buildUserPrompt(profileData: any, jobDescription: string, candidateInfo: CandidateInfo, careerStats: CareerStats): string {
-  let prompt = `JOB DESCRIPTION:\n${jobDescription}\n\nCANDIDATE PROFILE:\n`;
+function buildUserPrompt(profileData: any, jobDescription: string, candidateInfo: CandidateInfo): string {
+  const jd = parseJobDescription(jobDescription);
 
-  const profile: any = {
-    name: `${profileData.first_name || ""} ${profileData.last_name || ""}`.trim(),
-    headline: profileData.headline || "",
-    location: profileData.location || "",
-    totalExperience: `${careerStats.totalExperienceYears} years`,
-    companies: careerStats.distinctCompanyCount,
-  };
+  let prompt = `## Job Description\n`;
+  const meta: string[] = [];
+  if (jd.role) meta.push(`**Role:** ${jd.role}`);
+  if (jd.experienceRange) meta.push(`**Required Experience:** ${jd.experienceRange}`);
+  if (jd.location) meta.push(`**Location:** ${jd.location}`);
+  if (jd.education) meta.push(`**Education:** ${jd.education}`);
+  if (jd.industry) meta.push(`**Industry:** ${jd.industry}`);
+  if (jd.functionalArea) meta.push(`**Functional Area:** ${jd.functionalArea}`);
 
-  if (profileData.summary) {
-    profile.summary = profileData.summary;
+  if (meta.length) {
+    prompt += `### Key Requirements (extracted)\n${meta.join("\n")}\n\n`;
+    prompt += `### Full JD Text\n${jobDescription}\n\n`;
+  } else {
+    prompt += `${jobDescription}\n\n`;
   }
 
-  // Experience: only fields the LLM needs for scoring
-  const experience = (profileData.work_experience || []).map((exp: any) => {
-    const entry: any = {
-      company: exp.company || "Unknown",
-      position: exp.position || "Unknown",
-      start: exp.start || null,
-      end: exp.end || null,
-    };
-    if (exp.description) entry.description = exp.description.substring(0, 150);
-    return entry;
-  });
-  if (experience.length) profile.experience = experience;
+  prompt += `## Candidate Profile\n\n`;
+  prompt += `**Name:** ${profileData.first_name || ""} ${profileData.last_name || ""}\n`;
+  prompt += `**Headline:** ${profileData.headline || "N/A"}\n`;
+  prompt += `**Location:** ${profileData.location || "N/A"}\n`;
 
-  // Education: only school, degree, dates
-  const education = (profileData.education || []).map((edu: any) => {
-    const entry: any = {
-      school: edu.school || "Unknown",
-      degree: edu.degree || "N/A",
-    };
-    if (edu.field) entry.field = edu.field;
-    if (edu.start) entry.start = edu.start;
-    if (edu.end) entry.end = edu.end;
-    return entry;
-  });
-  if (education.length) profile.education = education;
+  const careerStats = computeCareerStats(profileData.work_experience || []);
+  prompt += `**Total Experience:** ${careerStats.totalExperienceYears} years | **Companies:** ${careerStats.distinctCompanyCount}\n\n`;
 
-  // Pre-extracted education details
-  if (candidateInfo.btech) profile.btech = candidateInfo.btech;
-  if (candidateInfo.graduation) profile.gradDegree = candidateInfo.graduation;
-  if (candidateInfo.mba) profile.mba = candidateInfo.mba;
-  if (candidateInfo.graduationYear) profile.graduationYear = candidateInfo.graduationYear;
+  // About / Summary
+  if (profileData.summary) {
+    prompt += `### About\n${profileData.summary}\n\n`;
+  }
 
-  // Skills: just names
-  const skills = (profileData.skills || [])
-    .map((s: any) => (typeof s === "string" ? s : s.name))
-    .filter(Boolean);
-  if (skills.length) profile.skills = skills;
+  // Experience (grouped by company to make promotions obvious)
+  prompt += `### Experience\n`;
+  const experience = profileData.work_experience || [];
+  if (experience.length) {
+    // Group consecutive roles at the same company
+    const groups: { company: string; roles: any[] }[] = [];
+    let current: { company: string; roles: any[] } | null = null;
+    for (const exp of experience) {
+      const company = (exp.company || "Unknown").trim();
+      if (current && current.company === company) {
+        current.roles.push(exp);
+      } else {
+        current = { company, roles: [exp] };
+        groups.push(current);
+      }
+    }
 
-  // Certifications: just name + org
-  const certs = (profileData.certifications || [])
-    .map((c: any) => (typeof c === "string" ? c : `${c.name}${c.organization ? ` (${c.organization})` : ""}`))
-    .filter(Boolean);
-  if (certs.length) profile.certifications = certs;
+    let idx = 1;
+    for (const g of groups) {
+      if (g.roles.length > 1) {
+        prompt += `**${g.company}** (${g.roles.length} roles — check for internal promotion):\n`;
+        for (const exp of g.roles) {
+          const duration = exp.start
+            ? `${exp.start} – ${exp.end || "Present"}`
+            : "N/A";
+          prompt += `  ${idx}. ${exp.position || "Unknown"} (${duration})\n`;
+          if (exp.description) prompt += `     ${exp.description.substring(0, 200)}\n`;
+          idx++;
+        }
+      } else {
+        const exp = g.roles[0];
+        const duration = exp.start
+          ? `${exp.start} – ${exp.end || "Present"}`
+          : "N/A";
+        prompt += `${idx}. **${exp.position || "Unknown"}** at **${g.company}** (${duration})\n`;
+        if (exp.description) prompt += `   ${exp.description.substring(0, 200)}\n`;
+        idx++;
+      }
+    }
+    prompt += "\n";
+  } else {
+    prompt += "Not available — check raw data below.\n\n";
+  }
 
-  prompt += JSON.stringify(profile, null, 1);
+  // Education
+  prompt += `### Education\n`;
+  const education = profileData.education || [];
+  if (education.length) {
+    education.forEach((edu: any, i: number) => {
+      prompt += `${i + 1}. **${edu.school || "Unknown"}**\n`;
+      prompt += `   Degree: ${edu.degree || "N/A"}\n`;
+      if (edu.field) prompt += `   Field: ${edu.field}\n`;
+      if (edu.start || edu.end) prompt += `   Years: ${edu.start || "?"} – ${edu.end || "Present"}\n`;
+      prompt += "\n";
+    });
+  } else {
+    prompt += "Not available — check raw data below.\n\n";
+  }
+
+  // Pre-extracted education info
+  if (candidateInfo) {
+    const eduNotes: string[] = [];
+    if (candidateInfo.btech) eduNotes.push(`BTech/BE: ${candidateInfo.btech}`);
+    if (candidateInfo.graduation) eduNotes.push(`Graduation: ${candidateInfo.graduation}`);
+    if (candidateInfo.mba) eduNotes.push(`MBA: ${candidateInfo.mba}`);
+    if (candidateInfo.graduationYear) eduNotes.push(`Graduation Year: ${candidateInfo.graduationYear}`);
+    if (eduNotes.length) {
+      prompt += `### Pre-extracted Education Details\n${eduNotes.join("\n")}\n\n`;
+    }
+  }
+
+  // Skills
+  prompt += `### Skills\n`;
+  const skills = profileData.skills || [];
+  if (skills.length) {
+    const skillNames = skills.map((s: any) => (typeof s === "string" ? s : s.name)).filter(Boolean);
+    prompt += skillNames.join(", ") + "\n\n";
+  } else {
+    prompt += "Not available — check raw data below.\n\n";
+  }
+
+  // Certifications (compact — useful for qualitative)
+  const certifications = profileData.certifications || [];
+  if (certifications.length) {
+    const certNames = certifications
+      .map((c: any) => (typeof c === "string" ? c : `${c.name}${c.organization ? ` (${c.organization})` : ""}`))
+      .filter(Boolean);
+    prompt += `### Certifications\n${certNames.join(", ")}\n\n`;
+  }
+
   return prompt;
 }
 
@@ -576,8 +660,8 @@ export async function analyzeProfile(
   const customRules: CustomScoringRule[] = config.customScoringRules || [];
 
   // ── Pass 1: Deterministic pre-extraction ──
+  const candidateInfo = extractCandidateInfo(profileData);
   const careerStats = computeCareerStats(profileData.work_experience || []);
-  const candidateInfo = extractCandidateInfo(profileData, careerStats);
 
   const stabilityScore =
     (rules.stability !== false && careerStats) ? careerStats.stabilityScore : "";
@@ -608,7 +692,7 @@ export async function analyzeProfile(
 
   // ── Pass 2: LLM evaluation ──
   const systemPrompt = buildSystemPrompt(rules, customRules, config.customPrompt);
-  const userPrompt = buildUserPrompt(profileData, config.jobDescription, candidateInfo, careerStats);
+  const userPrompt = buildUserPrompt(profileData, config.jobDescription, candidateInfo);
   const model = config.aiModel || "gpt-4.1";
 
   console.log(`[Analyzer] Calling OpenAI (${model}), prompt: ${userPrompt.length} chars`);
@@ -627,7 +711,6 @@ export async function analyzeProfile(
       ],
       temperature: 0.1,
       max_tokens: 2000,
-      response_format: { type: "json_object" },
     }),
   });
 
@@ -647,16 +730,11 @@ export async function analyzeProfile(
 
   let llmResult: any;
   try {
-    llmResult = JSON.parse(content);
+    const cleaned = content.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?\s*```$/i, "").trim();
+    llmResult = JSON.parse(cleaned);
   } catch {
-    // Fallback: try cleaning markdown fences in case response_format was ignored
-    try {
-      const cleaned = content.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?\s*```$/i, "").trim();
-      llmResult = JSON.parse(cleaned);
-    } catch {
-      console.error("[Analyzer] Failed to parse AI response:", content);
-      throw new Error("AI returned invalid JSON. Please retry.");
-    }
+    console.error("[Analyzer] Failed to parse AI response:", content);
+    throw new Error("AI returned invalid JSON. Please retry.");
   }
 
   // ── Pass 3: Merge deterministic + LLM ──
