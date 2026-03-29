@@ -7,43 +7,57 @@ type JobStatus = "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "CANCELLED"
 
 // Scoring criteria descriptions matching LinkedIn scraper popup
 const SCORING_RULE_DEFS = [
-  { key: 'stability', label: 'Stability', max: 10, tiers: [
-    { score: 10, color: 'text-emerald-400', text: 'Avg tenure > 2.5 years' },
-    { score: 7, color: 'text-amber-400', text: 'Avg tenure 1.5 – 2.5 years' },
-    { score: 0, color: 'text-rose-400', text: 'Avg tenure < 1.5 years' },
-  ]},
-  { key: 'growth', label: 'Growth', max: 15, tiers: [
-    { score: 15, color: 'text-emerald-400', text: 'Internal promotion (higher role, same company)' },
-    { score: 10, color: 'text-amber-400', text: 'External growth (higher role, new company)' },
-    { score: 0, color: 'text-rose-400', text: 'No upward career movement detected' },
-  ]},
-  { key: 'graduation', label: 'Graduation', max: 15, tiers: [
-    { score: 15, color: 'text-emerald-400', text: 'BTech/BE from Tier 1 institution' },
-    { score: 10, color: 'text-amber-400', text: 'BTech/BE from Tier 2 institution' },
-    { score: 7, color: 'text-amber-400', text: 'Non-BTech from Tier 1 institution' },
-    { score: 5, color: 'text-amber-400', text: 'Non-BTech from Tier 2 institution' },
-    { score: 0, color: 'text-rose-400', text: 'Unranked institution or no degree info' },
-  ]},
-  { key: 'companyType', label: 'Company Type', max: 15, tiers: [
-    { score: 15, color: 'text-emerald-400', text: 'B2B Sales/CRM/SalesTech product company' },
-    { score: 10, color: 'text-amber-400', text: 'B2B SaaS non-CRM (cloud, infra, HR tech, etc.)' },
-    { score: 7, color: 'text-amber-400', text: 'Service-based / IT consulting company' },
-    { score: 0, color: 'text-rose-400', text: 'B2C or unrelated company' },
-  ]},
-  { key: 'mba', label: 'MBA', max: 15, tiers: [
-    { score: 15, color: 'text-emerald-400', text: 'MBA/PGDM from Tier 1 institution' },
-    { score: 10, color: 'text-amber-400', text: 'MBA/PGDM from other institution' },
-    { score: 0, color: 'text-rose-400', text: 'No MBA/PGDM' },
-  ]},
-  { key: 'skillMatch', label: 'Skill Match', max: 10, tiers: [
-    { score: 10, color: 'text-emerald-400', text: '>70% of JD-required skills matched' },
-    { score: 5, color: 'text-amber-400', text: '40–70% of JD-required skills matched' },
-    { score: 0, color: 'text-rose-400', text: '<40% of JD-required skills matched' },
-  ]},
-  { key: 'location', label: 'Location', max: 5, tiers: [
-    { score: 5, color: 'text-emerald-400', text: 'Candidate location matches JD location' },
-    { score: 0, color: 'text-rose-400', text: 'Location does not match' },
-  ]},
+  {
+    key: 'stability', label: 'Stability', max: 10, tiers: [
+      { score: 10, color: 'text-emerald-400', text: 'Avg tenure > 2.5 years' },
+      { score: 7, color: 'text-amber-400', text: 'Avg tenure 1.5 – 2.5 years' },
+      { score: 0, color: 'text-rose-400', text: 'Avg tenure < 1.5 years' },
+    ]
+  },
+  {
+    key: 'growth', label: 'Growth', max: 15, tiers: [
+      { score: 15, color: 'text-emerald-400', text: 'Internal promotion (higher role, same company)' },
+      { score: 10, color: 'text-amber-400', text: 'External growth (higher role, new company)' },
+      { score: 0, color: 'text-rose-400', text: 'No upward career movement detected' },
+    ]
+  },
+  {
+    key: 'graduation', label: 'Graduation', max: 15, tiers: [
+      { score: 15, color: 'text-emerald-400', text: 'BTech/BE from Tier 1 institution' },
+      { score: 10, color: 'text-amber-400', text: 'BTech/BE from Tier 2 institution' },
+      { score: 7, color: 'text-amber-400', text: 'Non-BTech from Tier 1 institution' },
+      { score: 5, color: 'text-amber-400', text: 'Non-BTech from Tier 2 institution' },
+      { score: 0, color: 'text-rose-400', text: 'Unranked institution or no degree info' },
+    ]
+  },
+  {
+    key: 'companyType', label: 'Company Type', max: 15, tiers: [
+      { score: 15, color: 'text-emerald-400', text: 'B2B Sales/CRM/SalesTech product company' },
+      { score: 10, color: 'text-amber-400', text: 'B2B SaaS non-CRM (cloud, infra, HR tech, etc.)' },
+      { score: 7, color: 'text-amber-400', text: 'Service-based / IT consulting company' },
+      { score: 0, color: 'text-rose-400', text: 'B2C or unrelated company' },
+    ]
+  },
+  {
+    key: 'mba', label: 'MBA', max: 15, tiers: [
+      { score: 15, color: 'text-emerald-400', text: 'MBA/PGDM from Tier 1 institution' },
+      { score: 10, color: 'text-amber-400', text: 'MBA/PGDM from other institution' },
+      { score: 0, color: 'text-rose-400', text: 'No MBA/PGDM' },
+    ]
+  },
+  {
+    key: 'skillMatch', label: 'Skill Match', max: 10, tiers: [
+      { score: 10, color: 'text-emerald-400', text: '>70% of JD-required skills matched' },
+      { score: 5, color: 'text-amber-400', text: '40–70% of JD-required skills matched' },
+      { score: 0, color: 'text-rose-400', text: '<40% of JD-required skills matched' },
+    ]
+  },
+  {
+    key: 'location', label: 'Location', max: 5, tiers: [
+      { score: 5, color: 'text-emerald-400', text: 'Candidate location matches JD location' },
+      { score: 0, color: 'text-rose-400', text: 'Location does not match' },
+    ]
+  },
 ];
 
 interface JdTemplate {
@@ -157,6 +171,17 @@ export default function Home() {
   useEffect(() => {
     fetchHistory();
   }, [jobId]);
+
+  // Poll job history if any jobs are active
+  useEffect(() => {
+    const hasActiveJobs = history.some(
+      (job) => job.status === "PENDING" || job.status === "PROCESSING"
+    );
+    if (!hasActiveJobs) return;
+
+    const interval = setInterval(fetchHistory, 3000);
+    return () => clearInterval(interval);
+  }, [history]);
 
   // Load templates and settings from DB on mount
   useEffect(() => {
@@ -395,7 +420,7 @@ export default function Home() {
       <header className="space-y-2">
         <div className="flex items-center justify-between">
           <h1 className="text-4xl font-bold tracking-tight text-white">
-            Candidate Profile Evaluator
+            Bulk Profile Evaluator
           </h1>
           <Link
             href="/accounts"
@@ -408,7 +433,7 @@ export default function Home() {
           </Link>
         </div>
         <p className="text-neutral-400">
-          Smart, automated evaluation and scoring of candidate LinkedIn profiles.
+          Automated evaluation and scoring of candidate LinkedIn profiles.
         </p>
       </header>
 
@@ -479,11 +504,10 @@ export default function Home() {
                       return (
                         <div
                           key={tpl.id}
-                          className={`group relative rounded-lg border p-3 cursor-pointer transition-all ${
-                            isActive
+                          className={`group relative rounded-lg border p-3 cursor-pointer transition-all ${isActive
                               ? 'bg-indigo-500/10 border-indigo-500/40 ring-1 ring-indigo-500/20'
                               : 'bg-neutral-900/40 border-neutral-700/50 hover:border-neutral-600 hover:bg-neutral-800/40'
-                          }`}
+                            }`}
                           onClick={() => loadJdTemplate(tpl)}
                         >
                           <div className="flex items-start justify-between gap-2">
@@ -550,11 +574,10 @@ export default function Home() {
                       onChange={(e) => setJobDescription(e.target.value)}
                       readOnly={!!(selectedJdTemplateId && !editingJdTemplate && !showNewJdForm)}
                       placeholder="Paste the Job Description here for AI scoring..."
-                      className={`w-full resize-none rounded-lg border p-3 text-sm text-neutral-200 placeholder:text-neutral-600 focus:outline-none transition-colors ${
-                        selectedJdTemplateId && !editingJdTemplate && !showNewJdForm
+                      className={`w-full resize-none rounded-lg border p-3 text-sm text-neutral-200 placeholder:text-neutral-600 focus:outline-none transition-colors ${selectedJdTemplateId && !editingJdTemplate && !showNewJdForm
                           ? 'bg-neutral-950/30 border-neutral-800 cursor-default'
                           : 'bg-neutral-900/50 border-neutral-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500'
-                      }`}
+                        }`}
                     />
                     <div className="flex items-center justify-between">
                       <p className="text-[11px] text-neutral-500">Profiles will be scored against this JD using an 85-point rubric.</p>
@@ -625,11 +648,10 @@ export default function Home() {
                     return (
                       <div
                         key={tpl.id}
-                        className={`group relative rounded-lg border p-3 cursor-pointer transition-all ${
-                          isActive
+                        className={`group relative rounded-lg border p-3 cursor-pointer transition-all ${isActive
                             ? 'bg-violet-500/10 border-violet-500/40 ring-1 ring-violet-500/20'
                             : 'bg-neutral-900/40 border-neutral-700/50 hover:border-neutral-600 hover:bg-neutral-800/40'
-                        }`}
+                          }`}
                         onClick={() => loadPromptTemplate(tpl)}
                       >
                         <div className="flex items-start justify-between gap-2">
@@ -694,11 +716,10 @@ export default function Home() {
                       onChange={(e) => setCustomPrompt(e.target.value)}
                       readOnly={!!(selectedPromptTemplateId && !editingPromptTemplate && !showNewPromptForm)}
                       placeholder="E.g., Prioritize candidates with B2B SaaS sales experience..."
-                      className={`w-full resize-none rounded-lg border p-3 text-sm text-neutral-200 placeholder:text-neutral-600 focus:outline-none transition-colors ${
-                        selectedPromptTemplateId && !editingPromptTemplate && !showNewPromptForm
+                      className={`w-full resize-none rounded-lg border p-3 text-sm text-neutral-200 placeholder:text-neutral-600 focus:outline-none transition-colors ${selectedPromptTemplateId && !editingPromptTemplate && !showNewPromptForm
                           ? 'bg-neutral-950/30 border-neutral-800 cursor-default'
                           : 'bg-neutral-900/50 border-neutral-700 focus:border-violet-500 focus:ring-1 focus:ring-violet-500'
-                      }`}
+                        }`}
                     />
                     <div className="flex items-center justify-end gap-2">
                       {editingPromptTemplate && selectedPromptTemplateId && !(promptTemplates.find(t => t.id === selectedPromptTemplateId) as any)?.isDefault && (
@@ -815,13 +836,11 @@ export default function Home() {
                             onClick={() => setCustomScoringRules(prev =>
                               prev.map(r => r.id === rule.id ? { ...r, enabled: !r.enabled } : r)
                             )}
-                            className={`w-8 h-5 rounded-full transition-colors shrink-0 ${
-                              rule.enabled ? 'bg-emerald-500' : 'bg-neutral-600'
-                            }`}
+                            className={`w-8 h-5 rounded-full transition-colors shrink-0 ${rule.enabled ? 'bg-emerald-500' : 'bg-neutral-600'
+                              }`}
                           >
-                            <div className={`w-4 h-4 rounded-full bg-white transform transition-transform ${
-                              rule.enabled ? 'translate-x-3.5' : 'translate-x-0.5'
-                            }`} />
+                            <div className={`w-4 h-4 rounded-full bg-white transform transition-transform ${rule.enabled ? 'translate-x-3.5' : 'translate-x-0.5'
+                              }`} />
                           </button>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
@@ -1077,9 +1096,9 @@ export default function Home() {
 
         {!initialFetchDone ? (
           <div className="space-y-2 animate-pulse">
-             {[...Array(3)].map((_, i) => (
-                <div key={i} className="h-16 bg-neutral-800/50 rounded-xl w-full"></div>
-             ))}
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="h-16 bg-neutral-800/50 rounded-xl w-full"></div>
+            ))}
           </div>
         ) : history.length === 0 ? (
           <div className="glassmorphism rounded-2xl p-6 text-center">
@@ -1095,15 +1114,14 @@ export default function Home() {
               >
                 {/* Status dot */}
                 <div
-                  className={`h-2.5 w-2.5 rounded-full shrink-0 ${
-                    job.status === "COMPLETED"
+                  className={`h-2.5 w-2.5 rounded-full shrink-0 ${job.status === "COMPLETED"
                       ? "bg-emerald-400"
                       : job.status === "PROCESSING" || job.status === "PENDING"
                         ? "bg-amber-400 animate-pulse"
                         : job.status === "CANCELLED"
                           ? "bg-neutral-400"
                           : "bg-rose-400"
-                  }`}
+                    }`}
                 />
 
                 {/* Info */}
@@ -1119,14 +1137,13 @@ export default function Home() {
                 {/* Progress */}
                 <div className="text-right shrink-0">
                   <span
-                    className={`text-xs font-medium px-2 py-0.5 rounded border ${
-                      statusColors[job.status] || "bg-neutral-500/20 text-neutral-400 border-neutral-500/30"
-                    }`}
+                    className={`text-xs font-medium px-2 py-0.5 rounded border ${statusColors[job.status] || "bg-neutral-500/20 text-neutral-400 border-neutral-500/30"
+                      }`}
                   >
                     {job.status}
                   </span>
                   <p className="text-xs text-neutral-500 mt-1">
-                    {job.successCount}/{job.totalTasks} done
+                    {job.processedCount}/{job.totalTasks} processed
                   </p>
                 </div>
 
