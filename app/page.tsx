@@ -106,9 +106,7 @@ export default function Home() {
   const [jdTemplateName, setJdTemplateName] = useState("");
 
   // Custom Prompt template library state
-  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([
-    { id: "__default__", title: "Standard Evaluation", content: "Evaluate the candidate across: Job fit, education tier, graduation year, total experience, average tenure per company, and job switching frequency. Be precise and data-driven. Flag any concerns like frequent job hops, career gaps, or skill mismatches." },
-  ]);
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
   const [promptTemplateName, setPromptTemplateName] = useState("");
 
   // Template selection & editing state
@@ -160,41 +158,37 @@ export default function Home() {
     fetchHistory();
   }, [jobId]);
 
-  // Load templates from localStorage on mount
+  // Load templates and settings from DB on mount
   useEffect(() => {
-    try {
-      const savedJdTemplates = localStorage.getItem("bulk-scraper-jd-templates");
-      if (savedJdTemplates) setJdTemplates(JSON.parse(savedJdTemplates));
-      const savedPromptTemplates = localStorage.getItem("bulk-scraper-prompt-templates");
-      if (savedPromptTemplates) {
-        const parsed = JSON.parse(savedPromptTemplates);
-        // Ensure default prompt exists
-        if (!parsed.find((p: PromptTemplate) => p.id === "__default__")) {
-          parsed.unshift({ id: "__default__", title: "Standard Evaluation", content: "Evaluate the candidate across: Job fit, education tier, graduation year, total experience, average tenure per company, and job switching frequency. Be precise and data-driven. Flag any concerns like frequent job hops, career gaps, or skill mismatches." });
+    async function loadConfig() {
+      try {
+        const [jdRes, promptRes, settingsRes] = await Promise.all([
+          fetch("/api/jd-templates"),
+          fetch("/api/prompt-templates"),
+          fetch("/api/settings"),
+        ]);
+        if (jdRes.ok) setJdTemplates(await jdRes.json());
+        if (promptRes.ok) setPromptTemplates(await promptRes.json());
+        if (settingsRes.ok) {
+          const s = await settingsRes.json();
+          if (s.aiModel) setAiModel(s.aiModel);
+          if (s.sheetWebAppUrl) setSheetWebAppUrl(s.sheetWebAppUrl);
+          if (s.minScoreThreshold != null) setMinScoreThreshold(s.minScoreThreshold);
         }
-        setPromptTemplates(parsed);
-      }
-      const savedSettings = localStorage.getItem("bulk-scraper-settings");
-      if (savedSettings) {
-        const s = JSON.parse(savedSettings);
-        if (s.aiModel) setAiModel(s.aiModel);
-        if (s.sheetWebAppUrl) setSheetWebAppUrl(s.sheetWebAppUrl);
-        if (s.minScoreThreshold != null) setMinScoreThreshold(s.minScoreThreshold);
-      }
-    } catch { /* ignore parse errors */ }
+      } catch { /* silently fail */ }
+    }
+    loadConfig();
   }, []);
 
-  // Save templates to localStorage on change
-  function saveJdTemplates(templates: JdTemplate[]) {
-    setJdTemplates(templates);
-    localStorage.setItem("bulk-scraper-jd-templates", JSON.stringify(templates));
-  }
-  function savePromptTemplates(templates: PromptTemplate[]) {
-    setPromptTemplates(templates);
-    localStorage.setItem("bulk-scraper-prompt-templates", JSON.stringify(templates));
-  }
-  function saveSettingsToStorage() {
-    localStorage.setItem("bulk-scraper-settings", JSON.stringify({ aiModel, sheetWebAppUrl, minScoreThreshold }));
+  // Save settings to DB
+  async function saveSettingsToStorage() {
+    try {
+      await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aiModel, sheetWebAppUrl, minScoreThreshold }),
+      });
+    } catch { /* silently fail */ }
   }
 
   // Load a JD template into the form
@@ -208,40 +202,59 @@ export default function Home() {
   }
 
   // Save current form state as a new JD template
-  function saveCurrentAsJdTemplate() {
+  async function saveCurrentAsJdTemplate() {
     if (!jdTemplateName.trim() || !jobDescription.trim()) return;
-    const newTemplate: JdTemplate = {
-      id: `jd_${Date.now()}`,
-      title: jdTemplateName,
-      content: jobDescription,
-      scoringRules: { ...scoringRules },
-      customScoringRules: [...customScoringRules],
-    };
-    saveJdTemplates([...jdTemplates, newTemplate]);
-    setJdTemplateName("");
-    setSelectedJdTemplateId(newTemplate.id);
-    setShowNewJdForm(false);
-    setEditingJdTemplate(false);
+    try {
+      const res = await fetch("/api/jd-templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: jdTemplateName,
+          content: jobDescription,
+          scoringRules: { ...scoringRules },
+          customScoringRules: [...customScoringRules],
+        }),
+      });
+      if (!res.ok) return;
+      const newTemplate = await res.json();
+      setJdTemplates([newTemplate, ...jdTemplates]);
+      setJdTemplateName("");
+      setSelectedJdTemplateId(newTemplate.id);
+      setShowNewJdForm(false);
+      setEditingJdTemplate(false);
+    } catch { /* silently fail */ }
   }
 
   // Update an existing JD template in-place
-  function updateJdTemplate(id: string) {
-    saveJdTemplates(jdTemplates.map(t => t.id === id ? {
-      ...t,
-      content: jobDescription,
-      scoringRules: { ...scoringRules },
-      customScoringRules: [...customScoringRules],
-    } : t));
-    setEditingJdTemplate(false);
+  async function updateJdTemplate(id: string) {
+    try {
+      const res = await fetch(`/api/jd-templates/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: jobDescription,
+          scoringRules: { ...scoringRules },
+          customScoringRules: [...customScoringRules],
+        }),
+      });
+      if (!res.ok) return;
+      const updated = await res.json();
+      setJdTemplates(jdTemplates.map(t => t.id === id ? updated : t));
+      setEditingJdTemplate(false);
+    } catch { /* silently fail */ }
   }
 
   // Delete a JD template
-  function deleteJdTemplate(id: string) {
-    saveJdTemplates(jdTemplates.filter(t => t.id !== id));
-    if (selectedJdTemplateId === id) {
-      setSelectedJdTemplateId(null);
-      setEditingJdTemplate(false);
-    }
+  async function deleteJdTemplate(id: string) {
+    try {
+      const res = await fetch(`/api/jd-templates/${id}`, { method: "DELETE" });
+      if (!res.ok) return;
+      setJdTemplates(jdTemplates.filter(t => t.id !== id));
+      if (selectedJdTemplateId === id) {
+        setSelectedJdTemplateId(null);
+        setEditingJdTemplate(false);
+      }
+    } catch { /* silently fail */ }
   }
 
   // Load a prompt template
@@ -253,35 +266,54 @@ export default function Home() {
   }
 
   // Save current prompt as a new template
-  function saveCurrentAsPromptTemplate() {
+  async function saveCurrentAsPromptTemplate() {
     if (!promptTemplateName.trim() || !customPrompt.trim()) return;
-    const newTemplate: PromptTemplate = {
-      id: `prompt_${Date.now()}`,
-      title: promptTemplateName,
-      content: customPrompt,
-    };
-    savePromptTemplates([...promptTemplates, newTemplate]);
-    setPromptTemplateName("");
-    setSelectedPromptTemplateId(newTemplate.id);
-    setShowNewPromptForm(false);
-    setEditingPromptTemplate(false);
+    try {
+      const res = await fetch("/api/prompt-templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: promptTemplateName, content: customPrompt }),
+      });
+      if (!res.ok) return;
+      const newTemplate = await res.json();
+      setPromptTemplates([newTemplate, ...promptTemplates]);
+      setPromptTemplateName("");
+      setSelectedPromptTemplateId(newTemplate.id);
+      setShowNewPromptForm(false);
+      setEditingPromptTemplate(false);
+    } catch { /* silently fail */ }
   }
 
   // Update an existing prompt template in-place
-  function updatePromptTemplate(id: string) {
-    if (id === "__default__") return;
-    savePromptTemplates(promptTemplates.map(t => t.id === id ? { ...t, content: customPrompt } : t));
-    setEditingPromptTemplate(false);
+  async function updatePromptTemplate(id: string) {
+    const template = promptTemplates.find(t => t.id === id);
+    if ((template as any)?.isDefault) return;
+    try {
+      const res = await fetch(`/api/prompt-templates/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: customPrompt }),
+      });
+      if (!res.ok) return;
+      const updated = await res.json();
+      setPromptTemplates(promptTemplates.map(t => t.id === id ? updated : t));
+      setEditingPromptTemplate(false);
+    } catch { /* silently fail */ }
   }
 
   // Delete a prompt template
-  function deletePromptTemplate(id: string) {
-    if (id === "__default__") return;
-    savePromptTemplates(promptTemplates.filter(t => t.id !== id));
-    if (selectedPromptTemplateId === id) {
-      setSelectedPromptTemplateId(null);
-      setEditingPromptTemplate(false);
-    }
+  async function deletePromptTemplate(id: string) {
+    const template = promptTemplates.find(t => t.id === id);
+    if ((template as any)?.isDefault) return;
+    try {
+      const res = await fetch(`/api/prompt-templates/${id}`, { method: "DELETE" });
+      if (!res.ok) return;
+      setPromptTemplates(promptTemplates.filter(t => t.id !== id));
+      if (selectedPromptTemplateId === id) {
+        setSelectedPromptTemplateId(null);
+        setEditingPromptTemplate(false);
+      }
+    } catch { /* silently fail */ }
   }
 
   async function fetchHistory() {
@@ -306,7 +338,7 @@ export default function Home() {
     setInvalidUrls([]);
     setJobData(null);
 
-    // Persist settings to localStorage
+    // Persist settings to DB
     saveSettingsToStorage();
 
     try {
@@ -589,7 +621,7 @@ export default function Home() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {promptTemplates.map(tpl => {
                     const isActive = selectedPromptTemplateId === tpl.id;
-                    const isDefault = tpl.id === "__default__";
+                    const isDefault = !!(tpl as any).isDefault;
                     return (
                       <div
                         key={tpl.id}
@@ -646,7 +678,7 @@ export default function Home() {
                       <span className="text-xs font-medium text-neutral-400">
                         {showNewPromptForm ? '✎ New Prompt' : editingPromptTemplate ? '✎ Editing Prompt' : '💬 Prompt Content'}
                       </span>
-                      {selectedPromptTemplateId && selectedPromptTemplateId !== "__default__" && !showNewPromptForm && (
+                      {selectedPromptTemplateId && !(promptTemplates.find(t => t.id === selectedPromptTemplateId) as any)?.isDefault && !showNewPromptForm && (
                         <button
                           type="button"
                           onClick={() => setEditingPromptTemplate(!editingPromptTemplate)}
@@ -669,7 +701,7 @@ export default function Home() {
                       }`}
                     />
                     <div className="flex items-center justify-end gap-2">
-                      {editingPromptTemplate && selectedPromptTemplateId && selectedPromptTemplateId !== "__default__" && (
+                      {editingPromptTemplate && selectedPromptTemplateId && !(promptTemplates.find(t => t.id === selectedPromptTemplateId) as any)?.isDefault && (
                         <button
                           type="button"
                           onClick={() => updatePromptTemplate(selectedPromptTemplateId)}
