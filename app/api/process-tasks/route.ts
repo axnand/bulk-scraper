@@ -18,7 +18,6 @@ import {
 } from "@/lib/services/unipile.service";
 import { analyzeProfile, type AnalysisConfig } from "@/lib/analyzer";
 import { exportToSheet, buildSheetPayload } from "@/lib/sheets";
-import { triggerProcessing } from "@/lib/trigger";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -257,10 +256,98 @@ async function processOneTask(
   }
 }
 
+// ─── Processing Loop (runs inside after(), no HTTP self-calls) ──────
+
+async function runProcessingCycle(): Promise<{
+  processed: number;
+  succeeded: number;
+  failed: number;
+  remaining: number;
+}> {
+  await recoverStaleState();
+
+  const concurrency = await getWorkerConcurrency();
+
+  const pendingTasks = await prisma.task.findMany({
+    where: { status: "PENDING" },
+    orderBy: [{ retryCount: "asc" }, { createdAt: "asc" }],
+    take: concurrency,
+    include: { job: { select: { status: true, id: true } } },
+  });
+
+  if (pendingTasks.length === 0) {
+    return { processed: 0, succeeded: 0, failed: 0, remaining: 0 };
+  }
+
+  const accounts = await acquireAccounts(pendingTasks.length);
+  if (accounts.length === 0) {
+    const remaining = await prisma.task.count({ where: { status: "PENDING" } });
+    return { processed: 0, succeeded: 0, failed: 0, remaining };
+  }
+
+  const pairs = pendingTasks
+    .slice(0, accounts.length)
+    .map((task, i) => ({ task, account: accounts[i] }));
+
+  for (let i = pairs.length; i < accounts.length; i++) {
+    await releaseAccount(accounts[i].id, false);
+  }
+
+  console.log(`[Process] Processing ${pairs.length} tasks in parallel...`);
+
+  const results = await Promise.allSettled(
+    pairs.map(({ task, account }) => processOneTask(task, account))
+  );
+
+  const succeeded = results.filter((r) => r.status === "fulfilled").length;
+  const failed = results.filter((r) => r.status === "rejected").length;
+  const remaining = await prisma.task.count({ where: { status: "PENDING" } });
+
+  return { processed: pairs.length, succeeded, failed, remaining };
+}
+
+async function processLoop(): Promise<void> {
+  const startTime = Date.now();
+  const MAX_LOOP_MS = 50000; // Stay under Vercel's 60s limit
+
+  while (Date.now() - startTime < MAX_LOOP_MS) {
+    try {
+      const result = await runProcessingCycle();
+      console.log(
+        `[Process] Cycle done: ${result.processed} processed, ${result.remaining} remaining`
+      );
+
+      if (result.remaining === 0) {
+        console.log("[Process] All tasks done.");
+        return;
+      }
+
+      if (result.processed === 0) {
+        // No accounts available — wait for them to free up
+        console.log("[Process] No accounts available, waiting 10s...");
+        await new Promise((r) => setTimeout(r, 10000));
+      } else {
+        // Brief pause for rate-limit windows
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+    } catch (error) {
+      console.error("[Process] Cycle error:", error);
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
+
+  // Ran out of time — check if there's still work
+  const remaining = await prisma.task.count({ where: { status: "PENDING" } });
+  if (remaining > 0) {
+    console.log(
+      `[Process] Time limit reached, ${remaining} tasks remaining. Cron will pick up.`
+    );
+  }
+}
+
 // ─── Main Route Handler ─────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-  // Auth: reuse CRON_SECRET to secure this internal endpoint
   const authHeader = req.headers.get("authorization");
   if (
     process.env.NODE_ENV === "production" &&
@@ -270,81 +357,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  console.log("[Process] Starting processing cycle...");
+  console.log("[Process] Starting processing...");
 
-  try {
-    // 1. Recover any stale state from prior crashes
-    await recoverStaleState();
+  // Run the processing loop in after() so the response returns immediately
+  after(async () => {
+    await processLoop();
+  });
 
-    // 2. Determine how many tasks we can process in parallel
-    const concurrency = await getWorkerConcurrency();
-
-    // 3. Find pending tasks
-    const pendingTasks = await prisma.task.findMany({
-      where: { status: "PENDING" },
-      orderBy: [{ retryCount: "asc" }, { createdAt: "asc" }],
-      take: concurrency,
-      include: { job: { select: { status: true, id: true } } },
-    });
-
-    if (pendingTasks.length === 0) {
-      return NextResponse.json({ message: "No pending tasks" });
-    }
-
-    // 4. Acquire accounts (one per task)
-    const accounts = await acquireAccounts(pendingTasks.length);
-    if (accounts.length === 0) {
-      console.log("[Process] No accounts available. Will retry via cron.");
-      return NextResponse.json({ message: "No accounts available" });
-    }
-
-    // 5. Pair tasks with accounts and process in parallel
-    const pairs = pendingTasks
-      .slice(0, accounts.length)
-      .map((task, i) => ({ task, account: accounts[i] }));
-
-    // Release any extra accounts we acquired but won't use
-    for (let i = pairs.length; i < accounts.length; i++) {
-      await releaseAccount(accounts[i].id, false);
-    }
-
-    console.log(
-      `[Process] Processing ${pairs.length} tasks in parallel...`
-    );
-
-    const results = await Promise.allSettled(
-      pairs.map(({ task, account }) => processOneTask(task, account))
-    );
-
-    const succeeded = results.filter((r) => r.status === "fulfilled").length;
-    const failed = results.filter((r) => r.status === "rejected").length;
-
-    // 6. Check if more pending tasks remain and re-trigger
-    const remaining = await prisma.task.count({
-      where: { status: "PENDING" },
-    });
-
-    if (remaining > 0) {
-      console.log(`[Process] ${remaining} tasks remaining, triggering next cycle...`);
-      after(async () => {
-        // Wait for minute rate-limit windows to expire before next cycle
-        await new Promise((r) => setTimeout(r, 5000));
-        await triggerProcessing();
-      });
-    }
-
-    return NextResponse.json({
-      message: "Processing cycle complete",
-      processed: pairs.length,
-      succeeded,
-      failed,
-      remaining,
-    });
-  } catch (error) {
-    console.error("[Process] Top-level error:", error);
-    return NextResponse.json(
-      { error: "Internal Server Error" },
-      { status: 500 }
-    );
-  }
+  return NextResponse.json({ message: "Processing started" });
 }
