@@ -182,7 +182,7 @@ export default function AccountsPage() {
     setEditingId(account.id);
     setEditName(account.name);
     setEditDsn(account.dsn);
-    setEditApiKey(account.apiKey);
+    setEditApiKey(account.apiKey.length > 14 ? `••••••••${account.apiKey.slice(-4)}` : account.apiKey);
     setEditAccountId(account.accountId);
   }
 
@@ -214,7 +214,7 @@ export default function AccountsPage() {
           Account Manager
         </h1>
         <p className="text-neutral-400">
-          Manage your Unipile accounts for horizontal scaling. Each account runs as a separate worker.
+          Manage the data sources used to fetch candidate profiles securely.
         </p>
       </header>
 
@@ -510,7 +510,9 @@ export default function AccountsPage() {
                         {/* Stats Row */}
                         <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-neutral-500">
                           <span>DSN: <span className="text-neutral-400">{account.dsn}</span></span>
-                          <span>Key: <span className="text-neutral-400 font-mono">{account.apiKey}</span></span>
+                          <span>Key: <span className="text-neutral-400 font-mono" title={account.apiKey}>
+                            {account.apiKey.length > 14 ? `••••••••${account.apiKey.slice(-4)}` : account.apiKey}
+                          </span></span>
                         </div>
                         <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-neutral-500 mt-1">
                           <span>Requests: <span className="text-neutral-300 font-mono">{account.requestCount}</span></span>
@@ -584,12 +586,11 @@ export default function AccountsPage() {
           <svg className="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          How Horizontal Scaling Works
+          Profile Data Source
         </h3>
         <div className="text-xs text-neutral-400 space-y-2 leading-relaxed">
-          <p>Each Unipile account acts as a separate worker in the processing pool. When you submit URLs, the system automatically distributes work across all <strong className="text-neutral-200">ACTIVE</strong> accounts using round-robin scheduling.</p>
-          <p><strong className="text-neutral-200">More accounts = faster processing.</strong> The worker concurrency is automatically set to match the number of active accounts (up to 10).</p>
-          <p>If an account hits rate limits, it enters <strong className="text-orange-400">COOLDOWN</strong> mode for 15 minutes while other accounts continue processing. Work is automatically redistributed.</p>
+          <p>The evaluator securely connects to <strong className="text-neutral-200">Unipile</strong> to retrieve the necessary LinkedIn profile data for analysis.</p>
+          <p>Please enter your Unipile account credentials above to enable seamless candidate syncing.</p>
         </div>
       </section>
     </main>

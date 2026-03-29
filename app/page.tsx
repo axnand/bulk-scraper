@@ -395,7 +395,7 @@ export default function Home() {
       <header className="space-y-2">
         <div className="flex items-center justify-between">
           <h1 className="text-4xl font-bold tracking-tight text-white">
-            Bulk URL Processor
+            Candidate Profile Evaluator
           </h1>
           <Link
             href="/accounts"
@@ -408,7 +408,7 @@ export default function Home() {
           </Link>
         </div>
         <p className="text-neutral-400">
-          Scalable asynchronous background processing for LinkedIn URLs.
+          Smart, automated evaluation and scoring of candidate LinkedIn profiles.
         </p>
       </header>
 
