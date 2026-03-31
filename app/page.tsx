@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 
-type JobStatus = "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "CANCELLED";
+type JobStatus = "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "CANCELLED" | "PAUSED";
 
 // Scoring criteria descriptions matching LinkedIn scraper popup
 const SCORING_RULE_DEFS = [
@@ -149,8 +149,8 @@ export default function Home() {
         const data: JobResponse = await res.json();
         setJobData(data);
 
-        // Stop polling if completed or failed
-        if (data.status === "COMPLETED" || data.status === "FAILED") {
+        // Stop polling if terminal state
+        if (data.status === "COMPLETED" || data.status === "FAILED" || data.status === "CANCELLED") {
           clearInterval(interval);
         }
       } catch (err) {
@@ -175,7 +175,7 @@ export default function Home() {
   // Poll job history if any jobs are active
   useEffect(() => {
     const hasActiveJobs = history.some(
-      (job) => job.status === "PENDING" || job.status === "PROCESSING"
+      (job) => job.status === "PENDING" || job.status === "PROCESSING" || job.status === "PAUSED"
     );
     if (!hasActiveJobs) return;
 
@@ -354,6 +354,19 @@ export default function Home() {
     }
   }
 
+  async function handleJobAction(jobId: string, action: "pause" | "resume" | "cancel") {
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (res.ok) fetchHistory();
+    } catch (err) {
+      console.error(`Failed to ${action} job:`, err);
+    }
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!urls.trim()) return;
@@ -411,6 +424,7 @@ export default function Home() {
     PROCESSING: "bg-amber-500/20 text-amber-400 border-amber-500/30",
     COMPLETED: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
     FAILED: "bg-rose-500/20 text-rose-400 border-rose-500/30",
+    PAUSED: "bg-violet-500/20 text-violet-400 border-violet-500/30",
     CANCELLED: "bg-neutral-500/20 text-neutral-400 border-neutral-500/30",
   };
 
@@ -1118,9 +1132,11 @@ export default function Home() {
                       ? "bg-emerald-400"
                       : job.status === "PROCESSING" || job.status === "PENDING"
                         ? "bg-amber-400 animate-pulse"
-                        : job.status === "CANCELLED"
-                          ? "bg-neutral-400"
-                          : "bg-rose-400"
+                        : job.status === "PAUSED"
+                          ? "bg-violet-400"
+                          : job.status === "CANCELLED"
+                            ? "bg-neutral-400"
+                            : "bg-rose-400"
                     }`}
                 />
 
@@ -1146,6 +1162,33 @@ export default function Home() {
                     {job.processedCount}/{job.totalTasks} processed
                   </p>
                 </div>
+
+                {/* Job Controls */}
+                {(job.status === "PENDING" || job.status === "PROCESSING" || job.status === "PAUSED") && (
+                  <div className="flex gap-1.5 shrink-0" onClick={(e) => e.preventDefault()}>
+                    {job.status === "PAUSED" ? (
+                      <button
+                        onClick={() => handleJobAction(job.id, "resume")}
+                        className="px-2.5 py-1 rounded-md text-xs font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 transition-colors"
+                      >
+                        Resume
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleJobAction(job.id, "pause")}
+                        className="px-2.5 py-1 rounded-md text-xs font-medium bg-violet-500/20 text-violet-400 border border-violet-500/30 hover:bg-violet-500/30 transition-colors"
+                      >
+                        Pause
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleJobAction(job.id, "cancel")}
+                      className="px-2.5 py-1 rounded-md text-xs font-medium bg-rose-500/20 text-rose-400 border border-rose-500/30 hover:bg-rose-500/30 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
 
                 {/* Arrow */}
                 <svg

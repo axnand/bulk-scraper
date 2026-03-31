@@ -32,6 +32,7 @@ export default function JobResultsPage() {
   const [error, setError] = useState<string | null>(null);
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [actionLoading, setActionLoading] = useState(false);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -43,8 +44,8 @@ export default function JobResultsPage() {
         const json = await res.json();
         setData(json);
 
-        // Keep polling if still processing
-        if (json.status === "PROCESSING" || json.status === "PENDING") {
+        // Keep polling if still active (including paused, so UI stays in sync)
+        if (json.status === "PROCESSING" || json.status === "PENDING" || json.status === "PAUSED") {
           // continue
         } else {
           clearInterval(interval);
@@ -61,6 +62,25 @@ export default function JobResultsPage() {
     interval = setInterval(fetchResults, 3000);
     return () => clearInterval(interval);
   }, [jobId]);
+
+  async function handleJobAction(action: "pause" | "resume" | "cancel") {
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setData((prev) => prev ? { ...prev, status: json.status } : prev);
+      }
+    } catch (err) {
+      console.error(`Failed to ${action} job:`, err);
+    } finally {
+      setActionLoading(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -92,6 +112,7 @@ export default function JobResultsPage() {
     PROCESSING: "bg-amber-500/20 text-amber-400 border-amber-500/30",
     COMPLETED: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
     FAILED: "bg-rose-500/20 text-rose-400 border-rose-500/30",
+    PAUSED: "bg-violet-500/20 text-violet-400 border-violet-500/30",
     CANCELLED: "bg-neutral-500/20 text-neutral-400 border-neutral-500/30",
     DONE: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
   };
@@ -112,6 +133,36 @@ export default function JobResultsPage() {
           {data.status}
         </span>
       </div>
+
+      {/* Job Controls */}
+      {(data.status === "PENDING" || data.status === "PROCESSING" || data.status === "PAUSED") && (
+        <div className="flex gap-2">
+          {data.status === "PAUSED" ? (
+            <button
+              onClick={() => handleJobAction("resume")}
+              disabled={actionLoading}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 transition-colors disabled:opacity-50"
+            >
+              {actionLoading ? "Resuming..." : "Resume"}
+            </button>
+          ) : (
+            <button
+              onClick={() => handleJobAction("pause")}
+              disabled={actionLoading}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-violet-500/20 text-violet-400 border border-violet-500/30 hover:bg-violet-500/30 transition-colors disabled:opacity-50"
+            >
+              {actionLoading ? "Pausing..." : "Pause"}
+            </button>
+          )}
+          <button
+            onClick={() => handleJobAction("cancel")}
+            disabled={actionLoading}
+            className="px-4 py-2 rounded-lg text-sm font-medium bg-rose-500/20 text-rose-400 border border-rose-500/30 hover:bg-rose-500/30 transition-colors disabled:opacity-50"
+          >
+            {actionLoading ? "Cancelling..." : "Cancel"}
+          </button>
+        </div>
+      )}
 
       <header>
         <h1 className="text-3xl font-bold tracking-tight text-white">Job Results</h1>

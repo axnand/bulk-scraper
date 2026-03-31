@@ -103,6 +103,16 @@ async function processOneTask(
     return;
   }
 
+  if (task.job.status === "PAUSED") {
+    // Release task back to PENDING so it can be picked up after resume
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { status: "PENDING", accountId: null },
+    });
+    await releaseAccount(account.id, false);
+    return;
+  }
+
   if (task.job.status === "PENDING") {
     await prisma.job
       .update({
@@ -269,7 +279,10 @@ async function runProcessingCycle(): Promise<{
   const concurrency = await getWorkerConcurrency();
 
   const pendingTasks = await prisma.task.findMany({
-    where: { status: "PENDING" },
+    where: {
+      status: "PENDING",
+      job: { status: { notIn: ["PAUSED", "CANCELLED"] } },
+    },
     orderBy: [{ retryCount: "asc" }, { createdAt: "asc" }],
     take: concurrency,
     include: { job: { select: { status: true, id: true } } },
