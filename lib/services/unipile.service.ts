@@ -67,7 +67,8 @@ export async function fetchProfile(
   accountDsn?: string,
   accountApiKey?: string
 ): Promise<any> {
-  const dsn = accountDsn || process.env.UNIPILE_DSN;
+  const rawDsn = accountDsn || process.env.UNIPILE_DSN;
+  const dsn = rawDsn && !rawDsn.startsWith("http") ? `https://${rawDsn}` : rawDsn;
   const apiKey = accountApiKey || process.env.UNIPILE_API_KEY;
 
   if (!dsn || !apiKey) {

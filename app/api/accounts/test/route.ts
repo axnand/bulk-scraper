@@ -21,7 +21,8 @@ export async function POST(req: NextRequest) {
 
     // Make a lightweight test call to Unipile API
     // We'll use the /api/v1/accounts endpoint to just verify connectivity
-    const testUrl = `${dsn}/api/v1/accounts/${encodeURIComponent(accountId)}`;
+    const normalizedDsn = dsn.startsWith("http") ? dsn : `https://${dsn}`;
+    const testUrl = `${normalizedDsn}/api/v1/accounts/${encodeURIComponent(accountId)}`;
 
     const response = await fetch(testUrl, {
       method: "GET",
