@@ -1,3 +1,5 @@
+import { chatCompletion } from "@/lib/ai-adapter";
+
 /**
  * Profile Analyzer — Ported from linkedInScraper Chrome Extension
  *
@@ -36,6 +38,9 @@ export interface AnalysisConfig {
   scoringRules?: ScoringRules;
   customScoringRules?: CustomScoringRule[];
   aiModel?: string;
+  aiProviderId?: string;
+  /** When set, replaces the entire built-in system prompt. May contain {{DATE}}, {{SCORING_RULES}}, {{SCORING_SCHEMA}} variables. */
+  systemPromptOverride?: string;
 }
 
 export interface CandidateInfo {
@@ -410,7 +415,7 @@ function parseJobDescription(jdText: string) {
 
 // ─── Prompt Builders ─────────────────────────────────────────────
 
-function buildSystemPrompt(
+export function buildSystemPrompt(
   scoringRules: ScoringRules,
   customScoringRules: CustomScoringRule[],
   customPrompt?: string
@@ -646,14 +651,58 @@ function buildUserPrompt(profileData: any, jobDescription: string, candidateInfo
   return prompt;
 }
 
+// ─── Template Variable Resolver ─────────────────────────────────
+// Resolves {{DATE}}, {{SCORING_RULES}}, {{SCORING_SCHEMA}} in user-provided system prompts.
+// This lets users write dynamic prompts without hardcoding volatile values.
+
+function resolveTemplateVars(
+  template: string,
+  scoringRules: ScoringRules,
+  customScoringRules: CustomScoringRule[]
+): string {
+  const enabled: Record<string, boolean> = {};
+  for (const key of Object.keys(LLM_RULE_POINTS)) {
+    enabled[key] = (scoringRules as any)[key] !== false;
+  }
+  const enabledCustomRules = (customScoringRules || []).filter((r) => r.enabled);
+
+  // {{DATE}}
+  let result = template.replace(/\{\{DATE\}\}/g, new Date().toISOString().split("T")[0]);
+
+  // {{SCORING_RULES}} — the numbered rule text blocks
+  if (result.includes("{{SCORING_RULES}}")) {
+    let ruleNum = 0;
+    const rulesText = Object.entries(RULE_PROMPTS)
+      .filter(([k]) => enabled[k])
+      .map(([, text]) => { ruleNum++; return `${ruleNum}. ${text}`; })
+      .join("\n\n");
+    const customRulesText = enabledCustomRules
+      .map((r) => { ruleNum++; return `${ruleNum}. ${r.name.toUpperCase()} (Max: ${r.maxPoints})\n   ${r.criteria}`; })
+      .join("\n\n");
+    result = result.replace(/\{\{SCORING_RULES\}\}/g, [rulesText, customRulesText].filter(Boolean).join("\n\n"));
+  }
+
+  // {{SCORING_SCHEMA}} — the JSON field declarations
+  if (result.includes("{{SCORING_SCHEMA}}")) {
+    const schema: string[] = [];
+    if (enabled.growth) { schema.push('    "promotionSameCompany": <15 or "">'); schema.push('    "promotionWithChange": <10 or "">'); }
+    if (enabled.graduation) { schema.push('    "gradTier1": <15 or 7 or "">'); schema.push('    "gradTier2": <10 or 5 or "">'); }
+    if (enabled.companyType) { schema.push('    "salesCRM": <15 or "">'); schema.push('    "otherB2B": <10 or 7 or "">'); }
+    if (enabled.mba) { schema.push('    "mbaA": <15 or "">'); schema.push('    "mbaOthers": <10 or "">'); }
+    if (enabled.skillMatch) { schema.push('    "skillsetMatch": <0 or 5 or 10>'); }
+    for (const r of enabledCustomRules) schema.push(`    "custom_${r.id}": <0 to ${r.maxPoints} integer>`);
+    result = result.replace(/\{\{SCORING_SCHEMA\}\}/g, schema.join(",\n"));
+  }
+
+  return result;
+}
+
 // ─── Main Analysis Function ──────────────────────────────────────
 
 export async function analyzeProfile(
   profileData: any,
   config: AnalysisConfig
 ): Promise<AnalysisResult> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY is not set in environment variables.");
   if (!config.jobDescription) throw new Error("No job description provided for analysis.");
 
   const rules: ScoringRules = config.scoringRules || {};
@@ -691,42 +740,34 @@ export async function analyzeProfile(
   console.log("[Analyzer] Pre-computed:", { stabilityScore, locationScore, candidateInfo: candidateInfo.name });
 
   // ── Pass 2: LLM evaluation ──
-  const systemPrompt = buildSystemPrompt(rules, customRules, config.customPrompt);
   const userPrompt = buildUserPrompt(profileData, config.jobDescription, candidateInfo);
   const model = config.aiModel || "gpt-4.1";
 
-  console.log(`[Analyzer] Calling OpenAI (${model}), prompt: ${userPrompt.length} chars`);
-
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.1,
-      max_tokens: 2000,
-    }),
-  });
-
-  if (!response.ok) {
-    const errData: any = await response.json().catch(() => ({}));
-    if (response.status === 401) throw new Error("Invalid OpenAI API key.");
-    if (response.status === 429) throw new Error("OpenAI rate limit exceeded. Wait and retry.");
-    if (response.status === 402) throw new Error("Insufficient OpenAI credits.");
-    throw new Error(errData.error?.message || `OpenAI API error (${response.status})`);
+  // Resolve system prompt — use override if set, otherwise fall back to built-in
+  let systemPrompt: string;
+  if (config.systemPromptOverride?.trim()) {
+    systemPrompt = resolveTemplateVars(config.systemPromptOverride, rules, customRules);
+    console.log(`[Analyzer] Using custom system prompt override (${systemPrompt.length} chars)`);
+  } else {
+    systemPrompt = buildSystemPrompt(rules, customRules, config.customPrompt);
+    console.log(`[Analyzer] Using built-in system prompt (${systemPrompt.length} chars)`);
   }
 
-  const result = await response.json();
-  const content = result.choices?.[0]?.message?.content;
-  console.log(`[Analyzer] OpenAI response. Usage: ${JSON.stringify(result.usage)}`);
+  console.log(`[Analyzer] Calling AI (${model}), prompt: ${userPrompt.length} chars`);
 
-  if (!content) throw new Error("No response from OpenAI.");
+  const aiResult = await chatCompletion(
+    [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+    model,
+    { temperature: 0.1, max_tokens: 2000 },
+    config.aiProviderId
+  );
+
+  const content = aiResult.content;
+  const resultUsage = aiResult.usage;
+  console.log(`[Analyzer] AI response (${aiResult.provider}). Usage: ${JSON.stringify(resultUsage)}`);
 
   let llmResult: any;
   try {
@@ -810,7 +851,7 @@ export async function analyzeProfile(
       systemPrompt,
       userPrompt,
       model,
-      usage: result.usage,
+      usage: resultUsage,
       preComputed: { stability: stabilityScore, location: locationScore },
     },
   };

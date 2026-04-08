@@ -125,7 +125,21 @@ model PromptTemplate {
 model AppSettings {
   id                String   @id @default("global")
   aiModel           String   @default("gpt-4.1")
+  aiProviderId      String?  // FK to AiProvider — the default provider
   sheetWebAppUrl    String   @default("")
   minScoreThreshold Int      @default(0)
+  systemPrompt      String?  @db.Text // null = use built-in default; set = override entire LLM system prompt
   updatedAt         DateTime @updatedAt
+}
+
+model AiProvider {
+  id        String   @id @default(cuid())
+  name      String           // User-friendly label, e.g. "My Gemini"
+  provider  String           // "openai-compatible" | "anthropic"
+  baseUrl   String           // e.g. "https://api.openai.com/v1"
+  apiKey    String           // Stored in DB (user-managed)
+  models    String   @db.Text // JSON array: ["gpt-4.1","gpt-4.1-mini"]
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

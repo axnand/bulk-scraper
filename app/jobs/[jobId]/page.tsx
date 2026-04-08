@@ -34,6 +34,14 @@ export default function JobResultsPage() {
   const [search, setSearch] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
 
+  // ── Export state ──
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportMsg, setExportMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [showSheetModal, setShowSheetModal] = useState(false);
+  const [sheetUrl, setSheetUrl] = useState("");
+
   useEffect(() => {
     let interval: NodeJS.Timeout;
 
@@ -79,6 +87,59 @@ export default function JobResultsPage() {
       console.error(`Failed to ${action} job:`, err);
     } finally {
       setActionLoading(false);
+    }
+  }
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function exitSelectMode() {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+    setExportMsg(null);
+  }
+
+  async function runExport(mode: "xlsx" | "sheet") {
+    setExportLoading(true);
+    setExportMsg(null);
+    try {
+      const body: any = {};
+      if (selectedIds.size > 0) body.taskIds = Array.from(selectedIds);
+      if (mode === "sheet") body.sheetWebAppUrl = sheetUrl.trim();
+
+      const res = await fetch(`/api/jobs/${jobId}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (mode === "sheet") {
+        const json = await res.json();
+        if (!res.ok) { setExportMsg({ type: "error", text: json.error || "Export failed" }); return; }
+        setExportMsg({ type: "success", text: `Exported ${json.exported}/${json.total} profiles to "${json.tabName}"${json.failed ? ` (${json.failed} failed)` : ""}` });
+        setShowSheetModal(false);
+      } else {
+        if (!res.ok) { const json = await res.json(); setExportMsg({ type: "error", text: json.error || "Export failed" }); return; }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = res.headers.get("Content-Disposition")?.match(/filename="(.+)"/)?.[1] || "export.xlsx";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setExportMsg({ type: "success", text: "XLSX downloaded" });
+      }
+    } catch (err: any) {
+      setExportMsg({ type: "error", text: err.message });
+    } finally {
+      setExportLoading(false);
     }
   }
 
@@ -415,21 +476,22 @@ function ProfileCard({
                 <p className="text-xs font-medium text-neutral-500 uppercase tracking-wider p-3 border-b border-neutral-800">Scoring Breakdown</p>
                 <div className="divide-y divide-neutral-800/50">
                   {[
-                    { label: 'Stability', key: 'stability', max: 10 },
-                    { label: 'Growth (Same Co)', key: 'promotionSameCompany', max: 15 },
-                    { label: 'Growth (Change)', key: 'promotionWithChange', max: 10 },
-                    { label: 'Graduation Tier 1', key: 'gradTier1', max: 15 },
-                    { label: 'Graduation Tier 2', key: 'gradTier2', max: 10 },
-                    { label: 'Sales/CRM', key: 'salesCRM', max: 15 },
-                    { label: 'Other B2B', key: 'otherB2B', max: 10 },
-                    { label: 'MBA A', key: 'mbaA', max: 15 },
-                    { label: 'MBA Others', key: 'mbaOthers', max: 10 },
-                    { label: 'Skillset Match', key: 'skillsetMatch', max: 10 },
-                    { label: 'Location', key: 'locationMatch', max: 5 },
-                  ].filter(d => analysis.scoring[d.key] !== '' && analysis.scoring[d.key] !== undefined).map(dim => {
-                    const val = typeof analysis.scoring[dim.key] === 'number' ? analysis.scoring[dim.key] : 0;
+                    { label: 'Stability', logKey: 'stability', scoreKey1: 'stability', max: 10 },
+                    { label: 'Growth', logKey: 'growth', scoreKey1: 'promotionSameCompany', scoreKey2: 'promotionWithChange', max: 15 },
+                    { label: 'Graduation', logKey: 'graduation', scoreKey1: 'gradTier1', scoreKey2: 'gradTier2', max: 15 },
+                    { label: 'Company Type', logKey: 'companyType', scoreKey1: 'salesCRM', scoreKey2: 'otherB2B', max: 15 },
+                    { label: 'MBA', logKey: 'mba', scoreKey1: "mbaA", scoreKey2: "mbaOthers", max: 15 },
+                    { label: 'Skillset Match', logKey: 'skillMatch', scoreKey1: 'skillsetMatch', max: 10 },
+                    { label: 'Location', logKey: 'location', scoreKey1: 'locationMatch', max: 5 },
+                  ].filter(d => analysis.scoringLogs && analysis.scoringLogs[d.logKey] !== undefined).map(dim => {
+                    let val = 0;
+                    if (typeof analysis.scoring[dim.scoreKey1] === 'number') {
+                      val = analysis.scoring[dim.scoreKey1];
+                    } else if (dim.scoreKey2 && typeof analysis.scoring[dim.scoreKey2] === 'number') {
+                      val = analysis.scoring[dim.scoreKey2];
+                    }
                     return (
-                      <div key={dim.key} className="flex items-center gap-3 px-3 py-2">
+                      <div key={dim.logKey} className="flex items-center gap-3 px-3 py-2">
                         <span className="text-xs text-neutral-400 w-36 shrink-0">{dim.label}</span>
                         <div className="flex-1 h-1.5 bg-neutral-800 rounded-full overflow-hidden">
                           <div className={`h-full rounded-full ${

@@ -200,3 +200,25 @@ export function buildSheetPayload(
 
   return { jdTitle, columns, rowData };
 }
+
+/**
+ * Build columns + rows for a batch of tasks (for bulk export).
+ * Returns the column schema once + an array of row data objects.
+ * Reuses buildSheetPayload so the format is always identical.
+ */
+export function buildBulkExportData(
+  tasks: { url: string; analysisResult: any }[],
+  jdTitle: string,
+  scoringRules?: ScoringRulesConfig
+): { columns: SheetColumn[]; rows: Record<string, any>[] } {
+  let columns: SheetColumn[] = [];
+  const rows: Record<string, any>[] = [];
+
+  for (const task of tasks) {
+    const payload = buildSheetPayload(task.url, task.analysisResult, jdTitle, scoringRules);
+    if (columns.length === 0) columns = payload.columns;
+    rows.push(payload.rowData);
+  }
+
+  return { columns, rows };
+}

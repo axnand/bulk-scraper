@@ -96,6 +96,10 @@ export default function Home() {
   const [invalidUrls, setInvalidUrls] = useState<string[]>([]);
   const [history, setHistory] = useState<HistoryJob[]>([]);
   const [initialFetchDone, setInitialFetchDone] = useState(false);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyTotalPages, setHistoryTotalPages] = useState(1);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const HISTORY_PER_PAGE = 20;
 
   // Analysis config state
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -110,10 +114,14 @@ export default function Home() {
     { id: string; name: string; maxPoints: number; criteria: string; enabled: boolean }[]
   >([]);
   const [aiModel, setAiModel] = useState("gpt-4.1");
+  const [aiProviderId, setAiProviderId] = useState<string | null>(null);
   const [minScoreThreshold, setMinScoreThreshold] = useState(70);
   const [newRuleName, setNewRuleName] = useState("");
   const [newRuleMax, setNewRuleMax] = useState(10);
   const [newRuleCriteria, setNewRuleCriteria] = useState("");
+
+  // AI Provider list (for selector dropdown — managed in /settings)
+  const [aiProviders, setAiProviders] = useState<any[]>([]);
 
   // JD Template library state
   const [jdTemplates, setJdTemplates] = useState<JdTemplate[]>([]);
@@ -183,20 +191,23 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [history]);
 
-  // Load templates and settings from DB on mount
+  // Load templates, settings, and AI providers from DB on mount
   useEffect(() => {
     async function loadConfig() {
       try {
-        const [jdRes, promptRes, settingsRes] = await Promise.all([
+        const [jdRes, promptRes, settingsRes, providersRes] = await Promise.all([
           fetch("/api/jd-templates"),
           fetch("/api/prompt-templates"),
           fetch("/api/settings"),
+          fetch("/api/ai-providers"),
         ]);
         if (jdRes.ok) setJdTemplates(await jdRes.json());
         if (promptRes.ok) setPromptTemplates(await promptRes.json());
+        if (providersRes.ok) setAiProviders(await providersRes.json());
         if (settingsRes.ok) {
           const s = await settingsRes.json();
           if (s.aiModel) setAiModel(s.aiModel);
+          if (s.aiProviderId) setAiProviderId(s.aiProviderId);
           if (s.sheetWebAppUrl) setSheetWebAppUrl(s.sheetWebAppUrl);
           if (s.minScoreThreshold != null) setMinScoreThreshold(s.minScoreThreshold);
         }
@@ -211,7 +222,7 @@ export default function Home() {
       await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aiModel, sheetWebAppUrl, minScoreThreshold }),
+        body: JSON.stringify({ aiModel, aiProviderId, sheetWebAppUrl, minScoreThreshold }),
       });
     } catch { /* silently fail */ }
   }
@@ -341,12 +352,17 @@ export default function Home() {
     } catch { /* silently fail */ }
   }
 
-  async function fetchHistory() {
+  async function fetchHistory(page = historyPage) {
     try {
-      const res = await fetch("/api/jobs", { cache: "no-store" });
+      const res = await fetch(`/api/jobs?page=${page}&limit=${HISTORY_PER_PAGE}`, { cache: "no-store" });
       if (!res.ok) return;
       const data = await res.json();
       setHistory(data.jobs || []);
+      if (data.pagination) {
+        setHistoryPage(data.pagination.page);
+        setHistoryTotalPages(data.pagination.totalPages);
+        setHistoryTotal(data.pagination.total);
+      }
     } catch {
       // silently fail
     } finally {
@@ -392,6 +408,7 @@ export default function Home() {
             customScoringRules: customScoringRules.length > 0 ? customScoringRules : undefined,
             sheetWebAppUrl: sheetWebAppUrl || undefined,
             aiModel,
+            aiProviderId: aiProviderId || undefined,
             minScoreThreshold,
             jdTitle: jdTemplates.find(t => t.id === selectedJdTemplateId)?.title || "Bulk Analysis",
           }),
@@ -437,13 +454,13 @@ export default function Home() {
             Bulk Profile Evaluator
           </h1>
           <Link
-            href="/accounts"
+            href="/settings"
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-neutral-800/80 border border-neutral-700 text-sm font-medium text-neutral-300 hover:bg-neutral-700 hover:text-white transition-all"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
-            Accounts
+            Settings
           </Link>
         </div>
         <p className="text-neutral-400">
@@ -474,16 +491,17 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Advanced Settings Toggle */}
+          {/* Analysis Config Toggle */}
           <button
             type="button"
             onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-2 text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
+            className={`flex items-center gap-2 w-full px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${showAdvanced ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400' : 'bg-neutral-900/30 border-neutral-800 text-neutral-400 hover:text-neutral-200 hover:border-neutral-700'}`}
           >
-            <svg className={`w-4 h-4 transition-transform ${showAdvanced ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
+            <span className="flex-1 text-left">Analysis Configuration</span>
+            <svg className={`w-4 h-4 transition-transform ${showAdvanced ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
             </svg>
-            {showAdvanced ? 'Hide' : 'Show'} Analysis Settings
           </button>
 
           {/* Advanced Settings Panel */}
@@ -773,216 +791,181 @@ export default function Home() {
 
               <hr className="border-neutral-800/50" />
 
-              {/* ─── SCORING DIMENSIONS ─── */}
-              <div className="space-y-3">
-                <div>
+              {/* ─── AI MODEL SELECTOR ─── */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                    <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
-                    Scoring Dimensions
+                    <svg className="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
+                    AI Model
                   </h3>
-                  <p className="text-[11px] text-neutral-500 mt-0.5">Toggle dimensions and click &quot;?&quot; to see scoring tiers.</p>
+                  <Link href="/settings" className="text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                    Manage Providers
+                  </Link>
                 </div>
-                <div className="space-y-2">
-                  {SCORING_RULE_DEFS.map(rule => {
-                    const enabled = scoringRules[rule.key as keyof typeof scoringRules];
-                    return (
-                      <div key={rule.key} className={`rounded-lg border transition-all ${enabled ? 'bg-neutral-900/50 border-neutral-700' : 'bg-neutral-900/20 border-neutral-800 opacity-60'}`}>
-                        <div className="flex items-center gap-2 px-3 py-2">
-                          <button
-                            type="button"
-                            onClick={() => setScoringRules(prev => ({ ...prev, [rule.key]: !prev[rule.key as keyof typeof prev] }))}
-                            className={`w-8 h-5 rounded-full transition-colors shrink-0 ${enabled ? 'bg-emerald-500' : 'bg-neutral-600'}`}
-                          >
-                            <div className={`w-4 h-4 rounded-full bg-white transform transition-transform ${enabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
-                          </button>
-                          <span className={`text-xs font-medium flex-1 ${enabled ? 'text-neutral-200' : 'text-neutral-500 line-through'}`}>
-                            {rule.label}
-                          </span>
-                          <span className="text-xs text-neutral-500 font-mono">/{rule.max}</span>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              const el = (e.currentTarget.closest('[data-rule-card]') || e.currentTarget.parentElement?.parentElement) as HTMLElement;
-                              el?.querySelector('[data-tiers]')?.classList.toggle('hidden');
-                            }}
-                            className="text-[10px] text-indigo-400 hover:text-indigo-300 px-1"
-                          >?</button>
-                        </div>
-                        <div data-tiers className="hidden px-3 pb-2 space-y-1 border-t border-neutral-800/50 pt-1.5">
-                          {rule.tiers.map((tier, i) => (
-                            <div key={i} className="flex items-center gap-2 text-[10px]">
-                              <span className={`w-6 text-center font-mono font-bold ${tier.color}`}>{tier.score}</span>
-                              <span className="text-neutral-400">{tier.text}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <p className="text-xs text-neutral-500">
-                  Max Score: {Object.entries(scoringRules)
-                    .filter(([, v]) => v)
-                    .reduce((sum, [k]) => sum + ({ stability: 10, growth: 15, graduation: 15, companyType: 15, mba: 15, skillMatch: 10, location: 5 }[k] || 0), 0)
-                    + customScoringRules.filter(r => r.enabled).reduce((s, r) => s + r.maxPoints, 0)
-                  } / {85 + customScoringRules.filter(r => r.enabled).reduce((s, r) => s + r.maxPoints, 0)}
-                </p>
-              </div>
-
-              <hr className="border-neutral-800/50" />
-
-              {/* ─── CUSTOM SCORING RULES ─── */}
-              <div className="space-y-3">
-                <div>
-                  <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                    <svg className="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
-                    Custom Rules
-                  </h3>
-                  <p className="text-[11px] text-neutral-500 mt-0.5">Add your own scoring criteria for the AI to evaluate.</p>
-                </div>
-                {customScoringRules.length > 0 && (
-                  <div className="space-y-2">
-                    {customScoringRules.map(rule => (
-                      <div key={rule.id} className={`rounded-lg border transition-all ${rule.enabled ? 'bg-neutral-900/50 border-neutral-700' : 'bg-neutral-900/20 border-neutral-800 opacity-60'}`}>
-                        <div className="flex items-center gap-2 px-3 py-2.5">
-                          <button
-                            type="button"
-                            onClick={() => setCustomScoringRules(prev =>
-                              prev.map(r => r.id === rule.id ? { ...r, enabled: !r.enabled } : r)
-                            )}
-                            className={`w-8 h-5 rounded-full transition-colors shrink-0 ${rule.enabled ? 'bg-emerald-500' : 'bg-neutral-600'
-                              }`}
-                          >
-                            <div className={`w-4 h-4 rounded-full bg-white transform transition-transform ${rule.enabled ? 'translate-x-3.5' : 'translate-x-0.5'
-                              }`} />
-                          </button>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className={`text-xs font-medium ${rule.enabled ? 'text-neutral-200' : 'text-neutral-500 line-through'}`}>
-                                {rule.name}
-                              </span>
-                              <span className="text-xs text-neutral-500 font-mono">/{rule.maxPoints}</span>
-                            </div>
-                            <p className="text-[11px] text-neutral-500 mt-0.5 leading-relaxed">
-                              {rule.criteria}
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setCustomScoringRules(prev => prev.filter(r => r.id !== rule.id))}
-                            className="text-neutral-600 hover:text-rose-400 transition-colors p-1 rounded hover:bg-rose-500/10"
-                          >
-                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="p-3 rounded-lg bg-neutral-900/30 border border-neutral-800/50 space-y-2">
-                  <span className="text-[11px] font-medium text-neutral-400">Add New Rule</span>
-                  <div className="grid grid-cols-[1fr_60px] gap-2">
-                    <input
-                      type="text"
-                      value={newRuleName}
-                      onChange={(e) => setNewRuleName(e.target.value)}
-                      placeholder="Rule name"
-                      className="rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-amber-500 focus:outline-none"
-                    />
-                    <input
-                      type="number"
-                      value={newRuleMax}
-                      onChange={(e) => setNewRuleMax(parseInt(e.target.value) || 10)}
-                      placeholder="Max"
-                      className="rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-xs text-neutral-200 focus:border-amber-500 focus:outline-none"
-                    />
-                  </div>
-                  <textarea
-                    rows={2}
-                    value={newRuleCriteria}
-                    onChange={(e) => setNewRuleCriteria(e.target.value)}
-                    placeholder="Describe the criteria for the AI to evaluate (e.g., 'Score higher if candidate has experience with enterprise sales cycles exceeding $100k ACV')"
-                    className="w-full resize-none rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-amber-500 focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!newRuleName.trim() || !newRuleCriteria.trim()) return;
-                      setCustomScoringRules(prev => [...prev, {
-                        id: `cr_${Date.now()}`,
-                        name: newRuleName,
-                        maxPoints: newRuleMax,
-                        criteria: newRuleCriteria,
-                        enabled: true,
-                      }]);
-                      setNewRuleName(""); setNewRuleCriteria(""); setNewRuleMax(10);
-                    }}
-                    disabled={!newRuleName.trim() || !newRuleCriteria.trim()}
-                    className="w-full px-3 py-2 rounded-lg bg-amber-600/20 border border-amber-500/30 text-amber-400 text-xs font-medium hover:bg-amber-600/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-                    Add Rule
-                  </button>
-                </div>
-              </div>
-
-              <hr className="border-neutral-800/50" />
-
-              {/* ─── SETTINGS ─── */}
-              <div className="space-y-4">
-                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                  <svg className="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-                  Settings
-                </h3>
-
-                {/* AI Model Selector */}
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-neutral-400">AI Model</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <select
-                    value={aiModel}
-                    onChange={(e) => setAiModel(e.target.value)}
+                    value={aiProviderId || ""}
+                    onChange={(e) => {
+                      const id = e.target.value || null;
+                      setAiProviderId(id);
+                      if (id) {
+                        const p = aiProviders.find((p: any) => p.id === id);
+                        if (p && p.models?.length > 0) setAiModel(p.models[0]);
+                      }
+                    }}
                     className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
                   >
-                    <option value="gpt-4.1">GPT-4.1 (Most Capable)</option>
-                    <option value="gpt-4.1-mini">GPT-4.1 Mini (Fast &amp; Cheap)</option>
-                    <option value="gpt-4o">GPT-4o</option>
-                    <option value="gpt-4o-mini">GPT-4o Mini</option>
+                    <option value="">Default (OpenAI via env key)</option>
+                    {aiProviders.map((p: any) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}{p.isDefault ? " *" : ""}
+                      </option>
+                    ))}
                   </select>
-                  <p className="text-[11px] text-neutral-500">Higher models are more accurate but cost more per profile.</p>
+                  {aiProviderId ? (
+                    <select
+                      value={aiModel}
+                      onChange={(e) => setAiModel(e.target.value)}
+                      className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
+                    >
+                      {(aiProviders.find((p: any) => p.id === aiProviderId)?.models || []).map((m: string) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <select
+                      value={aiModel}
+                      onChange={(e) => setAiModel(e.target.value)}
+                      className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
+                    >
+                      <option value="gpt-4.1">GPT-4.1</option>
+                      <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
+                      <option value="gpt-4o">GPT-4o</option>
+                      <option value="gpt-4o-mini">GPT-4o Mini</option>
+                    </select>
+                  )}
                 </div>
-
-                {/* Google Sheets URL */}
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-neutral-400">Google Sheets Web App URL (optional)</label>
-                  <input
-                    type="url"
-                    value={sheetWebAppUrl}
-                    onChange={(e) => setSheetWebAppUrl(e.target.value)}
-                    placeholder="https://script.google.com/macros/s/.../exec"
-                    className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
-                  />
-                  <p className="text-[11px] text-neutral-500">Auto-exports scored profiles to your Google Sheet.</p>
-                </div>
-
-                {/* Min Score Threshold */}
-                {sheetWebAppUrl && (
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-neutral-400">Min Score Threshold for Export (%)</label>
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        value={minScoreThreshold}
-                        onChange={(e) => setMinScoreThreshold(parseInt(e.target.value))}
-                        className="flex-1 accent-indigo-500"
-                      />
-                      <span className="text-sm font-mono text-neutral-300 w-12 text-right">{minScoreThreshold}%</span>
-                    </div>
-                    <p className="text-[11px] text-neutral-500">Only profiles scoring at or above this threshold will be exported to Google Sheets.</p>
-                  </div>
-                )}
               </div>
+
+              <hr className="border-neutral-800/50" />
+
+              {/* ─── SCORING RULES (Collapsible — Dimensions + Custom) ─── */}
+              <details className="group" open>
+                <summary className="flex items-center gap-2 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden">
+                  <svg className="w-4 h-4 text-emerald-400 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                  <h3 className="text-sm font-semibold text-white">Scoring Rules</h3>
+                  <span className="text-[11px] text-neutral-500 font-mono ml-auto">
+                    {Object.entries(scoringRules).filter(([, v]) => v).reduce((sum, [k]) => sum + ({ stability: 10, growth: 15, graduation: 15, companyType: 15, mba: 15, skillMatch: 10, location: 5 }[k] || 0), 0) + customScoringRules.filter(r => r.enabled).reduce((s, r) => s + r.maxPoints, 0)} pts max
+                  </span>
+                </summary>
+                <div className="mt-3 space-y-3">
+                  {/* Built-in dimensions */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {SCORING_RULE_DEFS.map(rule => {
+                      const enabled = scoringRules[rule.key as keyof typeof scoringRules];
+                      return (
+                        <button
+                          key={rule.key}
+                          type="button"
+                          onClick={() => setScoringRules(prev => ({ ...prev, [rule.key]: !prev[rule.key as keyof typeof prev] }))}
+                          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border text-left transition-all ${enabled ? 'bg-emerald-500/5 border-emerald-500/25 hover:border-emerald-500/40' : 'bg-neutral-900/20 border-neutral-800 opacity-50 hover:opacity-70'}`}
+                        >
+                          <div className={`w-7 h-4 rounded-full transition-colors shrink-0 ${enabled ? 'bg-emerald-500' : 'bg-neutral-600'}`}>
+                            <div className={`w-3 h-3 rounded-full bg-white mt-0.5 transition-transform ${enabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                          </div>
+                          <span className={`text-xs font-medium flex-1 ${enabled ? 'text-neutral-200' : 'text-neutral-500'}`}>{rule.label}</span>
+                          <span className="text-[10px] text-neutral-500 font-mono">/{rule.max}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Custom rules */}
+                  {customScoringRules.length > 0 && (
+                    <div className="space-y-1.5 pt-2 border-t border-neutral-800/50">
+                      <span className="text-[11px] font-medium text-neutral-500 uppercase tracking-wider">Custom Rules</span>
+                      {customScoringRules.map(rule => (
+                        <div key={rule.id} className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border transition-all ${rule.enabled ? 'bg-amber-500/5 border-amber-500/20' : 'bg-neutral-900/20 border-neutral-800 opacity-50'}`}>
+                          <button
+                            type="button"
+                            onClick={() => setCustomScoringRules(prev => prev.map(r => r.id === rule.id ? { ...r, enabled: !r.enabled } : r))}
+                            className={`w-7 h-4 rounded-full transition-colors shrink-0 ${rule.enabled ? 'bg-amber-500' : 'bg-neutral-600'}`}
+                          >
+                            <div className={`w-3 h-3 rounded-full bg-white mt-0.5 transition-transform ${rule.enabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <span className={`text-xs font-medium ${rule.enabled ? 'text-neutral-200' : 'text-neutral-500'}`}>{rule.name}</span>
+                            <p className="text-[10px] text-neutral-500 truncate">{rule.criteria}</p>
+                          </div>
+                          <span className="text-[10px] text-neutral-500 font-mono">/{rule.maxPoints}</span>
+                          <button type="button" onClick={() => setCustomScoringRules(prev => prev.filter(r => r.id !== rule.id))}
+                            className="text-neutral-600 hover:text-rose-400 transition-colors p-0.5 rounded hover:bg-rose-500/10 shrink-0">
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Add custom rule — inline compact form */}
+                  <details className="group/add">
+                    <summary className="text-[11px] text-amber-400 hover:text-amber-300 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5 pt-1">
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                      Add Custom Rule
+                    </summary>
+                    <div className="mt-2 p-3 rounded-lg bg-neutral-900/30 border border-neutral-800/50 space-y-2">
+                      <div className="grid grid-cols-[1fr_60px] gap-2">
+                        <input type="text" value={newRuleName} onChange={(e) => setNewRuleName(e.target.value)} placeholder="Rule name"
+                          className="rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-amber-500 focus:outline-none" />
+                        <input type="number" value={newRuleMax} onChange={(e) => setNewRuleMax(parseInt(e.target.value) || 10)} placeholder="Max"
+                          className="rounded-lg bg-neutral-900/50 border border-neutral-700 px-2 py-1.5 text-xs text-neutral-200 text-center focus:border-amber-500 focus:outline-none" />
+                      </div>
+                      <textarea rows={2} value={newRuleCriteria} onChange={(e) => setNewRuleCriteria(e.target.value)}
+                        placeholder="Describe the criteria for the AI to evaluate..."
+                        className="w-full resize-none rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-amber-500 focus:outline-none" />
+                      <button type="button"
+                        onClick={() => {
+                          if (!newRuleName.trim() || !newRuleCriteria.trim()) return;
+                          setCustomScoringRules(prev => [...prev, { id: `cr_${Date.now()}`, name: newRuleName, maxPoints: newRuleMax, criteria: newRuleCriteria, enabled: true }]);
+                          setNewRuleName(""); setNewRuleCriteria(""); setNewRuleMax(10);
+                        }}
+                        disabled={!newRuleName.trim() || !newRuleCriteria.trim()}
+                        className="w-full px-3 py-1.5 rounded-lg bg-amber-600/20 border border-amber-500/30 text-amber-400 text-xs font-medium hover:bg-amber-600/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5">
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                        Add Rule
+                      </button>
+                    </div>
+                  </details>
+                </div>
+              </details>
+
+              <hr className="border-neutral-800/50" />
+
+              {/* ─── EXPORT SETTINGS (Collapsible) ─── */}
+              <details className="group">
+                <summary className="flex items-center gap-2 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden">
+                  <svg className="w-4 h-4 text-emerald-400 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                  <h3 className="text-sm font-semibold text-white">Export to Google Sheets</h3>
+                  {sheetWebAppUrl && <span className="text-[10px] text-emerald-400 ml-auto">Configured</span>}
+                </summary>
+                <div className="mt-3 space-y-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-neutral-400">Web App URL</label>
+                    <input type="url" value={sheetWebAppUrl} onChange={(e) => setSheetWebAppUrl(e.target.value)}
+                      placeholder="https://script.google.com/macros/s/.../exec"
+                      className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors" />
+                  </div>
+                  {sheetWebAppUrl && (
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-neutral-400">Min Score Threshold ({minScoreThreshold}%)</label>
+                      <input type="range" min={0} max={100} value={minScoreThreshold} onChange={(e) => setMinScoreThreshold(parseInt(e.target.value))}
+                        className="w-full accent-indigo-500" />
+                      <p className="text-[11px] text-neutral-500">Only export profiles scoring at or above this threshold.</p>
+                    </div>
+                  )}
+                </div>
+              </details>
             </div>
           )}
 
@@ -1099,9 +1082,11 @@ export default function Home() {
       {/* History Section */}
       <section className="space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Job History</h2>
+          <h2 className="text-lg font-semibold text-white">
+            Job History{historyTotal > 0 && <span className="text-neutral-500 text-sm font-normal ml-2">({historyTotal})</span>}
+          </h2>
           <button
-            onClick={fetchHistory}
+            onClick={() => fetchHistory()}
             className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
           >
             Refresh
@@ -1201,6 +1186,31 @@ export default function Home() {
                 </svg>
               </a>
             ))}
+
+            {/* Pagination Controls */}
+            {historyTotalPages > 1 && (
+              <div className="flex items-center justify-between pt-3">
+                <p className="text-xs text-neutral-500">
+                  Page {historyPage} of {historyTotalPages} · {historyTotal} total jobs
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => fetchHistory(historyPage - 1)}
+                    disabled={historyPage <= 1}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-neutral-800 text-neutral-300 border border-neutral-700 hover:bg-neutral-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    onClick={() => fetchHistory(historyPage + 1)}
+                    disabled={historyPage >= historyTotalPages}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-neutral-800 text-neutral-300 border border-neutral-700 hover:bg-neutral-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </section>

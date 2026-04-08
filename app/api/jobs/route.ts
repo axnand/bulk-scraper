@@ -5,12 +5,21 @@ import { triggerProcessing } from "@/lib/trigger";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const jobs = await prisma.job.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 50,
-    });
+    const { searchParams } = new URL(req.url);
+    const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
+    const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "20", 10)));
+    const skip = (page - 1) * limit;
+
+    const [jobs, total] = await Promise.all([
+      prisma.job.findMany({
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.job.count(),
+    ]);
 
     return NextResponse.json({
       jobs: jobs.map((job: any) => ({
@@ -22,6 +31,12 @@ export async function GET() {
         failedCount: job.failedCount ?? 0,
         createdAt: job.createdAt,
       })),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
     });
   } catch (error) {
     console.error("Error listing jobs:", error);
@@ -63,6 +78,7 @@ export async function POST(req: NextRequest) {
                 sheetWebAppUrl: body.sheetWebAppUrl || "",
                 jdTitle: body.jdTitle || "Bulk Analysis",
                 aiModel: body.aiModel || "gpt-4.1",
+                aiProviderId: body.aiProviderId || undefined,
                 minScoreThreshold: body.minScoreThreshold ?? 0,
             });
         }
