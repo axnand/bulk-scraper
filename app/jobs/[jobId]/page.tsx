@@ -181,9 +181,12 @@ export default function JobResultsPage() {
   const completedTasks = data.tasks.filter((t) => t.status === "DONE");
   const failedTasks = data.tasks.filter((t) => t.status === "FAILED");
   const pendingTasks = data.tasks.filter((t) => t.status === "PENDING" || t.status === "PROCESSING");
+  const analysedTasks = completedTasks.filter((t) => t.analysisResult);
+  const allAnalysedIds = analysedTasks.map((t) => t.id);
+  const allSelected = allAnalysedIds.length > 0 && selectedIds.size === allAnalysedIds.length;
 
   return (
-    <main className="space-y-6">
+    <main className={`space-y-6 ${selectMode ? "pb-28" : ""}`}>
       {/* Header */}
       <div className="flex items-center gap-4">
         <Link href="/" className="text-indigo-400 hover:text-indigo-300 text-sm">
@@ -240,10 +243,27 @@ export default function JobResultsPage() {
       {/* Completed Profiles */}
       {completedTasks.length > 0 && (
         <section className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
             <h2 className="text-lg font-semibold text-white shrink-0">
               Scraped Profiles ({completedTasks.length})
             </h2>
+            {analysedTasks.length > 0 && !selectMode && (
+              <button
+                onClick={() => setSelectMode(true)}
+                className="ml-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-500/15 text-indigo-400 border border-indigo-500/25 hover:bg-indigo-500/25 transition-colors"
+              >
+                Select to export
+              </button>
+            )}
+            {selectMode && (
+              <button
+                onClick={() => setSelectedIds(allSelected ? new Set() : new Set(allAnalysedIds))}
+                className="ml-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-neutral-800 text-neutral-300 hover:bg-neutral-700 transition-colors"
+              >
+                {allSelected ? "Deselect all" : "Select all"}
+              </button>
+            )}
+            <div className="flex-1" />
             {completedTasks.length > 1 && (
               <input
                 type="text"
@@ -263,16 +283,44 @@ export default function JobResultsPage() {
                 const fullName = `${profile.first_name || ""} ${profile.last_name || ""}`.toLowerCase();
                 return fullName.includes(search.toLowerCase().trim());
               })
-              .map((task) => (
-                <ProfileCard
-                  key={task.id}
-                  task={task}
-                  expanded={expandedTask === task.id}
-                  onToggle={() =>
-                    setExpandedTask(expandedTask === task.id ? null : task.id)
-                  }
-                />
-              ))}
+              .map((task) => {
+                const isSelected = selectedIds.has(task.id);
+                const isSelectable = selectMode && !!task.analysisResult;
+                return (
+                  <div
+                    key={task.id}
+                    onClick={isSelectable ? () => toggleSelect(task.id) : undefined}
+                    className={`relative rounded-xl transition-all ${
+                      isSelectable ? "cursor-pointer" : ""
+                    } ${
+                      isSelected
+                        ? "ring-2 ring-indigo-500 ring-offset-2 ring-offset-neutral-950"
+                        : isSelectable
+                        ? "ring-1 ring-neutral-700 hover:ring-indigo-500/50"
+                        : ""
+                    }`}
+                  >
+                    {isSelected && (
+                      <div className="absolute top-3 right-3 z-10 h-6 w-6 rounded-full bg-indigo-500 flex items-center justify-center shadow-lg">
+                        <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      </div>
+                    )}
+                    {isSelectable && !isSelected && (
+                      <div className="absolute top-3 right-3 z-10 h-6 w-6 rounded-full border-2 border-neutral-600 bg-neutral-900/80" />
+                    )}
+                    <ProfileCard
+                      task={task}
+                      expanded={!selectMode && expandedTask === task.id}
+                      onToggle={() => {
+                        if (selectMode) return;
+                        setExpandedTask(expandedTask === task.id ? null : task.id);
+                      }}
+                    />
+                  </div>
+                );
+              })}
           </div>
         </section>
       )}
@@ -327,6 +375,95 @@ export default function JobResultsPage() {
             ))}
           </div>
         </section>
+      )}
+      {/* ── Floating Export Bar ── */}
+      {selectMode && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 flex justify-center pb-4 px-4 pointer-events-none">
+          <div className="pointer-events-auto w-full max-w-xl glassmorphism rounded-2xl border border-neutral-700 shadow-2xl px-5 py-4 flex items-center gap-3">
+            <div className="shrink-0 flex items-center gap-2">
+              <span className="inline-flex items-center justify-center h-7 px-2.5 rounded-full bg-indigo-500 text-white text-xs font-bold min-w-[28px]">
+                {selectedIds.size}
+              </span>
+              <span className="text-sm text-neutral-300">
+                {selectedIds.size === 0 ? "None selected" : `profile${selectedIds.size !== 1 ? "s" : ""} selected`}
+              </span>
+            </div>
+            <div className="flex-1" />
+            {exportMsg && (
+              <span className={`text-xs px-2 py-1 rounded-lg ${exportMsg.type === "success" ? "bg-emerald-500/15 text-emerald-400" : "bg-rose-500/15 text-rose-400"}`}>
+                {exportMsg.text}
+              </span>
+            )}
+            <button
+              onClick={() => { setExportMsg(null); setShowSheetModal(true); }}
+              disabled={exportLoading}
+              className="px-3 py-2 rounded-lg text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 transition-colors disabled:opacity-50 shrink-0"
+            >
+              Export to Sheet
+            </button>
+            <button
+              onClick={() => runExport("xlsx")}
+              disabled={exportLoading}
+              className="px-3 py-2 rounded-lg text-xs font-semibold bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-500/30 transition-colors disabled:opacity-50 shrink-0"
+            >
+              {exportLoading ? "Generating..." : "Download XLSX"}
+            </button>
+            <button
+              onClick={exitSelectMode}
+              disabled={exportLoading}
+              className="px-3 py-2 rounded-lg text-xs font-semibold bg-neutral-800 text-neutral-400 hover:bg-neutral-700 transition-colors disabled:opacity-50 shrink-0"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Sheet URL Modal ── */}
+      {showSheetModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-4" onClick={() => !exportLoading && setShowSheetModal(false)}>
+          <div className="glassmorphism rounded-2xl p-6 w-full max-w-md space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold text-white">Export to Google Sheet</h3>
+              <span className="text-xs text-neutral-500">
+                {selectedIds.size > 0 ? `${selectedIds.size} selected` : `All ${analysedTasks.length} profiles`}
+              </span>
+            </div>
+            <div>
+              <label className="text-xs text-neutral-400 block mb-1.5">Apps Script Web App URL</label>
+              <input
+                autoFocus
+                type="text"
+                placeholder="https://script.google.com/macros/s/..."
+                value={sheetUrl}
+                onChange={(e) => setSheetUrl(e.target.value)}
+                className="w-full bg-neutral-900/50 border border-neutral-700 rounded-lg px-3 py-2.5 text-sm text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-indigo-500"
+              />
+              <p className="text-[10px] text-neutral-500 mt-1.5">Profiles are exported as a separate tab in your existing sheet</p>
+            </div>
+            {exportMsg && (
+              <p className={`text-xs rounded-lg px-3 py-2 ${exportMsg.type === "success" ? "bg-emerald-500/10 text-emerald-400" : "bg-rose-500/10 text-rose-400"}`}>
+                {exportMsg.text}
+              </p>
+            )}
+            <div className="flex gap-2">
+              <button
+                onClick={() => runExport("sheet")}
+                disabled={exportLoading || !sheetUrl.trim()}
+                className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 transition-colors disabled:opacity-40"
+              >
+                {exportLoading ? "Exporting..." : "Export"}
+              </button>
+              <button
+                onClick={() => { setShowSheetModal(false); setExportMsg(null); }}
+                disabled={exportLoading}
+                className="px-4 py-2.5 rounded-lg text-sm font-medium bg-neutral-800 text-neutral-400 hover:bg-neutral-700 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );
