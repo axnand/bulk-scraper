@@ -78,7 +78,8 @@ export async function GET(req: NextRequest) {
           aiModel: settings?.aiModel || "gpt-4.1",
           sheetWebAppUrl: settings?.sheetWebAppUrl || "",
           minScoreThreshold: settings?.minScoreThreshold ?? 0,
-          systemPrompt: settings?.systemPrompt || null,
+          promptRole: settings?.promptRole || null,
+          promptGuidelines: settings?.promptGuidelines || null,
         },
         aiProvider: aiProvider
           ? {
