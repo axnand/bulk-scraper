@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { buildSystemPrompt } from "@/lib/analyzer";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +16,8 @@ export async function GET() {
         aiProviderId: null,
         sheetWebAppUrl: "",
         minScoreThreshold: 0,
-        systemPrompt: null,
+        promptRole: null,
+        promptGuidelines: null,
       }
     );
   } catch (error) {
@@ -38,15 +38,16 @@ export async function PUT(req: NextRequest) {
         aiProviderId: body.aiProviderId || null,
         sheetWebAppUrl: body.sheetWebAppUrl || "",
         minScoreThreshold: body.minScoreThreshold ?? 0,
-        systemPrompt: body.systemPrompt ?? null,
+        promptRole: body.promptRole ?? null,
+        promptGuidelines: body.promptGuidelines ?? null,
       },
       update: {
         ...(body.aiModel != null && { aiModel: body.aiModel }),
         ...(body.aiProviderId !== undefined && { aiProviderId: body.aiProviderId || null }),
         ...(body.sheetWebAppUrl != null && { sheetWebAppUrl: body.sheetWebAppUrl }),
         ...(body.minScoreThreshold != null && { minScoreThreshold: body.minScoreThreshold }),
-        // Explicit undefined check — `null` clears the override, missing key = no change
-        ...(body.systemPrompt !== undefined && { systemPrompt: body.systemPrompt || null }),
+        ...(body.promptRole !== undefined && { promptRole: body.promptRole || null }),
+        ...(body.promptGuidelines !== undefined && { promptGuidelines: body.promptGuidelines || null }),
       },
     });
 

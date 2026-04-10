@@ -39,8 +39,10 @@ export interface AnalysisConfig {
   customScoringRules?: CustomScoringRule[];
   aiModel?: string;
   aiProviderId?: string;
-  /** When set, replaces the entire built-in system prompt. May contain {{DATE}}, {{SCORING_RULES}}, {{SCORING_SCHEMA}} variables. */
-  systemPromptOverride?: string;
+  /** User-defined AI evaluator identity. Replaces the default "You are a strict ATS evaluator..." header. */
+  promptRole?: string;
+  /** User-defined evaluation guidelines. Injected after the critical instructions block. */
+  promptGuidelines?: string;
 }
 
 export interface CandidateInfo {
@@ -415,11 +417,23 @@ function parseJobDescription(jdText: string) {
 
 // ─── Prompt Builders ─────────────────────────────────────────────
 
+/**
+ * Assembles the full system prompt from 4 layers:
+ *   1. Identity (user-configurable via promptRole)
+ *   2. Behavioral rules (built-in + user's guidelines + per-job recruiter context)
+ *   3. Scoring rules (auto-generated from enabled dimensions)
+ *   4. JSON output schema (internal, never user-facing)
+ */
 export function buildSystemPrompt(
   scoringRules: ScoringRules,
   customScoringRules: CustomScoringRule[],
-  customPrompt?: string
+  options?: {
+    customPrompt?: string;       // Per-job recruiter context (from job creation form)
+    promptRole?: string;         // User's evaluator identity (from Settings)
+    promptGuidelines?: string;   // User's evaluation guidelines (from Settings)
+  }
 ): string {
+  const opts = options || {};
   const enabled: Record<string, boolean> = {};
   for (const key of Object.keys(LLM_RULE_POINTS)) {
     enabled[key] = (scoringRules as any)[key] !== false;
@@ -427,6 +441,31 @@ export function buildSystemPrompt(
 
   const enabledCustomRules = (customScoringRules || []).filter((r) => r.enabled);
 
+  // ── SECTION 1: Identity ──
+  const today = new Date().toISOString().split("T")[0];
+  const identity = opts.promptRole?.trim()
+    ? `${opts.promptRole.trim()} Today's date is ${today}. Do NOT treat recent or current dates as typos — they are valid. Score the candidate using ONLY the rules below. Stability, location, and candidate info are pre-computed — do NOT evaluate them.`
+    : `You are a strict ATS evaluator. Today's date is ${today}. Do NOT treat recent or current dates as typos — they are valid. Score the candidate using ONLY the rules below. Stability, location, and candidate info are pre-computed — do NOT evaluate them.`;
+
+  // ── SECTION 2: Behavioral instructions ──
+  let behavior = `CRITICAL INSTRUCTIONS:
+1. Your scoring values and scoringLogs MUST be consistent. If your log says an institution is "Tier 1", the score MUST reflect Tier 1 points. If your log says "assign X marks", the score MUST be exactly X. Never contradict yourself — the numeric score must EXACTLY match what your reasoning concludes.
+2. Be strict and evidence-based. Do NOT assume, infer, or give benefit of the doubt for missing data. If information is not present, treat it as absent.
+3. DISQUALIFIER CHECK: Before scoring, identify any hard requirements in the JD that the candidate clearly FAILS to meet. BE PRECISE — only flag genuine failures:
+   - For experience ranges (e.g. "7-15 years"): only flag if candidate is OUTSIDE the range. 8.3 years IS within 7-15, so that is NOT a disqualifier. Only flag if below minimum or above maximum.
+   - For mandatory skills: only flag if the skill is explicitly "required"/"mandatory" AND completely absent from the profile.
+   - Do NOT flag items that are "preferred" or "nice to have" as disqualifiers.
+   List genuine disqualifiers in "flags". If there are none, return an empty array.`;
+
+  if (opts.promptGuidelines?.trim()) {
+    behavior += `\n\nADDITIONAL EVALUATION GUIDELINES (follow these strictly in all scoring decisions):\n${opts.promptGuidelines.trim()}`;
+  }
+
+  if (opts.customPrompt?.trim()) {
+    behavior += `\n\nRECRUITER CONTEXT (for this specific job — use to guide ALL scoring decisions below):\n${opts.customPrompt.trim()}`;
+  }
+
+  // ── SECTION 3: Scoring rules (auto-generated from config toggles) ──
   let ruleNum = 0;
   const rulesText = Object.entries(RULE_PROMPTS)
     .filter(([k]) => enabled[k])
@@ -445,7 +484,7 @@ export function buildSystemPrompt(
 
   const allRulesText = [rulesText, customRulesText].filter(Boolean).join("\n\n");
 
-  // Build scoring JSON schema
+  // ── SECTION 4: JSON output schema (internal — never user-facing) ──
   const scoringSchema: string[] = [];
   if (enabled.growth) {
     scoringSchema.push('    "promotionSameCompany": <15 or "">');
@@ -466,7 +505,6 @@ export function buildSystemPrompt(
   if (enabled.skillMatch) {
     scoringSchema.push('    "skillsetMatch": <0 or 5 or 10>');
   }
-
   for (const r of enabledCustomRules) {
     scoringSchema.push(`    "custom_${r.id}": <0 to ${r.maxPoints} integer>`);
   }
@@ -478,26 +516,7 @@ export function buildSystemPrompt(
     )
     .join(",\n");
 
-  let prompt = `You are a strict ATS evaluator. Today's date is ${new Date().toISOString().split("T")[0]}. Do NOT treat recent or current dates as typos — they are valid. Score the candidate using ONLY the rules below. Stability, location, and candidate info are pre-computed — do NOT evaluate them.
-
-CRITICAL INSTRUCTIONS:
-1. Your scoring values and scoringLogs MUST be consistent. If your log says an institution is "Tier 1", the score MUST reflect Tier 1 points. If your log says "assign X marks", the score MUST be exactly X. Never contradict yourself — the numeric score must EXACTLY match what your reasoning concludes.
-2. Be strict and evidence-based. Do NOT assume, infer, or give benefit of the doubt for missing data. If information is not present, treat it as absent.
-3. DISQUALIFIER CHECK: Before scoring, identify any hard requirements in the JD that the candidate clearly FAILS to meet. BE PRECISE — only flag genuine failures:
-   - For experience ranges (e.g. "7-15 years"): only flag if candidate is OUTSIDE the range. 8.3 years IS within 7-15, so that is NOT a disqualifier. Only flag if below minimum or above maximum.
-   - For mandatory skills: only flag if the skill is explicitly "required"/"mandatory" AND completely absent from the profile.
-   - Do NOT flag items that are "preferred" or "nice to have" as disqualifiers.
-   List genuine disqualifiers in "flags". If there are none, return an empty array.`;
-
-  if (customPrompt) {
-    prompt += `\n\nRECRUITER CONTEXT (use this to guide ALL scoring decisions below):\n${customPrompt}`;
-  }
-
-  prompt += `\n\nSCORING RULES (mutually exclusive pairs: fill ONE, leave other as ""):
-
-${allRulesText}
-
-Respond with ONLY valid JSON (no markdown, no code fences):
+  const jsonBlock = `Respond with ONLY valid JSON (no markdown, no code fences):
 {
   "scoring": {
 ${scoringSchema.join(",\n")}
@@ -523,7 +542,8 @@ ${scoringSchema.join(",\n")}
 
 Be strict and evidence-based. Do NOT assume missing data. Do NOT give benefit of the doubt.`;
 
-  return prompt;
+  // ── Stitch all sections ──
+  return `${identity}\n\n${behavior}\n\nSCORING RULES (mutually exclusive pairs: fill ONE, leave other as ""):\n\n${allRulesText}\n\n${jsonBlock}`;
 }
 
 function buildUserPrompt(profileData: any, jobDescription: string, candidateInfo: CandidateInfo): string {
@@ -651,52 +671,6 @@ function buildUserPrompt(profileData: any, jobDescription: string, candidateInfo
   return prompt;
 }
 
-// ─── Template Variable Resolver ─────────────────────────────────
-// Resolves {{DATE}}, {{SCORING_RULES}}, {{SCORING_SCHEMA}} in user-provided system prompts.
-// This lets users write dynamic prompts without hardcoding volatile values.
-
-function resolveTemplateVars(
-  template: string,
-  scoringRules: ScoringRules,
-  customScoringRules: CustomScoringRule[]
-): string {
-  const enabled: Record<string, boolean> = {};
-  for (const key of Object.keys(LLM_RULE_POINTS)) {
-    enabled[key] = (scoringRules as any)[key] !== false;
-  }
-  const enabledCustomRules = (customScoringRules || []).filter((r) => r.enabled);
-
-  // {{DATE}}
-  let result = template.replace(/\{\{DATE\}\}/g, new Date().toISOString().split("T")[0]);
-
-  // {{SCORING_RULES}} — the numbered rule text blocks
-  if (result.includes("{{SCORING_RULES}}")) {
-    let ruleNum = 0;
-    const rulesText = Object.entries(RULE_PROMPTS)
-      .filter(([k]) => enabled[k])
-      .map(([, text]) => { ruleNum++; return `${ruleNum}. ${text}`; })
-      .join("\n\n");
-    const customRulesText = enabledCustomRules
-      .map((r) => { ruleNum++; return `${ruleNum}. ${r.name.toUpperCase()} (Max: ${r.maxPoints})\n   ${r.criteria}`; })
-      .join("\n\n");
-    result = result.replace(/\{\{SCORING_RULES\}\}/g, [rulesText, customRulesText].filter(Boolean).join("\n\n"));
-  }
-
-  // {{SCORING_SCHEMA}} — the JSON field declarations
-  if (result.includes("{{SCORING_SCHEMA}}")) {
-    const schema: string[] = [];
-    if (enabled.growth) { schema.push('    "promotionSameCompany": <15 or "">'); schema.push('    "promotionWithChange": <10 or "">'); }
-    if (enabled.graduation) { schema.push('    "gradTier1": <15 or 7 or "">'); schema.push('    "gradTier2": <10 or 5 or "">'); }
-    if (enabled.companyType) { schema.push('    "salesCRM": <15 or "">'); schema.push('    "otherB2B": <10 or 7 or "">'); }
-    if (enabled.mba) { schema.push('    "mbaA": <15 or "">'); schema.push('    "mbaOthers": <10 or "">'); }
-    if (enabled.skillMatch) { schema.push('    "skillsetMatch": <0 or 5 or 10>'); }
-    for (const r of enabledCustomRules) schema.push(`    "custom_${r.id}": <0 to ${r.maxPoints} integer>`);
-    result = result.replace(/\{\{SCORING_SCHEMA\}\}/g, schema.join(",\n"));
-  }
-
-  return result;
-}
-
 // ─── Main Analysis Function ──────────────────────────────────────
 
 export async function analyzeProfile(
@@ -743,15 +717,13 @@ export async function analyzeProfile(
   const userPrompt = buildUserPrompt(profileData, config.jobDescription, candidateInfo);
   const model = config.aiModel || "gpt-4.1";
 
-  // Resolve system prompt — use override if set, otherwise fall back to built-in
-  let systemPrompt: string;
-  if (config.systemPromptOverride?.trim()) {
-    systemPrompt = resolveTemplateVars(config.systemPromptOverride, rules, customRules);
-    console.log(`[Analyzer] Using custom system prompt override (${systemPrompt.length} chars)`);
-  } else {
-    systemPrompt = buildSystemPrompt(rules, customRules, config.customPrompt);
-    console.log(`[Analyzer] Using built-in system prompt (${systemPrompt.length} chars)`);
-  }
+  // Build system prompt — user's role/guidelines are stitched in automatically
+  const systemPrompt = buildSystemPrompt(rules, customRules, {
+    customPrompt: config.customPrompt,
+    promptRole: config.promptRole,
+    promptGuidelines: config.promptGuidelines,
+  });
+  console.log(`[Analyzer] System prompt built (${systemPrompt.length} chars), role=${config.promptRole ? 'custom' : 'default'}, guidelines=${config.promptGuidelines ? 'custom' : 'default'}`);
 
   console.log(`[Analyzer] Calling AI (${model}), prompt: ${userPrompt.length} chars`);
 

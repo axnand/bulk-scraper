@@ -128,7 +128,8 @@ model AppSettings {
   aiProviderId      String?  // FK to AiProvider — the default provider
   sheetWebAppUrl    String   @default("")
   minScoreThreshold Int      @default(0)
-  systemPrompt      String?  @db.Text // null = use built-in default; set = override entire LLM system prompt
+  promptRole        String?  @db.Text // Custom AI evaluator identity — null = default
+  promptGuidelines  String?  @db.Text // Custom evaluation guidelines — null = default
   updatedAt         DateTime @updatedAt
 }
 

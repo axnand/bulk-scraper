@@ -67,21 +67,23 @@ export async function POST(req: NextRequest) {
             );
         }
 
-        // 1. Fetch active system prompt override from global settings (snapshot at job-creation time)
-        let systemPromptOverride: string | undefined;
+        // 1. Fetch AI evaluation settings (snapshot at job-creation time)
+        let promptRole: string | undefined;
+        let promptGuidelines: string | undefined;
         try {
             const appSettings = await prisma.appSettings.findUnique({ where: { id: "global" } });
-            if (appSettings?.systemPrompt?.trim()) {
-                systemPromptOverride = appSettings.systemPrompt;
-                console.log(`[Jobs] Snapshotting custom system prompt (${systemPromptOverride.length} chars) into job config`);
+            if (appSettings?.promptRole?.trim()) promptRole = appSettings.promptRole;
+            if (appSettings?.promptGuidelines?.trim()) promptGuidelines = appSettings.promptGuidelines;
+            if (promptRole || promptGuidelines) {
+                console.log(`[Jobs] Snapshotting AI eval settings — role: ${promptRole ? 'custom' : 'default'}, guidelines: ${promptGuidelines ? 'custom' : 'default'}`);
             }
         } catch {
-            // Non-fatal — fall back to built-in prompt
+            // Non-fatal — fall back to built-in defaults
         }
 
         // 2. Build config object (if analysis fields provided)
         let config: string | undefined;
-        if (body.jobDescription || body.customPrompt || body.scoringRules || body.customScoringRules || systemPromptOverride) {
+        if (body.jobDescription || body.customPrompt || body.scoringRules || body.customScoringRules || promptRole || promptGuidelines) {
             config = JSON.stringify({
                 jobDescription: body.jobDescription || "",
                 customPrompt: body.customPrompt || "",
@@ -92,7 +94,8 @@ export async function POST(req: NextRequest) {
                 aiModel: body.aiModel || "gpt-4.1",
                 aiProviderId: body.aiProviderId || undefined,
                 minScoreThreshold: body.minScoreThreshold ?? 0,
-                ...(systemPromptOverride && { systemPromptOverride }),
+                ...(promptRole && { promptRole }),
+                ...(promptGuidelines && { promptGuidelines }),
             });
         }
 
