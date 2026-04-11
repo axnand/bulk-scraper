@@ -67,28 +67,54 @@ export async function POST(req: NextRequest) {
             );
         }
 
-        // 1. Fetch AI evaluation settings (snapshot at job-creation time)
+        // 1. Resolve evaluation config source
         let promptRole: string | undefined;
         let promptGuidelines: string | undefined;
-        try {
-            const appSettings = await prisma.appSettings.findUnique({ where: { id: "global" } });
-            if (appSettings?.promptRole?.trim()) promptRole = appSettings.promptRole;
-            if (appSettings?.promptGuidelines?.trim()) promptGuidelines = appSettings.promptGuidelines;
-            if (promptRole || promptGuidelines) {
-                console.log(`[Jobs] Snapshotting AI eval settings — role: ${promptRole ? 'custom' : 'default'}, guidelines: ${promptGuidelines ? 'custom' : 'default'}`);
+        let criticalInstructions: string | undefined;
+        let resolvedScoringRules = body.scoringRules || {};
+        let resolvedCustomScoringRules = body.customScoringRules || [];
+        let resolvedBuiltInRuleDescriptions = body.builtInRuleDescriptions || {};
+
+        if (body.evaluationConfigId) {
+            // New path: resolve PROMPT config from EvaluationConfig (scoring comes from body/JD)
+            try {
+                const evalConfig = await prisma.evaluationConfig.findUnique({
+                    where: { id: body.evaluationConfigId },
+                });
+                if (evalConfig) {
+                    if (evalConfig.promptRole?.trim()) promptRole = evalConfig.promptRole;
+                    if (evalConfig.promptGuidelines?.trim()) promptGuidelines = evalConfig.promptGuidelines;
+                    if (evalConfig.criticalInstructions?.trim()) criticalInstructions = evalConfig.criticalInstructions;
+                    console.log(`[Jobs] Using EvaluationConfig "${evalConfig.title}" (${evalConfig.id}) for prompt config`);
+                }
+            } catch (e) {
+                console.warn("[Jobs] Failed to load EvaluationConfig, falling back:", e);
             }
-        } catch {
-            // Non-fatal — fall back to built-in defaults
+        }
+
+        // Fallback: read from AppSettings (backward compat for extension)
+        if (!body.evaluationConfigId) {
+            try {
+                const appSettings = await prisma.appSettings.findUnique({ where: { id: "global" } });
+                if (appSettings?.promptRole?.trim()) promptRole = appSettings.promptRole;
+                if (appSettings?.promptGuidelines?.trim()) promptGuidelines = appSettings.promptGuidelines;
+                if (appSettings?.criticalInstructions?.trim()) criticalInstructions = appSettings.criticalInstructions;
+                if (promptRole || promptGuidelines || criticalInstructions) {
+                    console.log(`[Jobs] Snapshotting AI eval settings — role: ${promptRole ? 'custom' : 'default'}, guidelines: ${promptGuidelines ? 'custom' : 'default'}, criticalInstructions: ${criticalInstructions ? 'custom' : 'default'}`);
+                }
+            } catch {
+                // Non-fatal — fall back to built-in defaults
+            }
         }
 
         // 2. Build config object (if analysis fields provided)
         let config: string | undefined;
-        if (body.jobDescription || body.customPrompt || body.scoringRules || body.customScoringRules || promptRole || promptGuidelines) {
+        if (body.jobDescription || body.customPrompt || body.scoringRules || body.customScoringRules || body.evaluationConfigId || promptRole || promptGuidelines || criticalInstructions || body.builtInRuleDescriptions) {
             config = JSON.stringify({
                 jobDescription: body.jobDescription || "",
                 customPrompt: body.customPrompt || "",
-                scoringRules: body.scoringRules || {},
-                customScoringRules: body.customScoringRules || [],
+                scoringRules: resolvedScoringRules,
+                customScoringRules: resolvedCustomScoringRules,
                 sheetWebAppUrl: body.sheetWebAppUrl || "",
                 jdTitle: body.jdTitle || "Bulk Analysis",
                 aiModel: body.aiModel || "gpt-4.1",
@@ -96,6 +122,8 @@ export async function POST(req: NextRequest) {
                 minScoreThreshold: body.minScoreThreshold ?? 0,
                 ...(promptRole && { promptRole }),
                 ...(promptGuidelines && { promptGuidelines }),
+                ...(criticalInstructions && { criticalInstructions }),
+                ...(Object.keys(resolvedBuiltInRuleDescriptions).length > 0 && { builtInRuleDescriptions: resolvedBuiltInRuleDescriptions }),
             });
         }
 

@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { providerId, provider, baseUrl, apiKey, model } = body;
+    const { providerId, provider, baseUrl, apiKey, secretKey, model } = body;
 
     if (!model) {
       return NextResponse.json({ error: "model is required" }, { status: 400 });
@@ -30,6 +30,7 @@ export async function POST(req: NextRequest) {
           provider: provider || "openai-compatible",
           baseUrl: baseUrl.replace(/\/+$/, ""),
           apiKey,
+          secretKey: secretKey || null,
           models: JSON.stringify([model]),
         },
       });

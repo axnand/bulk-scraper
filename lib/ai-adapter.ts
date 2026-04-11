@@ -32,9 +32,10 @@ export interface ChatCompletionResult {
 
 interface ProviderConfig {
   name: string;
-  provider: string; // "openai-compatible" | "anthropic"
-  baseUrl: string;
-  apiKey: string;
+  provider: string; // "openai-compatible" | "anthropic" | "bedrock"
+  baseUrl: string;  // For Bedrock: AWS region (e.g. "us-east-1")
+  apiKey: string;   // For Bedrock: AWS Access Key ID
+  secretKey?: string; // AWS Secret Access Key (Bedrock only)
 }
 
 // ─── Provider Resolution ───────────────────────────────────────────
@@ -44,7 +45,7 @@ async function resolveProvider(providerId?: string): Promise<ProviderConfig> {
   if (providerId) {
     const p = await prisma.aiProvider.findUnique({ where: { id: providerId } });
     if (!p) throw new Error(`AI Provider not found: ${providerId}`);
-    return { name: p.name, provider: p.provider, baseUrl: p.baseUrl, apiKey: p.apiKey };
+    return { name: p.name, provider: p.provider, baseUrl: p.baseUrl, apiKey: p.apiKey, secretKey: p.secretKey || undefined };
   }
 
   // 2. Default provider (isDefault = true)
@@ -55,6 +56,7 @@ async function resolveProvider(providerId?: string): Promise<ProviderConfig> {
       provider: defaultProvider.provider,
       baseUrl: defaultProvider.baseUrl,
       apiKey: defaultProvider.apiKey,
+      secretKey: defaultProvider.secretKey || undefined,
     };
   }
 
@@ -173,6 +175,95 @@ async function anthropicRequest(
     model: result.model || model,
     provider: config.name,
   };
+}
+
+// ─── AWS Bedrock (Converse API) Request ────────────────────────────
+//
+// Auth: AWS Signature V4 via aws4fetch (no SDK needed).
+// baseUrl stores the AWS region; apiKey stores the Access Key ID;
+// secretKey stores the Secret Access Key.
+//
+// Model access must be enabled in the AWS console before use.
+
+async function bedrockRequest(
+  config: ProviderConfig,
+  model: string,
+  messages: ChatMessage[],
+  opts: ChatCompletionOptions
+): Promise<ChatCompletionResult> {
+  const { AwsClient } = await import("aws4fetch");
+
+  if (!config.secretKey) {
+    throw new Error(`${config.name}: AWS Secret Access Key is required for Bedrock.`);
+  }
+
+  const region = config.baseUrl; // stored as the region string, e.g. "us-east-1"
+  const url = `https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(model)}/converse`;
+
+  const aws = new AwsClient({
+    accessKeyId: config.apiKey,
+    secretAccessKey: config.secretKey,
+    region,
+    service: "bedrock",
+  });
+
+  const systemMsg = messages.find((m) => m.role === "system");
+  const userMsgs = messages.filter((m) => m.role !== "system");
+
+  const body: any = {
+    messages: userMsgs.map((m) => ({
+      role: m.role,
+      content: [{ text: m.content }],
+    })),
+    inferenceConfig: {
+      maxTokens: opts.max_tokens ?? 2000,
+      temperature: opts.temperature ?? 0.1,
+    },
+  };
+  if (systemMsg) body.system = [{ text: systemMsg.content }];
+
+  const response = await aws.fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errData: any = await response.json().catch(() => ({}));
+    const msg = errData.message || errData.Message || `API error (${response.status})`;
+    if (response.status === 403) throw new Error(`${config.name}: Access denied — check IAM permissions and that model access is enabled in the AWS console.`);
+    if (response.status === 404) throw new Error(`${config.name}: Model "${model}" not found in region "${region}". Ensure model access is enabled in the AWS console.`);
+    if (response.status === 429) throw new Error(`${config.name}: Rate limit exceeded.`);
+    throw new Error(`${config.name}: ${msg}`);
+  }
+
+  const result = await response.json();
+  const content = result.output?.message?.content?.[0]?.text;
+  if (!content) throw new Error(`No response content from ${config.name}.`);
+
+  return {
+    content,
+    usage: {
+      prompt_tokens: result.usage?.inputTokens || 0,
+      completion_tokens: result.usage?.outputTokens || 0,
+      total_tokens: result.usage?.totalTokens || 0,
+    },
+    model,
+    provider: config.name,
+  };
+}
+
+// Bedrock streaming — Converse Stream API uses a binary event stream protocol
+// that requires the AWS SDK to decode correctly. We fall back to the regular
+// Converse API and yield the full response as a single chunk instead.
+async function* bedrockStream(
+  config: ProviderConfig,
+  model: string,
+  messages: ChatMessage[],
+  opts: ChatCompletionOptions
+): AsyncGenerator<string> {
+  const result = await bedrockRequest(config, model, messages, opts);
+  yield result.content;
 }
 
 // ─── OpenAI-Compatible Streaming ──────────────────────────────────
@@ -319,6 +410,9 @@ export async function* streamChatCompletion(
     case "anthropic":
       yield* anthropicStream(config, model, messages, opts);
       break;
+    case "bedrock":
+      yield* bedrockStream(config, model, messages, opts);
+      break;
     case "openai-compatible":
     default:
       yield* openaiCompatibleStream(config, model, messages, opts);
@@ -338,6 +432,8 @@ export async function chatCompletion(
   switch (config.provider) {
     case "anthropic":
       return anthropicRequest(config, model, messages, opts);
+    case "bedrock":
+      return bedrockRequest(config, model, messages, opts);
     case "openai-compatible":
     default:
       return openaiCompatible(config, model, messages, opts);

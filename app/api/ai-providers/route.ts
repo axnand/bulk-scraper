@@ -15,6 +15,8 @@ export async function GET() {
       providers.map((p) => ({
         ...p,
         apiKey: p.apiKey.slice(0, 8) + "..." + p.apiKey.slice(-4),
+        // Mask secret key: just signal presence, never expose value
+        secretKey: p.secretKey ? "••••" : null,
         models: JSON.parse(p.models),
       }))
     );
@@ -59,6 +61,7 @@ export async function POST(req: NextRequest) {
         provider: body.provider,
         baseUrl: body.baseUrl.replace(/\/+$/, ""),
         apiKey: body.apiKey,
+        secretKey: body.secretKey || null,
         models: JSON.stringify(models),
         isDefault: body.isDefault || false,
       },
@@ -67,6 +70,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ...provider,
       apiKey: provider.apiKey.slice(0, 8) + "..." + provider.apiKey.slice(-4),
+      secretKey: provider.secretKey ? "••••" : null,
       models: JSON.parse(provider.models),
     });
   } catch (error) {
@@ -89,6 +93,8 @@ export async function PUT(req: NextRequest) {
     if (body.provider != null) updateData.provider = body.provider;
     if (body.baseUrl != null) updateData.baseUrl = body.baseUrl.replace(/\/+$/, "");
     if (body.apiKey != null) updateData.apiKey = body.apiKey;
+    // Only update secretKey if explicitly provided; null clears it, undefined skips it
+    if (body.secretKey !== undefined) updateData.secretKey = body.secretKey || null;
     if (body.models != null) updateData.models = JSON.stringify(body.models);
 
     if (body.isDefault === true) {
@@ -109,6 +115,7 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({
       ...provider,
       apiKey: provider.apiKey.slice(0, 8) + "..." + provider.apiKey.slice(-4),
+      secretKey: provider.secretKey ? "••••" : null,
       models: JSON.parse(provider.models),
     });
   } catch (error) {

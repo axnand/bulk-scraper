@@ -43,6 +43,10 @@ export interface AnalysisConfig {
   promptRole?: string;
   /** User-defined evaluation guidelines. Injected after the critical instructions block. */
   promptGuidelines?: string;
+  /** Override the default CRITICAL INSTRUCTIONS behavioral rules block. */
+  criticalInstructions?: string;
+  /** Override individual built-in rule descriptions. Keyed by rule ID (growth, graduation, etc.). */
+  builtInRuleDescriptions?: Record<string, string>;
 }
 
 export interface CandidateInfo {
@@ -129,7 +133,7 @@ const RULE_POINTS: Record<string, number> = {
 
 // ─── LLM Rule Prompt Blocks ───────────────────────────────────────
 
-const RULE_PROMPTS: Record<string, string> = {
+export const DEFAULT_RULE_PROMPTS: Record<string, string> = {
   growth: `GROWTH (Max: 15) — MUTUALLY EXCLUSIVE. Evaluate ONLY full-time roles. IGNORE internships, trainee positions, and part-time roles entirely — they do not exist for this evaluation.
 
    USE THIS SENIORITY LADDER TO COMPARE TITLES (lowest → highest):
@@ -415,6 +419,17 @@ function parseJobDescription(jdText: string) {
   return parsed;
 }
 
+// ─── Default Critical Instructions ───────────────────────────────
+
+export const DEFAULT_CRITICAL_INSTRUCTIONS = `CRITICAL INSTRUCTIONS:
+1. Your scoring values and scoringLogs MUST be consistent. If your log says an institution is "Tier 1", the score MUST reflect Tier 1 points. If your log says "assign X marks", the score MUST be exactly X. Never contradict yourself — the numeric score must EXACTLY match what your reasoning concludes.
+2. Be strict and evidence-based. Do NOT assume, infer, or give benefit of the doubt for missing data. If information is not present, treat it as absent.
+3. DISQUALIFIER CHECK: Before scoring, identify any hard requirements in the JD that the candidate clearly FAILS to meet. BE PRECISE — only flag genuine failures:
+   - For experience ranges (e.g. "7-15 years"): only flag if candidate is OUTSIDE the range. 8.3 years IS within 7-15, so that is NOT a disqualifier. Only flag if below minimum or above maximum.
+   - For mandatory skills: only flag if the skill is explicitly "required"/"mandatory" AND completely absent from the profile.
+   - Do NOT flag items that are "preferred" or "nice to have" as disqualifiers.
+   List genuine disqualifiers in "flags". If there are none, return an empty array.`;
+
 // ─── Prompt Builders ─────────────────────────────────────────────
 
 /**
@@ -431,6 +446,8 @@ export function buildSystemPrompt(
     customPrompt?: string;       // Per-job recruiter context (from job creation form)
     promptRole?: string;         // User's evaluator identity (from Settings)
     promptGuidelines?: string;   // User's evaluation guidelines (from Settings)
+    criticalInstructions?: string;           // Override default behavioral rules
+    builtInRuleDescriptions?: Record<string, string>; // Override per-rule descriptions
   }
 ): string {
   const opts = options || {};
@@ -448,14 +465,7 @@ export function buildSystemPrompt(
     : `You are a strict ATS evaluator. Today's date is ${today}. Do NOT treat recent or current dates as typos — they are valid. Score the candidate using ONLY the rules below. Stability, location, and candidate info are pre-computed — do NOT evaluate them.`;
 
   // ── SECTION 2: Behavioral instructions ──
-  let behavior = `CRITICAL INSTRUCTIONS:
-1. Your scoring values and scoringLogs MUST be consistent. If your log says an institution is "Tier 1", the score MUST reflect Tier 1 points. If your log says "assign X marks", the score MUST be exactly X. Never contradict yourself — the numeric score must EXACTLY match what your reasoning concludes.
-2. Be strict and evidence-based. Do NOT assume, infer, or give benefit of the doubt for missing data. If information is not present, treat it as absent.
-3. DISQUALIFIER CHECK: Before scoring, identify any hard requirements in the JD that the candidate clearly FAILS to meet. BE PRECISE — only flag genuine failures:
-   - For experience ranges (e.g. "7-15 years"): only flag if candidate is OUTSIDE the range. 8.3 years IS within 7-15, so that is NOT a disqualifier. Only flag if below minimum or above maximum.
-   - For mandatory skills: only flag if the skill is explicitly "required"/"mandatory" AND completely absent from the profile.
-   - Do NOT flag items that are "preferred" or "nice to have" as disqualifiers.
-   List genuine disqualifiers in "flags". If there are none, return an empty array.`;
+  let behavior = opts.criticalInstructions?.trim() || DEFAULT_CRITICAL_INSTRUCTIONS;
 
   if (opts.promptGuidelines?.trim()) {
     behavior += `\n\nADDITIONAL EVALUATION GUIDELINES (follow these strictly in all scoring decisions):\n${opts.promptGuidelines.trim()}`;
@@ -466,8 +476,9 @@ export function buildSystemPrompt(
   }
 
   // ── SECTION 3: Scoring rules (auto-generated from config toggles) ──
+  const ruleDescriptions = { ...DEFAULT_RULE_PROMPTS, ...(opts.builtInRuleDescriptions || {}) };
   let ruleNum = 0;
-  const rulesText = Object.entries(RULE_PROMPTS)
+  const rulesText = Object.entries(ruleDescriptions)
     .filter(([k]) => enabled[k])
     .map(([, text]) => {
       ruleNum++;
@@ -722,6 +733,8 @@ export async function analyzeProfile(
     customPrompt: config.customPrompt,
     promptRole: config.promptRole,
     promptGuidelines: config.promptGuidelines,
+    criticalInstructions: config.criticalInstructions,
+    builtInRuleDescriptions: config.builtInRuleDescriptions,
   });
   console.log(`[Analyzer] System prompt built (${systemPrompt.length} chars), role=${config.promptRole ? 'custom' : 'default'}, guidelines=${config.promptGuidelines ? 'custom' : 'default'}`);
 

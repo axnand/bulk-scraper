@@ -104,13 +104,14 @@ model AnalysisRecord {
 }
 
 model JdTemplate {
-  id                 String   @id @default(cuid())
-  title              String
-  content            String   @db.Text
-  scoringRules       String   @db.Text   // JSON: {"stability":true,"growth":false,...}
-  customScoringRules String   @db.Text   // JSON: [{id,name,maxPoints,criteria,enabled}]
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  id                       String   @id @default(cuid())
+  title                    String
+  content                  String   @db.Text
+  scoringRules             String   @db.Text   // JSON: {"stability":true,"growth":false,...}
+  customScoringRules       String   @db.Text   // JSON: [{id,name,maxPoints,criteria,enabled}]
+  builtInRuleDescriptions  String   @db.Text   @default("{}") // JSON: {"growth":"...","mba":"..."}
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
 }
 
 model PromptTemplate {
@@ -122,25 +123,46 @@ model PromptTemplate {
   updatedAt DateTime @updatedAt
 }
 
+model EvaluationConfig {
+  id                   String   @id @default(cuid())
+  title                String
+  isDefault            Boolean  @default(false)
+  promptRole           String?  @db.Text
+  criticalInstructions String?  @db.Text
+  promptGuidelines     String?  @db.Text
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
 model AppSettings {
-  id                String   @id @default("global")
-  aiModel           String   @default("gpt-4.1")
-  aiProviderId      String?  // FK to AiProvider — the default provider
-  sheetWebAppUrl    String   @default("")
-  minScoreThreshold Int      @default(0)
-  promptRole        String?  @db.Text // Custom AI evaluator identity — null = default
-  promptGuidelines  String?  @db.Text // Custom evaluation guidelines — null = default
-  updatedAt         DateTime @updatedAt
+  id                    String   @id @default("global")
+  aiModel               String   @default("gpt-4.1")
+  aiProviderId          String?  // FK to AiProvider — the default provider
+  sheetWebAppUrl        String   @default("")
+  minScoreThreshold     Int      @default(0)
+  promptRole            String?  @db.Text // Custom AI evaluator identity — null = default
+  promptGuidelines      String?  @db.Text // Custom evaluation guidelines — null = default
+  criticalInstructions  String?  @db.Text // Custom behavioral rules — null = default
+  updatedAt             DateTime @updatedAt
 }
 
 model AiProvider {
   id        String   @id @default(cuid())
   name      String           // User-friendly label, e.g. "My Gemini"
-  provider  String           // "openai-compatible" | "anthropic"
-  baseUrl   String           // e.g. "https://api.openai.com/v1"
-  apiKey    String           // Stored in DB (user-managed)
+  provider  String           // "openai-compatible" | "anthropic" | "bedrock"
+  baseUrl   String           // API base URL — for Bedrock: AWS region (e.g. "us-east-1")
+  apiKey    String           // API key — for Bedrock: AWS Access Key ID
+  secretKey String?  @db.Text // AWS Secret Access Key (Bedrock only; null for all other providers)
   models    String   @db.Text // JSON array: ["gpt-4.1","gpt-4.1-mini"]
   isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SheetIntegration {
+  id        String   @id @default(cuid())
+  name      String
+  url       String   @db.Text
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

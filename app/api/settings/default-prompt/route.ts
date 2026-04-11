@@ -16,10 +16,12 @@ export async function GET() {
     // Fetch current settings to include any user customizations in the preview
     let promptRole: string | undefined;
     let promptGuidelines: string | undefined;
+    let criticalInstructions: string | undefined;
     try {
       const settings = await prisma.appSettings.findUnique({ where: { id: "global" } });
       if (settings?.promptRole) promptRole = settings.promptRole;
       if (settings?.promptGuidelines) promptGuidelines = settings.promptGuidelines;
+      if (settings?.criticalInstructions) criticalInstructions = settings.criticalInstructions;
     } catch { /* non-fatal */ }
 
     const assembledPrompt = buildSystemPrompt(
@@ -33,7 +35,7 @@ export async function GET() {
         location: true,
       },
       [],
-      { promptRole, promptGuidelines }
+      { promptRole, promptGuidelines, criticalInstructions }
     );
 
     return NextResponse.json({ prompt: assembledPrompt });

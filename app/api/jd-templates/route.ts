@@ -14,6 +14,7 @@ export async function GET() {
         ...t,
         scoringRules: JSON.parse(t.scoringRules),
         customScoringRules: JSON.parse(t.customScoringRules),
+        builtInRuleDescriptions: JSON.parse(t.builtInRuleDescriptions || "{}"),
       }))
     );
   } catch (error) {
@@ -36,6 +37,7 @@ export async function POST(req: NextRequest) {
         content: body.content,
         scoringRules: JSON.stringify(body.scoringRules || {}),
         customScoringRules: JSON.stringify(body.customScoringRules || []),
+        builtInRuleDescriptions: JSON.stringify(body.builtInRuleDescriptions || {}),
       },
     });
 
@@ -43,6 +45,7 @@ export async function POST(req: NextRequest) {
       ...template,
       scoringRules: JSON.parse(template.scoringRules),
       customScoringRules: JSON.parse(template.customScoringRules),
+      builtInRuleDescriptions: JSON.parse(template.builtInRuleDescriptions || "{}"),
     });
   } catch (error) {
     console.error("Error creating JD template:", error);

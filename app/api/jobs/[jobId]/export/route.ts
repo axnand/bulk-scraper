@@ -28,7 +28,6 @@ export async function POST(
   try {
     const { jobId } = await params;
     const body = await req.json().catch(() => ({}));
-    const threshold = Number(body.minScoreThreshold) || 0;
     const taskIds: string[] | undefined = body.taskIds;
 
     // ── 1. Fetch job + config ──────────────────────────────────────────
@@ -38,6 +37,11 @@ export async function POST(
     }
 
     const config = job.config ? JSON.parse(job.config) : {};
+    // Prefer explicit request body value; fall back to snapshotted job config
+    const threshold =
+      body.minScoreThreshold != null
+        ? Number(body.minScoreThreshold)
+        : Number(config.minScoreThreshold) || 0;
     const scoringRules: ScoringRulesConfig = config.scoringRules || {};
     const jdTitle = config.jdTitle || `Job ${jobId.slice(0, 8)}`;
 

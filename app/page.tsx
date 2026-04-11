@@ -2,6 +2,9 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import { DEFAULT_RULE_PROMPTS, DEFAULT_CRITICAL_INSTRUCTIONS } from "@/lib/analyzer";
+
+const DEFAULT_ROLE = "You are a strict ATS evaluator.";
 
 type JobStatus = "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "CANCELLED" | "PAUSED";
 
@@ -66,12 +69,16 @@ interface JdTemplate {
   content: string;
   scoringRules: Record<string, boolean>;
   customScoringRules: { id: string; name: string; maxPoints: number; criteria: string; enabled: boolean }[];
+  builtInRuleDescriptions?: Record<string, string>;
 }
 
-interface PromptTemplate {
+interface EvaluationConfigType {
   id: string;
   title: string;
-  content: string;
+  isDefault: boolean;
+  promptRole: string | null;
+  criticalInstructions: string | null;
+  promptGuidelines: string | null;
 }
 
 interface JobResponse {
@@ -85,6 +92,12 @@ interface JobResponse {
     done: number;
     failed: number;
   };
+}
+
+interface SheetIntegrationType {
+  id: string;
+  name: string;
+  url: string;
 }
 
 export default function Home() {
@@ -104,7 +117,6 @@ export default function Home() {
   // Analysis config state
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [jobDescription, setJobDescription] = useState("");
-  const [customPrompt, setCustomPrompt] = useState("");
   const [sheetWebAppUrl, setSheetWebAppUrl] = useState("");
   const [scoringRules, setScoringRules] = useState({
     stability: true, growth: true, graduation: true,
@@ -120,6 +132,15 @@ export default function Home() {
   const [newRuleMax, setNewRuleMax] = useState(10);
   const [newRuleCriteria, setNewRuleCriteria] = useState("");
 
+  // Built-in rule description overrides (keyed by rule key e.g. "growth")
+  const [builtInRuleDescriptions, setBuiltInRuleDescriptions] = useState<Record<string, string>>({});
+  const [expandedRuleKey, setExpandedRuleKey] = useState<string | null>(null);
+
+  // Prompt config — working copy from selected eval config
+  const [promptRole, setPromptRole] = useState("");
+  const [promptGuidelines, setPromptGuidelines] = useState("");
+  const [criticalInstructions, setCriticalInstructions] = useState("");
+
   // AI Provider list (for selector dropdown — managed in /settings)
   const [aiProviders, setAiProviders] = useState<any[]>([]);
 
@@ -127,17 +148,40 @@ export default function Home() {
   const [jdTemplates, setJdTemplates] = useState<JdTemplate[]>([]);
   const [jdTemplateName, setJdTemplateName] = useState("");
 
-  // Custom Prompt template library state
-  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
-  const [promptTemplateName, setPromptTemplateName] = useState("");
-
   // Template selection & editing state
   const [selectedJdTemplateId, setSelectedJdTemplateId] = useState<string | null>(null);
   const [editingJdTemplate, setEditingJdTemplate] = useState(false);
-  const [selectedPromptTemplateId, setSelectedPromptTemplateId] = useState<string | null>(null);
-  const [editingPromptTemplate, setEditingPromptTemplate] = useState(false);
   const [showNewJdForm, setShowNewJdForm] = useState(false);
-  const [showNewPromptForm, setShowNewPromptForm] = useState(false);
+
+  // ─── Evaluation Config state ───
+  const [evaluationConfigs, setEvaluationConfigs] = useState<EvaluationConfigType[]>([]);
+  const [selectedEvalConfigId, setSelectedEvalConfigId] = useState<string | null>(null);
+  const [editingEvalConfig, setEditingEvalConfig] = useState(false);
+  const [showNewEvalConfigInput, setShowNewEvalConfigInput] = useState(false);
+  const [evalConfigName, setEvalConfigName] = useState("");
+
+  // ─── Preview Prompt state ───
+  const [previewPrompt, setPreviewPrompt] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  // ─── Toast notifications ───
+  const [toasts, setToasts] = useState<{ id: number; message: string; type: 'success' | 'error' }[]>([]);
+
+  // ─── Title editing for templates/configs ───
+  const [jdTemplateEditTitle, setJdTemplateEditTitle] = useState("");
+  const [evalConfigEditTitle, setEvalConfigEditTitle] = useState("");
+
+  // ─── Eval config save loading ───
+  const [evalConfigSaving, setEvalConfigSaving] = useState(false);
+
+  // ─── Sheets state ───
+  const [sheetIntegrations, setSheetIntegrations] = useState<SheetIntegrationType[]>([]);
+  const [isAddingSheet, setIsAddingSheet] = useState(false);
+  const [newSheetName, setNewSheetName] = useState("");
+  const [newSheetUrl, setNewSheetUrl] = useState("");
+  const [editingSheetId, setEditingSheetId] = useState<string | null>(null);
+  const [editSheetName, setEditSheetName] = useState("");
+  const [editSheetUrl, setEditSheetUrl] = useState("");
 
   // Calculate generic progress percentage
   const progress = jobData
@@ -191,18 +235,18 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [history]);
 
-  // Load templates, settings, and AI providers from DB on mount
+  // Load templates, settings, eval configs, and AI providers from DB on mount
   useEffect(() => {
     async function loadConfig() {
       try {
-        const [jdRes, promptRes, settingsRes, providersRes] = await Promise.all([
+        const [jdRes, settingsRes, providersRes, evalConfigsRes, sheetsRes] = await Promise.all([
           fetch("/api/jd-templates"),
-          fetch("/api/prompt-templates"),
           fetch("/api/settings"),
           fetch("/api/ai-providers"),
+          fetch("/api/evaluation-configs"),
+          fetch("/api/sheet-integrations"),
         ]);
         if (jdRes.ok) setJdTemplates(await jdRes.json());
-        if (promptRes.ok) setPromptTemplates(await promptRes.json());
         if (providersRes.ok) setAiProviders(await providersRes.json());
         if (settingsRes.ok) {
           const s = await settingsRes.json();
@@ -211,33 +255,233 @@ export default function Home() {
           if (s.sheetWebAppUrl) setSheetWebAppUrl(s.sheetWebAppUrl);
           if (s.minScoreThreshold != null) setMinScoreThreshold(s.minScoreThreshold);
         }
+        if (evalConfigsRes.ok) {
+          const configs: EvaluationConfigType[] = await evalConfigsRes.json();
+          setEvaluationConfigs(configs);
+          // Auto-select the system default
+          const defaultConfig = configs.find(c => c.isDefault);
+          if (defaultConfig) {
+            setSelectedEvalConfigId(defaultConfig.id);
+            loadEvalConfigIntoState(defaultConfig);
+          }
+        }
+        if (sheetsRes.ok) {
+          const sheets = await sheetsRes.json();
+          setSheetIntegrations(sheets);
+        }
       } catch { /* silently fail */ }
     }
     loadConfig();
   }, []);
 
-  // Save settings to DB
+  // Lightweight toast helper — auto-dismisses after 3 seconds
+  function showToast(message: string, type: 'success' | 'error' = 'success') {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
+  }
+
+  // Load an evaluation config into the working state (prompt fields only)
+  function loadEvalConfigIntoState(config: EvaluationConfigType) {
+    if (config.isDefault) {
+      // System default — show built-in defaults
+      setPromptRole(DEFAULT_ROLE);
+      setCriticalInstructions(DEFAULT_CRITICAL_INSTRUCTIONS);
+      setPromptGuidelines("");
+    } else {
+      setPromptRole(config.promptRole || "");
+      setCriticalInstructions(config.criticalInstructions || "");
+      setPromptGuidelines(config.promptGuidelines || "");
+    }
+  }
+
+  // Select an eval config
+  function selectEvalConfig(config: EvaluationConfigType) {
+    setSelectedEvalConfigId(config.id);
+    loadEvalConfigIntoState(config);
+    setEditingEvalConfig(false);
+    setShowNewEvalConfigInput(false);
+    setEvalConfigEditTitle(config.title);
+  }
+
+  // Create a new eval config (pre-filled with defaults, then auto-select and enable editing)
+  async function createNewEvalConfig() {
+    if (!evalConfigName.trim()) return;
+    try {
+      const res = await fetch("/api/evaluation-configs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: evalConfigName,
+          promptRole: DEFAULT_ROLE,
+          criticalInstructions: DEFAULT_CRITICAL_INSTRUCTIONS,
+          promptGuidelines: null,
+        }),
+      });
+      if (!res.ok) return;
+      const newConfig = await res.json();
+      setEvaluationConfigs(prev => {
+        const defaultConfigs = prev.filter(c => c.isDefault);
+        const rest = prev.filter(c => !c.isDefault);
+        return [...defaultConfigs, newConfig, ...rest];
+      });
+      setEvalConfigName("");
+      setSelectedEvalConfigId(newConfig.id);
+      setEvalConfigEditTitle(newConfig.title);
+      setPromptRole(DEFAULT_ROLE);
+      setCriticalInstructions(DEFAULT_CRITICAL_INSTRUCTIONS);
+      setPromptGuidelines("");
+      setShowNewEvalConfigInput(false);
+      setEditingEvalConfig(true);
+      showToast("Config created!");
+    } catch { /* silently fail */ }
+  }
+
+  // Update an existing eval config (prompt fields only)
+  async function updateEvalConfig(id: string) {
+    setEvalConfigSaving(true);
+    try {
+      const res = await fetch(`/api/evaluation-configs/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(evalConfigEditTitle.trim() && { title: evalConfigEditTitle.trim() }),
+          promptRole: promptRole || null,
+          criticalInstructions: criticalInstructions || null,
+          promptGuidelines: promptGuidelines || null,
+        }),
+      });
+      if (!res.ok) return;
+      const updated = await res.json();
+      setEvaluationConfigs(prev => prev.map(c => c.id === id ? updated : c));
+      setEditingEvalConfig(false);
+      showToast("Config saved!");
+    } catch { /* silently fail */ } finally {
+      setEvalConfigSaving(false);
+    }
+  }
+
+  // Delete an eval config
+  async function deleteEvalConfig(id: string) {
+    try {
+      const res = await fetch(`/api/evaluation-configs/${id}`, { method: "DELETE" });
+      if (!res.ok) return;
+      setEvaluationConfigs(prev => prev.filter(c => c.id !== id));
+      if (selectedEvalConfigId === id) {
+        const defaultConfig = evaluationConfigs.find(c => c.isDefault);
+        if (defaultConfig) {
+          setSelectedEvalConfigId(defaultConfig.id);
+          loadEvalConfigIntoState(defaultConfig);
+        } else {
+          setSelectedEvalConfigId(null);
+        }
+        setEditingEvalConfig(false);
+      }
+    } catch { /* silently fail */ }
+  }
+
+  // Preview prompt
+  async function handlePreviewPrompt() {
+    setPreviewLoading(true);
+    try {
+      const res = await fetch("/api/preview-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          promptRole: promptRole || undefined,
+          criticalInstructions: criticalInstructions || undefined,
+          promptGuidelines: promptGuidelines || undefined,
+          scoringRules,
+          customScoringRules,
+          builtInRuleDescriptions,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPreviewPrompt(data.systemPrompt);
+      }
+    } catch { /* silently fail */ } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  // Save settings to DB (only non-prompt fields now)
   async function saveSettingsToStorage() {
     try {
       await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aiModel, aiProviderId, sheetWebAppUrl, minScoreThreshold }),
+        body: JSON.stringify({
+          aiModel, aiProviderId, sheetWebAppUrl, minScoreThreshold,
+        }),
       });
     } catch { /* silently fail */ }
   }
 
-  // Load a JD template into the form
+  async function handleAddSheet() {
+    if (!newSheetName.trim() || !newSheetUrl.trim()) return;
+    try {
+      const res = await fetch("/api/sheet-integrations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newSheetName, url: newSheetUrl }),
+      });
+      if (!res.ok) return;
+      const newSheet = await res.json();
+      setSheetIntegrations([newSheet, ...sheetIntegrations]);
+      setSheetWebAppUrl(newSheet.url);
+      setNewSheetName("");
+      setNewSheetUrl("");
+      setIsAddingSheet(false);
+    } catch { /* silently fail */ }
+  }
+
+  async function handleDeleteSheet(id: string) {
+    try {
+      const res = await fetch(`/api/sheet-integrations/${id}`, { method: "DELETE" });
+      if (!res.ok) return;
+      
+      const sheetToDelete = sheetIntegrations.find(s => s.id === id);
+      setSheetIntegrations(sheetIntegrations.filter(s => s.id !== id));
+      
+      if (sheetToDelete && sheetWebAppUrl === sheetToDelete.url) {
+        setSheetWebAppUrl("");
+      }
+    } catch { /* silently fail */ }
+  }
+
+  async function handleUpdateSheet() {
+    if (!editingSheetId || !editSheetName.trim() || !editSheetUrl.trim()) return;
+    try {
+      const res = await fetch(`/api/sheet-integrations/${editingSheetId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: editSheetName, url: editSheetUrl }),
+      });
+      if (!res.ok) return;
+      const updatedSheet = await res.json();
+      setSheetIntegrations(sheetIntegrations.map(s => s.id === editingSheetId ? updatedSheet : s));
+      setSheetWebAppUrl(updatedSheet.url);
+      setEditingSheetId(null);
+    } catch { /* silently fail */ }
+  }
+
+  // Load a JD template into the form — loads JD text AND scoring rules
   function loadJdTemplate(template: JdTemplate) {
+    setJdTemplateEditTitle(template.title);
     setJobDescription(template.content);
-    setScoringRules(template.scoringRules as typeof scoringRules);
+    if (template.scoringRules && Object.keys(template.scoringRules).length > 0) {
+      setScoringRules(template.scoringRules as typeof scoringRules);
+    }
     setCustomScoringRules(template.customScoringRules || []);
+    setBuiltInRuleDescriptions(template.builtInRuleDescriptions || {});
+    setExpandedRuleKey(null);
     setSelectedJdTemplateId(template.id);
     setEditingJdTemplate(false);
     setShowNewJdForm(false);
   }
 
-  // Save current form state as a new JD template
+  // Save current form state as a new JD template — includes scoring rules
   async function saveCurrentAsJdTemplate() {
     if (!jdTemplateName.trim() || !jobDescription.trim()) return;
     try {
@@ -249,34 +493,40 @@ export default function Home() {
           content: jobDescription,
           scoringRules: { ...scoringRules },
           customScoringRules: [...customScoringRules],
+          builtInRuleDescriptions: { ...builtInRuleDescriptions },
         }),
       });
       if (!res.ok) return;
       const newTemplate = await res.json();
       setJdTemplates([newTemplate, ...jdTemplates]);
       setJdTemplateName("");
+      setJdTemplateEditTitle(newTemplate.title);
       setSelectedJdTemplateId(newTemplate.id);
       setShowNewJdForm(false);
       setEditingJdTemplate(false);
+      showToast("Template saved!");
     } catch { /* silently fail */ }
   }
 
-  // Update an existing JD template in-place
+  // Update an existing JD template in-place — includes scoring rules
   async function updateJdTemplate(id: string) {
     try {
       const res = await fetch(`/api/jd-templates/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          ...(jdTemplateEditTitle.trim() && { title: jdTemplateEditTitle.trim() }),
           content: jobDescription,
           scoringRules: { ...scoringRules },
           customScoringRules: [...customScoringRules],
+          builtInRuleDescriptions: { ...builtInRuleDescriptions },
         }),
       });
       if (!res.ok) return;
       const updated = await res.json();
       setJdTemplates(jdTemplates.map(t => t.id === id ? updated : t));
       setEditingJdTemplate(false);
+      showToast("Template saved!");
     } catch { /* silently fail */ }
   }
 
@@ -289,65 +539,6 @@ export default function Home() {
       if (selectedJdTemplateId === id) {
         setSelectedJdTemplateId(null);
         setEditingJdTemplate(false);
-      }
-    } catch { /* silently fail */ }
-  }
-
-  // Load a prompt template
-  function loadPromptTemplate(template: PromptTemplate) {
-    setCustomPrompt(template.content);
-    setSelectedPromptTemplateId(template.id);
-    setEditingPromptTemplate(false);
-    setShowNewPromptForm(false);
-  }
-
-  // Save current prompt as a new template
-  async function saveCurrentAsPromptTemplate() {
-    if (!promptTemplateName.trim() || !customPrompt.trim()) return;
-    try {
-      const res = await fetch("/api/prompt-templates", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: promptTemplateName, content: customPrompt }),
-      });
-      if (!res.ok) return;
-      const newTemplate = await res.json();
-      setPromptTemplates([newTemplate, ...promptTemplates]);
-      setPromptTemplateName("");
-      setSelectedPromptTemplateId(newTemplate.id);
-      setShowNewPromptForm(false);
-      setEditingPromptTemplate(false);
-    } catch { /* silently fail */ }
-  }
-
-  // Update an existing prompt template in-place
-  async function updatePromptTemplate(id: string) {
-    const template = promptTemplates.find(t => t.id === id);
-    if ((template as any)?.isDefault) return;
-    try {
-      const res = await fetch(`/api/prompt-templates/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: customPrompt }),
-      });
-      if (!res.ok) return;
-      const updated = await res.json();
-      setPromptTemplates(promptTemplates.map(t => t.id === id ? updated : t));
-      setEditingPromptTemplate(false);
-    } catch { /* silently fail */ }
-  }
-
-  // Delete a prompt template
-  async function deletePromptTemplate(id: string) {
-    const template = promptTemplates.find(t => t.id === id);
-    if ((template as any)?.isDefault) return;
-    try {
-      const res = await fetch(`/api/prompt-templates/${id}`, { method: "DELETE" });
-      if (!res.ok) return;
-      setPromptTemplates(promptTemplates.filter(t => t.id !== id));
-      if (selectedPromptTemplateId === id) {
-        setSelectedPromptTemplateId(null);
-        setEditingPromptTemplate(false);
       }
     } catch { /* silently fail */ }
   }
@@ -392,7 +583,7 @@ export default function Home() {
     setInvalidUrls([]);
     setJobData(null);
 
-    // Persist settings to DB
+    // Persist non-prompt settings to DB
     saveSettingsToStorage();
 
     try {
@@ -403,14 +594,17 @@ export default function Home() {
           urls,
           ...(jobDescription && {
             jobDescription,
-            customPrompt: customPrompt || undefined,
-            scoringRules,
-            customScoringRules: customScoringRules.length > 0 ? customScoringRules : undefined,
             sheetWebAppUrl: sheetWebAppUrl || undefined,
             aiModel,
             aiProviderId: aiProviderId || undefined,
             minScoreThreshold,
             jdTitle: jdTemplates.find(t => t.id === selectedJdTemplateId)?.title || "Bulk Analysis",
+            // Send evaluationConfigId for prompt config resolution
+            evaluationConfigId: selectedEvalConfigId || undefined,
+            // Send scoring fields inline from the JD working state
+            scoringRules,
+            customScoringRules: customScoringRules.length > 0 ? customScoringRules : undefined,
+            builtInRuleDescriptions: Object.keys(builtInRuleDescriptions).length > 0 ? builtInRuleDescriptions : undefined,
           }),
         }),
       });
@@ -445,8 +639,33 @@ export default function Home() {
     CANCELLED: "bg-neutral-500/20 text-neutral-400 border-neutral-500/30",
   };
 
+  const selectedEvalConfig = evaluationConfigs.find(c => c.id === selectedEvalConfigId);
+
   return (
     <main className="space-y-8">
+      {/* Toast notifications */}
+      {toasts.length > 0 && (
+        <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+          {toasts.map(toast => (
+            <div
+              key={toast.id}
+              className={`px-4 py-2.5 rounded-lg border text-sm font-medium shadow-lg backdrop-blur-sm flex items-center gap-2 ${
+                toast.type === 'error'
+                  ? 'bg-rose-950/90 border-rose-500/40 text-rose-300'
+                  : 'bg-emerald-950/90 border-emerald-500/40 text-emerald-300'
+              }`}
+            >
+              {toast.type === 'error' ? (
+                <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              ) : (
+                <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+              )}
+              {toast.message}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Header section */}
       <header className="space-y-2">
         <div className="flex items-center justify-between">
@@ -508,7 +727,7 @@ export default function Home() {
           {showAdvanced && (
             <div className="space-y-6 p-5 rounded-xl bg-neutral-950/50 border border-neutral-800">
 
-              {/* ─── JD TEMPLATES SECTION ─── */}
+              {/* ─── 1. JD TEMPLATES SECTION (with scoring rules inside) ─── */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
@@ -520,7 +739,7 @@ export default function Home() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => { setShowNewJdForm(!showNewJdForm); setSelectedJdTemplateId(null); setJobDescription(""); setScoringRules({ stability: true, growth: true, graduation: true, companyType: true, mba: true, skillMatch: true, location: true }); setCustomScoringRules([]); setEditingJdTemplate(false); }}
+                    onClick={() => { setShowNewJdForm(!showNewJdForm); setSelectedJdTemplateId(null); setJobDescription(""); setEditingJdTemplate(false); }}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600/20 border border-indigo-500/30 text-xs font-medium text-indigo-400 hover:bg-indigo-600/30 hover:text-indigo-300 transition-all"
                   >
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
@@ -551,7 +770,7 @@ export default function Home() {
                                 </span>
                               </div>
                               <p className="text-[11px] text-neutral-500 mt-1 line-clamp-2 pl-4">
-                                {tpl.content.slice(0, 120)}{tpl.content.length > 120 ? '…' : ''}
+                                {tpl.content.slice(0, 120)}{tpl.content.length > 120 ? '...' : ''}
                               </p>
                             </div>
                             <button
@@ -583,13 +802,23 @@ export default function Home() {
                   </div>
                 )}
 
-                {/* JD Editor Area — shows when a template is selected or new template form is open */}
+                {/* JD Editor Area */}
                 {(selectedJdTemplateId || showNewJdForm) && (
                   <div className="space-y-2 p-3 rounded-lg bg-neutral-900/30 border border-neutral-800/50">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium text-neutral-400">
-                        {showNewJdForm ? '✎ New Job Description' : editingJdTemplate ? '✎ Editing Template' : '📄 Template Content'}
-                      </span>
+                    <div className="flex items-center justify-between gap-2">
+                      {editingJdTemplate && selectedJdTemplateId ? (
+                        <input
+                          type="text"
+                          value={jdTemplateEditTitle}
+                          onChange={(e) => setJdTemplateEditTitle(e.target.value)}
+                          className="text-xs font-medium text-neutral-200 rounded-md bg-neutral-900/50 border border-neutral-700 px-2 py-1 focus:border-indigo-500 focus:outline-none flex-1 max-w-[200px]"
+                          placeholder="Template name"
+                        />
+                      ) : (
+                        <span className="text-xs font-medium text-neutral-400">
+                          {showNewJdForm ? 'New Job Description' : 'Template Content'}
+                        </span>
+                      )}
                       {selectedJdTemplateId && !showNewJdForm && (
                         <button
                           type="button"
@@ -612,7 +841,7 @@ export default function Home() {
                         }`}
                     />
                     <div className="flex items-center justify-between">
-                      <p className="text-[11px] text-neutral-500">Profiles will be scored against this JD using an 85-point rubric.</p>
+                      <p className="text-[11px] text-neutral-500">Profiles will be scored against this JD.</p>
                       <div className="flex items-center gap-2">
                         {editingJdTemplate && selectedJdTemplateId && (
                           <button
@@ -648,150 +877,458 @@ export default function Home() {
                     </div>
                   </div>
                 )}
+
+                {/* ─── SCORING RULES (inside JD section, always editable) ─── */}
+                <details className="group" open>
+                  <summary className="flex items-center gap-2 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden">
+                    <svg className="w-4 h-4 text-emerald-400 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                    <span className="text-xs font-semibold text-white">Scoring Rules</span>
+                    <span className="text-[11px] text-neutral-500 font-mono ml-auto">
+                      {Object.entries(scoringRules).filter(([, v]) => v).reduce((sum, [k]) => sum + ({ stability: 10, growth: 15, graduation: 15, companyType: 15, mba: 15, skillMatch: 10, location: 5 }[k] || 0), 0) + customScoringRules.filter(r => r.enabled).reduce((s, r) => s + r.maxPoints, 0)} pts max
+                    </span>
+                  </summary>
+                  <div className="mt-3 space-y-3">
+                    {/* Built-in dimensions with expandable descriptions */}
+                    <div className="space-y-1.5">
+                      {SCORING_RULE_DEFS.map(rule => {
+                        const enabled = scoringRules[rule.key as keyof typeof scoringRules];
+                        const isExpanded = expandedRuleKey === rule.key;
+                        const hasCustomDesc = rule.key in builtInRuleDescriptions;
+                        const currentDesc = builtInRuleDescriptions[rule.key] ?? DEFAULT_RULE_PROMPTS[rule.key] ?? "";
+
+                        return (
+                          <div key={rule.key} className={`rounded-lg border transition-all ${enabled ? 'bg-emerald-500/5 border-emerald-500/25' : 'bg-neutral-900/20 border-neutral-800 opacity-50'}`}>
+                            <div className="flex items-center gap-2.5 px-3 py-2">
+                              <button
+                                type="button"
+                                onClick={() => setScoringRules(prev => ({ ...prev, [rule.key]: !prev[rule.key as keyof typeof prev] }))}
+                                className={`w-7 h-4 rounded-full transition-colors shrink-0 ${enabled ? 'bg-emerald-500' : 'bg-neutral-600'}`}
+                              >
+                                <div className={`w-3 h-3 rounded-full bg-white mt-0.5 transition-transform ${enabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                              </button>
+                              <span className={`text-xs font-medium flex-1 ${enabled ? 'text-neutral-200' : 'text-neutral-500'}`}>{rule.label}</span>
+                              {hasCustomDesc && enabled && (
+                                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 font-medium border border-amber-500/30">Edited</span>
+                              )}
+                              <span className="text-[10px] text-neutral-500 font-mono">/{rule.max}</span>
+                              {enabled && DEFAULT_RULE_PROMPTS[rule.key] && (
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedRuleKey(isExpanded ? null : rule.key)}
+                                  className="p-0.5 rounded text-neutral-500 hover:text-neutral-300 transition-colors"
+                                  title={isExpanded ? "Collapse rule description" : "View/edit rule description"}
+                                >
+                                  <svg className={`w-3.5 h-3.5 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                                </button>
+                              )}
+                            </div>
+                            {isExpanded && enabled && (
+                              <div className="px-3 pb-3 space-y-1.5 border-t border-emerald-500/15 pt-2">
+                                <textarea
+                                  rows={6}
+                                  value={currentDesc}
+                                  onChange={(e) => setBuiltInRuleDescriptions(prev => ({
+                                    ...prev,
+                                    [rule.key]: e.target.value,
+                                  }))}
+                                  className="w-full resize-y rounded-lg border p-2.5 text-[11px] text-neutral-300 placeholder:text-neutral-600 focus:outline-none transition-colors leading-relaxed font-mono bg-neutral-950/50 border-neutral-700 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                                />
+                                <div className="flex items-center justify-between">
+                                  <p className="text-[10px] text-neutral-600">This description is sent to the AI as the scoring rule for &quot;{rule.label}&quot;.</p>
+                                  {hasCustomDesc && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setBuiltInRuleDescriptions(prev => {
+                                        const next = { ...prev };
+                                        delete next[rule.key];
+                                        return next;
+                                      })}
+                                      className="text-[10px] text-amber-400/70 hover:text-amber-400 transition-colors flex items-center gap-1"
+                                    >
+                                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                                      Reset to Default
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Custom rules */}
+                    {customScoringRules.length > 0 && (
+                      <div className="space-y-1.5 pt-2 border-t border-neutral-800/50">
+                        <span className="text-[11px] font-medium text-neutral-500 uppercase tracking-wider">Custom Rules</span>
+                        {customScoringRules.map(rule => (
+                          <div key={rule.id} className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border transition-all ${rule.enabled ? 'bg-amber-500/5 border-amber-500/20' : 'bg-neutral-900/20 border-neutral-800 opacity-50'}`}>
+                            <button
+                              type="button"
+                              onClick={() => setCustomScoringRules(prev => prev.map(r => r.id === rule.id ? { ...r, enabled: !r.enabled } : r))}
+                              className={`w-7 h-4 rounded-full transition-colors shrink-0 ${rule.enabled ? 'bg-amber-500' : 'bg-neutral-600'}`}
+                            >
+                              <div className={`w-3 h-3 rounded-full bg-white mt-0.5 transition-transform ${rule.enabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                            </button>
+                            <div className="flex-1 min-w-0">
+                              <span className={`text-xs font-medium ${rule.enabled ? 'text-neutral-200' : 'text-neutral-500'}`}>{rule.name}</span>
+                              <p className="text-[10px] text-neutral-500 truncate">{rule.criteria}</p>
+                            </div>
+                            <span className="text-[10px] text-neutral-500 font-mono">/{rule.maxPoints}</span>
+                            <button type="button" onClick={() => setCustomScoringRules(prev => prev.filter(r => r.id !== rule.id))}
+                              className="text-neutral-600 hover:text-rose-400 transition-colors p-0.5 rounded hover:bg-rose-500/10 shrink-0">
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Add custom rule — inline compact form */}
+                    <details className="group/add">
+                      <summary className="text-[11px] text-amber-400 hover:text-amber-300 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5 pt-1">
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                        Add Custom Rule
+                      </summary>
+                      <div className="mt-2 p-3 rounded-lg bg-neutral-900/30 border border-neutral-800/50 space-y-2">
+                        <div className="grid grid-cols-[1fr_60px] gap-2">
+                          <input type="text" value={newRuleName} onChange={(e) => setNewRuleName(e.target.value)} placeholder="Rule name"
+                            className="rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-amber-500 focus:outline-none" />
+                          <input type="number" value={newRuleMax} onChange={(e) => setNewRuleMax(parseInt(e.target.value) || 10)} placeholder="Max"
+                            className="rounded-lg bg-neutral-900/50 border border-neutral-700 px-2 py-1.5 text-xs text-neutral-200 text-center focus:border-amber-500 focus:outline-none" />
+                        </div>
+                        <textarea rows={2} value={newRuleCriteria} onChange={(e) => setNewRuleCriteria(e.target.value)}
+                          placeholder="Describe the criteria for the AI to evaluate..."
+                          className="w-full resize-none rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-amber-500 focus:outline-none" />
+                        <button type="button"
+                          onClick={() => {
+                            if (!newRuleName.trim() || !newRuleCriteria.trim()) return;
+                            setCustomScoringRules(prev => [...prev, { id: `cr_${Date.now()}`, name: newRuleName, maxPoints: newRuleMax, criteria: newRuleCriteria, enabled: true }]);
+                            setNewRuleName(""); setNewRuleCriteria(""); setNewRuleMax(10);
+                          }}
+                          disabled={!newRuleName.trim() || !newRuleCriteria.trim()}
+                          className="w-full px-3 py-1.5 rounded-lg bg-amber-600/20 border border-amber-500/30 text-amber-400 text-xs font-medium hover:bg-amber-600/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5">
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                          Add Rule
+                        </button>
+                      </div>
+                    </details>
+                  </div>
+                </details>
               </div>
 
               <hr className="border-neutral-800/50" />
 
-              {/* ─── PROMPT TEMPLATES SECTION ─── */}
+              {/* ─── 2. EVALUATION CONFIG SECTION (system prompt config only) ─── */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
                     <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                      <svg className="w-4 h-4 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
-                      Recruiter Instructions
+                      <svg className="w-4 h-4 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+                      Evaluation Config
                     </h3>
-                    <p className="text-[11px] text-neutral-500 mt-0.5">Custom prompts to guide AI evaluation. Select a saved one or create new.</p>
+                    <p className="text-[11px] text-neutral-500 mt-0.5">AI evaluator role, critical instructions, and evaluation guidelines.</p>
                   </div>
                   <button
                     type="button"
-                    onClick={() => { setShowNewPromptForm(!showNewPromptForm); setSelectedPromptTemplateId(null); setCustomPrompt(""); setEditingPromptTemplate(false); }}
+                    onClick={() => {
+                      setShowNewEvalConfigInput(!showNewEvalConfigInput);
+                      setEditingEvalConfig(false);
+                      if (!showNewEvalConfigInput) {
+                        setEvalConfigName("");
+                      }
+                    }}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600/20 border border-violet-500/30 text-xs font-medium text-violet-400 hover:bg-violet-600/30 hover:text-violet-300 transition-all"
                   >
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-                    New Prompt
+                    New Config
                   </button>
                 </div>
 
-                {/* Prompt Template Cards */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {promptTemplates.map(tpl => {
-                    const isActive = selectedPromptTemplateId === tpl.id;
-                    const isDefault = !!(tpl as any).isDefault;
-                    return (
-                      <div
-                        key={tpl.id}
-                        className={`group relative rounded-lg border p-3 cursor-pointer transition-all ${isActive
+                {/* New Config inline name input */}
+                {showNewEvalConfigInput && (
+                  <div className="flex items-center gap-2 p-3 rounded-lg bg-neutral-900/30 border border-neutral-800/50">
+                    <input
+                      type="text"
+                      value={evalConfigName}
+                      onChange={(e) => setEvalConfigName(e.target.value)}
+                      placeholder="Config name..."
+                      className="flex-1 rounded-md bg-neutral-900/50 border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 placeholder:text-neutral-600 focus:border-violet-500 focus:outline-none"
+                      onKeyDown={(e) => { if (e.key === 'Enter') createNewEvalConfig(); }}
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      onClick={() => createNewEvalConfig()}
+                      disabled={!evalConfigName.trim()}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-md bg-violet-600/20 border border-violet-500/30 text-[11px] font-medium text-violet-400 hover:bg-violet-600/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                      Create Config
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowNewEvalConfigInput(false)}
+                      className="text-neutral-500 hover:text-neutral-300 transition-colors p-1"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                  </div>
+                )}
+
+                {/* Config Cards Grid */}
+                {evaluationConfigs.length > 0 && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {evaluationConfigs.map(cfg => {
+                      const isActive = selectedEvalConfigId === cfg.id;
+                      const preview = cfg.isDefault
+                        ? DEFAULT_ROLE
+                        : cfg.promptRole || DEFAULT_ROLE;
+                      return (
+                        <div
+                          key={cfg.id}
+                          className={`group relative rounded-lg border p-3 cursor-pointer transition-all ${isActive
                             ? 'bg-violet-500/10 border-violet-500/40 ring-1 ring-violet-500/20'
                             : 'bg-neutral-900/40 border-neutral-700/50 hover:border-neutral-600 hover:bg-neutral-800/40'
                           }`}
-                        onClick={() => loadPromptTemplate(tpl)}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <div className={`w-2 h-2 rounded-full shrink-0 ${isActive ? 'bg-violet-400' : 'bg-neutral-600'}`} />
-                              <span className={`text-sm font-medium truncate ${isActive ? 'text-violet-300' : 'text-neutral-300'}`}>
-                                {tpl.title}
-                              </span>
-                              {isDefault && (
-                                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-neutral-700/50 text-neutral-400 font-medium uppercase tracking-wider">Default</span>
-                              )}
+                          onClick={() => selectEvalConfig(cfg)}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <div className={`w-2 h-2 rounded-full shrink-0 ${isActive ? 'bg-violet-400' : 'bg-neutral-600'}`} />
+                                <span className={`text-sm font-medium truncate ${isActive ? 'text-violet-300' : 'text-neutral-300'}`}>
+                                  {cfg.title}
+                                </span>
+                                {cfg.isDefault && (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-neutral-700/50 text-neutral-400 font-medium uppercase tracking-wider">Default</span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-neutral-500 mt-1 line-clamp-2 pl-4">
+                                {preview.slice(0, 120)}{preview.length > 120 ? '...' : ''}
+                              </p>
                             </div>
-                            <p className="text-[11px] text-neutral-500 mt-1 line-clamp-2 pl-4">
-                              {tpl.content.slice(0, 120)}{tpl.content.length > 120 ? '…' : ''}
-                            </p>
+                            {!cfg.isDefault && (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); selectEvalConfig(cfg); setEditingEvalConfig(true); }}
+                                  className="opacity-0 group-hover:opacity-100 text-neutral-500 hover:text-violet-400 transition-all p-1 rounded hover:bg-violet-500/10"
+                                  title="Edit config"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); deleteEvalConfig(cfg.id); }}
+                                  className="opacity-0 group-hover:opacity-100 text-neutral-500 hover:text-rose-400 transition-all p-1 rounded hover:bg-rose-500/10"
+                                  title="Delete config"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                </button>
+                              </div>
+                            )}
                           </div>
-                          {!isDefault && (
+                          {isActive && (
+                            <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-violet-500/20">
+                              <span className="text-[10px] text-violet-400/70 flex items-center gap-1">
+                                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                                Active
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Eval Config Editor — shows when a config is selected AND editing is enabled */}
+                {selectedEvalConfigId && editingEvalConfig && selectedEvalConfig && !selectedEvalConfig.isDefault && (
+                  <div className="space-y-3 p-3 rounded-lg bg-neutral-900/30 border border-neutral-800/50">
+                    <div className="flex items-center justify-between gap-2">
+                      <input
+                        type="text"
+                        value={evalConfigEditTitle}
+                        onChange={(e) => setEvalConfigEditTitle(e.target.value)}
+                        className="text-xs font-medium text-neutral-200 rounded-md bg-neutral-900/50 border border-neutral-700 px-2 py-1 focus:border-violet-500 focus:outline-none flex-1 max-w-[200px]"
+                        placeholder="Config name"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setEditingEvalConfig(false)}
+                        className="text-[11px] px-2 py-0.5 rounded transition-colors text-amber-400 bg-amber-500/10"
+                      >
+                        Cancel Edit
+                      </button>
+                    </div>
+
+                    {/* Evaluator Role */}
+                    <details className="group/eval" open>
+                      <summary className="text-xs text-violet-400 hover:text-violet-300 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5">
+                        <svg className="w-3.5 h-3.5 transition-transform group-open/eval:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                        Evaluator Role
+                        {promptRole && promptRole !== DEFAULT_ROLE && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-violet-500/20 text-violet-400 font-medium border border-violet-500/30 ml-1">Edited</span>}
+                      </summary>
+                      <div className="mt-2 space-y-1.5">
+                        <textarea
+                          rows={3}
+                          value={promptRole || DEFAULT_ROLE}
+                          onChange={(e) => setPromptRole(e.target.value)}
+                          className="w-full resize-none rounded-lg border p-3 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none transition-colors leading-relaxed bg-neutral-900/50 border-neutral-700 focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+                        />
+                        <div className="flex items-center justify-between">
+                          <p className="text-[10px] text-neutral-600">Defines who the AI evaluator is and their expertise.</p>
+                          {promptRole && promptRole !== DEFAULT_ROLE && (
                             <button
                               type="button"
-                              onClick={(e) => { e.stopPropagation(); deletePromptTemplate(tpl.id); }}
-                              className="opacity-0 group-hover:opacity-100 text-neutral-500 hover:text-rose-400 transition-all p-1 rounded hover:bg-rose-500/10"
-                              title="Delete template"
+                              onClick={() => setPromptRole(DEFAULT_ROLE)}
+                              className="text-[10px] text-violet-400/70 hover:text-violet-400 transition-colors flex items-center gap-1"
                             >
-                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                              Reset to Default
                             </button>
                           )}
                         </div>
-                        {isActive && (
-                          <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-violet-500/20">
-                            <span className="text-[10px] text-violet-400/70 flex items-center gap-1">
-                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
-                              Active
-                            </span>
-                          </div>
-                        )}
                       </div>
-                    );
-                  })}
-                </div>
+                    </details>
 
-                {/* Prompt Editor Area */}
-                {(selectedPromptTemplateId || showNewPromptForm) && (
-                  <div className="space-y-2 p-3 rounded-lg bg-neutral-900/30 border border-neutral-800/50">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium text-neutral-400">
-                        {showNewPromptForm ? '✎ New Prompt' : editingPromptTemplate ? '✎ Editing Prompt' : '💬 Prompt Content'}
-                      </span>
-                      {selectedPromptTemplateId && !(promptTemplates.find(t => t.id === selectedPromptTemplateId) as any)?.isDefault && !showNewPromptForm && (
-                        <button
-                          type="button"
-                          onClick={() => setEditingPromptTemplate(!editingPromptTemplate)}
-                          className={`text-[11px] px-2 py-0.5 rounded transition-colors ${editingPromptTemplate ? 'text-amber-400 bg-amber-500/10' : 'text-violet-400 hover:text-violet-300'}`}
-                        >
-                          {editingPromptTemplate ? 'Cancel Edit' : 'Edit'}
-                        </button>
-                      )}
-                    </div>
-                    <textarea
-                      rows={3}
-                      value={customPrompt}
-                      onChange={(e) => setCustomPrompt(e.target.value)}
-                      readOnly={!!(selectedPromptTemplateId && !editingPromptTemplate && !showNewPromptForm)}
-                      placeholder="E.g., Prioritize candidates with B2B SaaS sales experience..."
-                      className={`w-full resize-none rounded-lg border p-3 text-sm text-neutral-200 placeholder:text-neutral-600 focus:outline-none transition-colors ${selectedPromptTemplateId && !editingPromptTemplate && !showNewPromptForm
-                          ? 'bg-neutral-950/30 border-neutral-800 cursor-default'
-                          : 'bg-neutral-900/50 border-neutral-700 focus:border-violet-500 focus:ring-1 focus:ring-violet-500'
-                        }`}
-                    />
-                    <div className="flex items-center justify-end gap-2">
-                      {editingPromptTemplate && selectedPromptTemplateId && !(promptTemplates.find(t => t.id === selectedPromptTemplateId) as any)?.isDefault && (
-                        <button
-                          type="button"
-                          onClick={() => updatePromptTemplate(selectedPromptTemplateId)}
-                          className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-emerald-600/20 border border-emerald-500/30 text-[11px] font-medium text-emerald-400 hover:bg-emerald-600/30 transition-colors"
-                        >
-                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
-                          Save Changes
-                        </button>
-                      )}
-                      {showNewPromptForm && customPrompt.trim() && (
-                        <div className="flex items-center gap-1.5">
-                          <input
-                            type="text"
-                            value={promptTemplateName}
-                            onChange={(e) => setPromptTemplateName(e.target.value)}
-                            placeholder="Prompt name..."
-                            className="rounded-md bg-neutral-900/50 border border-neutral-700 px-2.5 py-1 text-[11px] text-neutral-300 placeholder:text-neutral-600 focus:border-violet-500 focus:outline-none w-36"
-                          />
-                          <button
-                            type="button"
-                            onClick={saveCurrentAsPromptTemplate}
-                            disabled={!promptTemplateName.trim()}
-                            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-violet-600/20 border border-violet-500/30 text-[11px] font-medium text-violet-400 hover:bg-violet-600/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                          >
-                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>
-                            Save Prompt
-                          </button>
+                    {/* Critical Instructions */}
+                    <details className="group/crit" open>
+                      <summary className="text-xs text-amber-400 hover:text-amber-300 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5">
+                        <svg className="w-3.5 h-3.5 transition-transform group-open/crit:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                        Critical Instructions (Behavioral Rules)
+                        {criticalInstructions && criticalInstructions !== DEFAULT_CRITICAL_INSTRUCTIONS && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 font-medium border border-amber-500/30 ml-1">Edited</span>}
+                      </summary>
+                      <div className="mt-2 space-y-1.5">
+                        <textarea
+                          rows={8}
+                          value={criticalInstructions || DEFAULT_CRITICAL_INSTRUCTIONS}
+                          onChange={(e) => setCriticalInstructions(e.target.value)}
+                          className="w-full resize-y rounded-lg border p-3 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none transition-colors leading-relaxed font-mono bg-neutral-900/50 border-neutral-700 focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                        />
+                        <div className="flex items-center justify-between">
+                          <p className="text-[10px] text-neutral-600">Core rules for consistency, evidence-based scoring, and disqualifier detection.</p>
+                          {criticalInstructions && criticalInstructions !== DEFAULT_CRITICAL_INSTRUCTIONS && (
+                            <button
+                              type="button"
+                              onClick={() => setCriticalInstructions(DEFAULT_CRITICAL_INSTRUCTIONS)}
+                              className="text-[10px] text-amber-400/70 hover:text-amber-400 transition-colors flex items-center gap-1"
+                            >
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                              Reset to Default
+                            </button>
+                          )}
                         </div>
-                      )}
+                      </div>
+                    </details>
+
+                    {/* Evaluation Guidelines */}
+                    <details className="group/guide" open>
+                      <summary className="text-xs text-emerald-400 hover:text-emerald-300 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5">
+                        <svg className="w-3.5 h-3.5 transition-transform group-open/guide:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                        Evaluation Guidelines
+                        {promptGuidelines && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-medium border border-emerald-500/30 ml-1">Custom</span>}
+                      </summary>
+                      <div className="mt-2 space-y-1.5">
+                        <textarea
+                          rows={4}
+                          value={promptGuidelines}
+                          onChange={(e) => setPromptGuidelines(e.target.value)}
+                          placeholder={"e.g.\n- Prioritize candidates from product B2B SaaS companies\n- Be strict about job hopping\n- Only count MBA from IIMs and ISB as Tier 1"}
+                          className="w-full resize-y rounded-lg border p-3 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none transition-colors leading-relaxed bg-neutral-900/50 border-neutral-700 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                        />
+                        <p className="text-[10px] text-neutral-600">Additional guidelines applied alongside the built-in scoring logic.</p>
+                      </div>
+                    </details>
+
+                    {/* Save Changes button */}
+                    <div className="flex items-center gap-2 pt-2 border-t border-neutral-800/50">
+                      <button
+                        type="button"
+                        onClick={() => updateEvalConfig(selectedEvalConfigId)}
+                        disabled={evalConfigSaving}
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-md bg-emerald-600/20 border border-emerald-500/30 text-[11px] font-medium text-emerald-400 hover:bg-emerald-600/30 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {evalConfigSaving ? (
+                          <>
+                            <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                            Saving...
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                            Save Changes
+                          </>
+                        )}
+                      </button>
                     </div>
+                  </div>
+                )}
+
+                {/* Read-only view for System Default */}
+                {selectedEvalConfigId && !editingEvalConfig && selectedEvalConfig?.isDefault && (
+                  <div className="space-y-3 p-3 rounded-lg bg-violet-500/5 border border-violet-500/20">
+                    <span className="text-xs font-medium text-violet-300">System Default (Read-Only)</span>
+
+                    <details className="group/eval">
+                      <summary className="text-xs text-violet-400 hover:text-violet-300 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5">
+                        <svg className="w-3.5 h-3.5 transition-transform group-open/eval:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                        Evaluator Role
+                      </summary>
+                      <div className="mt-2">
+                        <div className="w-full rounded-lg border p-3 text-xs text-neutral-400 leading-relaxed bg-neutral-950/30 border-neutral-800">
+                          {DEFAULT_ROLE}
+                        </div>
+                      </div>
+                    </details>
+
+                    <details className="group/crit">
+                      <summary className="text-xs text-amber-400 hover:text-amber-300 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5">
+                        <svg className="w-3.5 h-3.5 transition-transform group-open/crit:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                        Critical Instructions (Behavioral Rules)
+                      </summary>
+                      <div className="mt-2">
+                        <div className="w-full rounded-lg border p-3 text-xs text-neutral-400 leading-relaxed font-mono whitespace-pre-wrap bg-neutral-950/30 border-neutral-800">
+                          {DEFAULT_CRITICAL_INSTRUCTIONS}
+                        </div>
+                      </div>
+                    </details>
+
+                    <details className="group/guide">
+                      <summary className="text-xs text-emerald-400 hover:text-emerald-300 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5">
+                        <svg className="w-3.5 h-3.5 transition-transform group-open/guide:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                        Evaluation Guidelines
+                      </summary>
+                      <div className="mt-2">
+                        <div className="w-full rounded-lg border p-3 text-xs text-neutral-500 italic leading-relaxed bg-neutral-950/30 border-neutral-800">
+                          No custom guidelines — using standard scoring logic only.
+                        </div>
+                      </div>
+                    </details>
+                  </div>
+                )}
+
+                {/* Compact summary for custom configs when NOT editing */}
+                {selectedEvalConfigId && !editingEvalConfig && selectedEvalConfig && !selectedEvalConfig.isDefault && (
+                  <div className="px-3 py-2 rounded-lg bg-neutral-900/20 border border-neutral-800/40">
+                    <p className="text-[11px] text-neutral-500">
+                      {`Using: ${selectedEvalConfig.promptRole ? 'Custom role' : 'Default role'}${selectedEvalConfig.criticalInstructions ? ', custom instructions' : ''}${selectedEvalConfig.promptGuidelines ? ', custom guidelines' : ''}.`}
+                      <button
+                        type="button"
+                        onClick={() => setEditingEvalConfig(true)}
+                        className="ml-2 text-violet-400 hover:text-violet-300 transition-colors underline underline-offset-2"
+                      >
+                        Edit
+                      </button>
+                    </p>
                   </div>
                 )}
               </div>
 
               <hr className="border-neutral-800/50" />
 
-              {/* ─── AI MODEL SELECTOR ─── */}
+              {/* ─── 3. AI MODEL SELECTOR ─── */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-white flex items-center gap-2">
@@ -850,99 +1387,7 @@ export default function Home() {
 
               <hr className="border-neutral-800/50" />
 
-              {/* ─── SCORING RULES (Collapsible — Dimensions + Custom) ─── */}
-              <details className="group" open>
-                <summary className="flex items-center gap-2 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden">
-                  <svg className="w-4 h-4 text-emerald-400 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                  <h3 className="text-sm font-semibold text-white">Scoring Rules</h3>
-                  <span className="text-[11px] text-neutral-500 font-mono ml-auto">
-                    {Object.entries(scoringRules).filter(([, v]) => v).reduce((sum, [k]) => sum + ({ stability: 10, growth: 15, graduation: 15, companyType: 15, mba: 15, skillMatch: 10, location: 5 }[k] || 0), 0) + customScoringRules.filter(r => r.enabled).reduce((s, r) => s + r.maxPoints, 0)} pts max
-                  </span>
-                </summary>
-                <div className="mt-3 space-y-3">
-                  {/* Built-in dimensions */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                    {SCORING_RULE_DEFS.map(rule => {
-                      const enabled = scoringRules[rule.key as keyof typeof scoringRules];
-                      return (
-                        <button
-                          key={rule.key}
-                          type="button"
-                          onClick={() => setScoringRules(prev => ({ ...prev, [rule.key]: !prev[rule.key as keyof typeof prev] }))}
-                          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border text-left transition-all ${enabled ? 'bg-emerald-500/5 border-emerald-500/25 hover:border-emerald-500/40' : 'bg-neutral-900/20 border-neutral-800 opacity-50 hover:opacity-70'}`}
-                        >
-                          <div className={`w-7 h-4 rounded-full transition-colors shrink-0 ${enabled ? 'bg-emerald-500' : 'bg-neutral-600'}`}>
-                            <div className={`w-3 h-3 rounded-full bg-white mt-0.5 transition-transform ${enabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
-                          </div>
-                          <span className={`text-xs font-medium flex-1 ${enabled ? 'text-neutral-200' : 'text-neutral-500'}`}>{rule.label}</span>
-                          <span className="text-[10px] text-neutral-500 font-mono">/{rule.max}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* Custom rules */}
-                  {customScoringRules.length > 0 && (
-                    <div className="space-y-1.5 pt-2 border-t border-neutral-800/50">
-                      <span className="text-[11px] font-medium text-neutral-500 uppercase tracking-wider">Custom Rules</span>
-                      {customScoringRules.map(rule => (
-                        <div key={rule.id} className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border transition-all ${rule.enabled ? 'bg-amber-500/5 border-amber-500/20' : 'bg-neutral-900/20 border-neutral-800 opacity-50'}`}>
-                          <button
-                            type="button"
-                            onClick={() => setCustomScoringRules(prev => prev.map(r => r.id === rule.id ? { ...r, enabled: !r.enabled } : r))}
-                            className={`w-7 h-4 rounded-full transition-colors shrink-0 ${rule.enabled ? 'bg-amber-500' : 'bg-neutral-600'}`}
-                          >
-                            <div className={`w-3 h-3 rounded-full bg-white mt-0.5 transition-transform ${rule.enabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
-                          </button>
-                          <div className="flex-1 min-w-0">
-                            <span className={`text-xs font-medium ${rule.enabled ? 'text-neutral-200' : 'text-neutral-500'}`}>{rule.name}</span>
-                            <p className="text-[10px] text-neutral-500 truncate">{rule.criteria}</p>
-                          </div>
-                          <span className="text-[10px] text-neutral-500 font-mono">/{rule.maxPoints}</span>
-                          <button type="button" onClick={() => setCustomScoringRules(prev => prev.filter(r => r.id !== rule.id))}
-                            className="text-neutral-600 hover:text-rose-400 transition-colors p-0.5 rounded hover:bg-rose-500/10 shrink-0">
-                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Add custom rule — inline compact form */}
-                  <details className="group/add">
-                    <summary className="text-[11px] text-amber-400 hover:text-amber-300 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5 pt-1">
-                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-                      Add Custom Rule
-                    </summary>
-                    <div className="mt-2 p-3 rounded-lg bg-neutral-900/30 border border-neutral-800/50 space-y-2">
-                      <div className="grid grid-cols-[1fr_60px] gap-2">
-                        <input type="text" value={newRuleName} onChange={(e) => setNewRuleName(e.target.value)} placeholder="Rule name"
-                          className="rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-amber-500 focus:outline-none" />
-                        <input type="number" value={newRuleMax} onChange={(e) => setNewRuleMax(parseInt(e.target.value) || 10)} placeholder="Max"
-                          className="rounded-lg bg-neutral-900/50 border border-neutral-700 px-2 py-1.5 text-xs text-neutral-200 text-center focus:border-amber-500 focus:outline-none" />
-                      </div>
-                      <textarea rows={2} value={newRuleCriteria} onChange={(e) => setNewRuleCriteria(e.target.value)}
-                        placeholder="Describe the criteria for the AI to evaluate..."
-                        className="w-full resize-none rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-amber-500 focus:outline-none" />
-                      <button type="button"
-                        onClick={() => {
-                          if (!newRuleName.trim() || !newRuleCriteria.trim()) return;
-                          setCustomScoringRules(prev => [...prev, { id: `cr_${Date.now()}`, name: newRuleName, maxPoints: newRuleMax, criteria: newRuleCriteria, enabled: true }]);
-                          setNewRuleName(""); setNewRuleCriteria(""); setNewRuleMax(10);
-                        }}
-                        disabled={!newRuleName.trim() || !newRuleCriteria.trim()}
-                        className="w-full px-3 py-1.5 rounded-lg bg-amber-600/20 border border-amber-500/30 text-amber-400 text-xs font-medium hover:bg-amber-600/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5">
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-                        Add Rule
-                      </button>
-                    </div>
-                  </details>
-                </div>
-              </details>
-
-              <hr className="border-neutral-800/50" />
-
-              {/* ─── EXPORT SETTINGS (Collapsible) ─── */}
+              {/* ─── 5. EXPORT SETTINGS (Collapsible) ─── */}
               <details className="group">
                 <summary className="flex items-center gap-2 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden">
                   <svg className="w-4 h-4 text-emerald-400 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
@@ -950,11 +1395,132 @@ export default function Home() {
                   {sheetWebAppUrl && <span className="text-[10px] text-emerald-400 ml-auto">Configured</span>}
                 </summary>
                 <div className="mt-3 space-y-3">
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-neutral-400">Web App URL</label>
-                    <input type="url" value={sheetWebAppUrl} onChange={(e) => setSheetWebAppUrl(e.target.value)}
-                      placeholder="https://script.google.com/macros/s/.../exec"
-                      className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors" />
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h4 className="text-xs font-semibold text-white">Google Sheet Integrations</h4>
+                        <p className="text-[10px] text-neutral-500 mt-0.5">Select a destination for your exported analysis data</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsAddingSheet(!isAddingSheet);
+                          setEditingSheetId(null);
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/20 border border-emerald-500/30 text-xs font-medium text-emerald-400 hover:bg-emerald-600/30 hover:text-emerald-300 transition-all"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                        {isAddingSheet ? "Cancel" : "New Sheet"}
+                      </button>
+                    </div>
+
+                    {sheetIntegrations.length > 0 && !isAddingSheet && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {/* Saved Sheets */}
+                        {sheetIntegrations.map((sheet) => {
+                          const isActive = sheetWebAppUrl === sheet.url;
+                          const isEditingThis = editingSheetId === sheet.id;
+
+                          if (isEditingThis) {
+                            return (
+                              <div key={sheet.id} className="col-span-1 sm:col-span-2 space-y-3 p-4 rounded-xl border border-indigo-500/40 bg-indigo-500/10 shadow-sm relative overflow-hidden">
+                                <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-3xl" />
+                                <div className="relative">
+                                  <div className="flex items-center justify-between mb-3">
+                                    <span className="text-[11px] text-indigo-400 font-semibold uppercase tracking-wider">Edit Integration</span>
+                                    <button type="button" onClick={() => setEditingSheetId(null)} className="text-[11px] text-neutral-400 hover:text-neutral-200 bg-neutral-900/50 px-2 py-1 rounded">Cancel</button>
+                                  </div>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <input type="text" value={editSheetName} onChange={(e) => setEditSheetName(e.target.value)} placeholder="Sheet Name" className="rounded-lg bg-neutral-950/80 border border-neutral-700 px-3 py-2.5 text-sm text-neutral-200 focus:border-indigo-500 focus:outline-none" />
+                                    <input type="url" value={editSheetUrl} onChange={(e) => setEditSheetUrl(e.target.value)} placeholder="Web App URL" className="rounded-lg bg-neutral-950/80 border border-neutral-700 px-3 py-2.5 text-sm text-neutral-200 focus:border-indigo-500 focus:outline-none" />
+                                  </div>
+                                  <div className="flex justify-end mt-3">
+                                    <button type="button" onClick={handleUpdateSheet} disabled={!editSheetName.trim() || !editSheetUrl.trim()} className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold disabled:opacity-50 transition-colors shadow-lg shadow-indigo-900/20">Update Form</button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div
+                              key={sheet.id}
+                              className={`group relative rounded-xl border p-3.5 cursor-pointer transition-all duration-200 hover:shadow-lg ${
+                                isActive
+                                  ? 'bg-emerald-500/10 border-emerald-500/40 ring-1 ring-emerald-500/20 shadow-emerald-900/10'
+                                  : 'bg-neutral-900/40 border-neutral-700/60 hover:border-neutral-500 hover:bg-neutral-800/60 shadow-black/20'
+                              }`}
+                              onClick={() => {
+                                if (editingSheetId) return; // don't switch if currently editing something
+                                if (isActive) {
+                                  setSheetWebAppUrl(""); // deselect
+                                } else {
+                                  setSheetWebAppUrl(sheet.url);
+                                }
+                              }}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <div className={`w-2 h-2 rounded-full shrink-0 ${isActive ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-neutral-600'}`} />
+                                    <span className={`text-sm font-semibold truncate ${isActive ? 'text-emerald-300' : 'text-neutral-200'}`}>
+                                      {sheet.name}
+                                    </span>
+                                  </div>
+                                  <p className="text-[10px] text-neutral-500 truncate pl-4 font-mono group-hover:text-neutral-400 transition-colors">
+                                    {sheet.url}
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); setEditingSheetId(sheet.id); setEditSheetName(sheet.name); setEditSheetUrl(sheet.url); setIsAddingSheet(false); }}
+                                    className="p-1.5 rounded-md bg-neutral-800 text-neutral-400 hover:text-indigo-400 hover:bg-indigo-500/20 transition-colors"
+                                    title="Edit Sheet"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); handleDeleteSheet(sheet.id); }}
+                                    className="p-1.5 rounded-md bg-neutral-800 text-neutral-400 hover:text-rose-400 hover:bg-rose-500/20 transition-colors"
+                                    title="Delete Sheet"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {isAddingSheet && (
+                      <div className="space-y-3 p-5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 relative overflow-hidden">
+                        <div className="absolute -top-10 -right-10 w-40 h-40 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+                        <h4 className="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider relative">New Google Sheet</h4>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 relative">
+                          <input type="text" value={newSheetName} onChange={(e) => setNewSheetName(e.target.value)} placeholder="Sheet Name (e.g. Sales Hiring Q3)" className="w-full rounded-lg bg-neutral-950/80 border border-neutral-700 px-3 py-2.5 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-emerald-500 focus:outline-none" />
+                          <input type="url" value={newSheetUrl} onChange={(e) => setNewSheetUrl(e.target.value)} placeholder="Web App URL (https://script.google.com/macros/...)" className="w-full rounded-lg bg-neutral-950/80 border border-neutral-700 px-3 py-2.5 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-emerald-500 focus:outline-none" />
+                        </div>
+                        <div className="flex justify-end gap-2 mt-2 relative">
+                          <button type="button" onClick={() => setIsAddingSheet(false)} className="px-4 py-2 rounded-lg text-xs font-medium text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors">Cancel</button>
+                          <button type="button" onClick={handleAddSheet} disabled={!newSheetName.trim() || !newSheetUrl.trim()} className="px-5 py-2 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-500 disabled:opacity-50 transition-colors shadow-lg shadow-emerald-900/20">Save Integration</button>
+                        </div>
+                      </div>
+                    )}
+
+                    {sheetIntegrations.length === 0 && !isAddingSheet && (
+                      <div className="flex flex-col items-center justify-center p-8 border border-dashed border-neutral-700/60 rounded-xl text-center bg-neutral-900/20 hover:bg-neutral-900/40 transition-colors cursor-pointer" onClick={() => setIsAddingSheet(true)}>
+                        <div className="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center mb-3">
+                          <svg className="h-6 w-6 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                        </div>
+                        <p className="text-sm font-semibold text-neutral-300">No Google Sheets connected.</p>
+                        <p className="text-xs text-neutral-500 mt-1 max-w-[250px]">Connect a sheet to automatically map scoring data to columns.</p>
+                        <button type="button" className="mt-4 px-4 py-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs font-semibold hover:bg-emerald-500/20 transition-colors">Add your first sheet &rarr;</button>
+                      </div>
+                    )}
                   </div>
                   {sheetWebAppUrl && (
                     <div className="space-y-1">
@@ -975,23 +1541,42 @@ export default function Home() {
             ) : (
               <div />
             )}
-            <button
-              type="submit"
-              disabled={loading || !urls.trim()}
-              className="rounded-lg bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-95 flex items-center gap-2"
-            >
-              {loading ? (
-                <>
-                  <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+            <div className="flex items-center gap-2">
+              {/* Preview Prompt Button */}
+              <button
+                type="button"
+                onClick={handlePreviewPrompt}
+                disabled={previewLoading}
+                className="rounded-lg bg-neutral-800 px-4 py-2.5 text-sm font-medium text-neutral-300 border border-neutral-700 hover:bg-neutral-700 hover:text-white transition-all disabled:opacity-50 flex items-center gap-2"
+              >
+                {previewLoading ? (
+                  <svg className="animate-spin h-4 w-4 text-neutral-400" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
-                  Processing...
-                </>
-              ) : (
-                "Submit URLs"
-              )}
-            </button>
+                ) : (
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                )}
+                Preview Prompt
+              </button>
+              <button
+                type="submit"
+                disabled={loading || !urls.trim()}
+                className="rounded-lg bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-95 flex items-center gap-2"
+              >
+                {loading ? (
+                  <>
+                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Processing...
+                  </>
+                ) : (
+                  "Submit URLs"
+                )}
+              </button>
+            </div>
           </div>
         </form>
 
@@ -1006,6 +1591,29 @@ export default function Home() {
           </div>
         )}
       </section>
+
+      {/* Preview Prompt Modal */}
+      {previewPrompt !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={() => setPreviewPrompt(null)}>
+          <div className="bg-neutral-900 border border-neutral-700 rounded-2xl max-w-4xl w-full max-h-[80vh] flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-neutral-800">
+              <div>
+                <h2 className="text-sm font-semibold text-white">System Prompt Preview</h2>
+                <p className="text-[11px] text-neutral-500 mt-0.5">{previewPrompt.length.toLocaleString()} characters</p>
+              </div>
+              <button
+                onClick={() => setPreviewPrompt(null)}
+                className="text-neutral-400 hover:text-white transition-colors p-1 rounded-lg hover:bg-neutral-800"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              <pre className="text-xs text-neutral-300 whitespace-pre-wrap font-mono leading-relaxed">{previewPrompt}</pre>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Progress Section */}
       {jobId && (

@@ -13,6 +13,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         ...(body.content != null && { content: body.content }),
         ...(body.scoringRules != null && { scoringRules: JSON.stringify(body.scoringRules) }),
         ...(body.customScoringRules != null && { customScoringRules: JSON.stringify(body.customScoringRules) }),
+        ...(body.builtInRuleDescriptions != null && { builtInRuleDescriptions: JSON.stringify(body.builtInRuleDescriptions) }),
       },
     });
 
@@ -20,6 +21,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       ...template,
       scoringRules: JSON.parse(template.scoringRules),
       customScoringRules: JSON.parse(template.customScoringRules),
+      builtInRuleDescriptions: JSON.parse(template.builtInRuleDescriptions || "{}"),
     });
   } catch (error: any) {
     if (error?.code === "P2025") {

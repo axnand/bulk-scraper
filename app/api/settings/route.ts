@@ -18,6 +18,7 @@ export async function GET() {
         minScoreThreshold: 0,
         promptRole: null,
         promptGuidelines: null,
+        criticalInstructions: null,
       }
     );
   } catch (error) {
@@ -40,6 +41,7 @@ export async function PUT(req: NextRequest) {
         minScoreThreshold: body.minScoreThreshold ?? 0,
         promptRole: body.promptRole ?? null,
         promptGuidelines: body.promptGuidelines ?? null,
+        criticalInstructions: body.criticalInstructions ?? null,
       },
       update: {
         ...(body.aiModel != null && { aiModel: body.aiModel }),
@@ -48,6 +50,7 @@ export async function PUT(req: NextRequest) {
         ...(body.minScoreThreshold != null && { minScoreThreshold: body.minScoreThreshold }),
         ...(body.promptRole !== undefined && { promptRole: body.promptRole || null }),
         ...(body.promptGuidelines !== undefined && { promptGuidelines: body.promptGuidelines || null }),
+        ...(body.criticalInstructions !== undefined && { criticalInstructions: body.criticalInstructions || null }),
       },
     });
 

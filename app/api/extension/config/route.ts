@@ -44,19 +44,39 @@ export async function GET(req: NextRequest) {
 
   try {
     // Fetch all data in parallel
-    const [jdTemplatesRaw, promptTemplates, settings, providers] =
+    const [jdTemplatesRaw, settings, providers, evalConfigsRaw, sheetIntegrations] =
       await Promise.all([
         prisma.jdTemplate.findMany({ orderBy: { updatedAt: "desc" } }),
-        prisma.promptTemplate.findMany({ orderBy: { updatedAt: "desc" } }),
         prisma.appSettings.findUnique({ where: { id: "global" } }),
         prisma.aiProvider.findMany({ orderBy: { createdAt: "desc" } }),
+        prisma.evaluationConfig.findMany({ orderBy: [{ isDefault: "desc" }, { updatedAt: "desc" }] }),
+        prisma.sheetIntegration.findMany({ orderBy: { createdAt: "desc" } }),
       ]);
+
+    // Ensure at least one default eval config exists
+    let evalConfigs = evalConfigsRaw;
+    if (evalConfigs.length === 0 || !evalConfigs.some((c) => c.isDefault)) {
+      if (evalConfigs.length === 0) {
+        await prisma.evaluationConfig.create({
+          data: { title: "System Default", isDefault: true },
+        });
+      } else {
+        await prisma.evaluationConfig.update({
+          where: { id: evalConfigs[0].id },
+          data: { isDefault: true },
+        });
+      }
+      evalConfigs = await prisma.evaluationConfig.findMany({
+        orderBy: [{ isDefault: "desc" }, { updatedAt: "desc" }],
+      });
+    }
 
     // Parse JSON fields on JD templates
     const jdTemplates = jdTemplatesRaw.map((t) => ({
       ...t,
       scoringRules: JSON.parse(t.scoringRules),
       customScoringRules: JSON.parse(t.customScoringRules),
+      builtInRuleDescriptions: JSON.parse(t.builtInRuleDescriptions || "{}"),
     }));
 
     // Resolve the active AI provider
@@ -70,16 +90,32 @@ export async function GET(req: NextRequest) {
       aiProvider = providers.find((p) => p.isDefault) || providers[0] || null;
     }
 
+    // Evaluation configs only carry prompt settings (scoring lives in JD templates)
+    const evaluationConfigs = evalConfigs.map((c) => ({
+      id: c.id,
+      title: c.title,
+      isDefault: c.isDefault,
+      promptRole: c.promptRole,
+      criticalInstructions: c.criticalInstructions,
+      promptGuidelines: c.promptGuidelines,
+    }));
+
     return NextResponse.json(
       {
         jdTemplates,
-        promptTemplates,
+        evaluationConfigs,
+        sheetIntegrations: sheetIntegrations.map((s) => ({
+          id: s.id,
+          name: s.name,
+          url: s.url,
+        })),
         settings: {
           aiModel: settings?.aiModel || "gpt-4.1",
           sheetWebAppUrl: settings?.sheetWebAppUrl || "",
           minScoreThreshold: settings?.minScoreThreshold ?? 0,
           promptRole: settings?.promptRole || null,
           promptGuidelines: settings?.promptGuidelines || null,
+          criticalInstructions: settings?.criticalInstructions || null,
         },
         aiProvider: aiProvider
           ? {
