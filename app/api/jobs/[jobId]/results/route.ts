@@ -35,6 +35,8 @@ export async function GET(
       createdAt: task.createdAt,
     }));
 
+    const config = job.config ? JSON.parse(job.config) : {};
+
     return NextResponse.json({
       id: job.id,
       status: job.status,
@@ -43,6 +45,11 @@ export async function GET(
       successCount: (job as any).successCount ?? 0,
       failedCount: (job as any).failedCount ?? 0,
       createdAt: job.createdAt,
+      config: {
+        sheetWebAppUrl: config.sheetWebAppUrl || "",
+        jdTitle: config.jdTitle || "",
+        minScoreThreshold: config.minScoreThreshold ?? 0,
+      },
       tasks: parsedTasks,
     });
   } catch (error) {

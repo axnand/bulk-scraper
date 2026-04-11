@@ -21,7 +21,18 @@ interface JobResults {
   processedCount: number;
   successCount: number;
   failedCount: number;
+  config?: {
+    sheetWebAppUrl: string;
+    jdTitle: string;
+    minScoreThreshold: number;
+  };
   tasks: TaskResult[];
+}
+
+interface SheetIntegrationType {
+  id: string;
+  name: string;
+  url: string;
 }
 
 export default function JobResultsPage() {
@@ -41,6 +52,7 @@ export default function JobResultsPage() {
   const [exportMsg, setExportMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [showSheetModal, setShowSheetModal] = useState(false);
   const [sheetUrl, setSheetUrl] = useState("");
+  const [sheetIntegrations, setSheetIntegrations] = useState<SheetIntegrationType[]>([]);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -51,6 +63,11 @@ export default function JobResultsPage() {
         if (!res.ok) throw new Error("Failed to fetch results");
         const json = await res.json();
         setData(json);
+
+        // Pre-populate sheet URL from job config on first load
+        if (json.config?.sheetWebAppUrl) {
+          setSheetUrl((prev) => prev || json.config.sheetWebAppUrl);
+        }
 
         // Keep polling if still active (including paused, so UI stays in sync)
         if (json.status === "PROCESSING" || json.status === "PENDING" || json.status === "PAUSED") {
@@ -65,6 +82,12 @@ export default function JobResultsPage() {
         setLoading(false);
       }
     }
+
+    // Load saved sheet integrations once on mount
+    fetch("/api/sheet-integrations")
+      .then((r) => r.ok ? r.json() : [])
+      .then(setSheetIntegrations)
+      .catch(() => {});
 
     fetchResults();
     interval = setInterval(fetchResults, 3000);
@@ -429,17 +452,48 @@ export default function JobResultsPage() {
                 {selectedIds.size > 0 ? `${selectedIds.size} selected` : `All ${analysedTasks.length} profiles`}
               </span>
             </div>
+
+            {/* Saved sheet integrations */}
+            {sheetIntegrations.length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-[11px] text-neutral-400 font-medium">Saved Sheets</p>
+                <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                  {sheetIntegrations.map((sheet) => {
+                    const isActive = sheetUrl === sheet.url;
+                    return (
+                      <button
+                        key={sheet.id}
+                        type="button"
+                        onClick={() => setSheetUrl(sheet.url)}
+                        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-all ${
+                          isActive
+                            ? "bg-emerald-500/15 border border-emerald-500/40 text-emerald-300"
+                            : "bg-neutral-900/60 border border-neutral-700 text-neutral-300 hover:border-neutral-500 hover:bg-neutral-800/60"
+                        }`}
+                      >
+                        <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${isActive ? "bg-emerald-400" : "bg-neutral-600"}`} />
+                        <span className="text-sm font-medium truncate">{sheet.name}</span>
+                        {isActive && <span className="ml-auto text-[10px] text-emerald-400 shrink-0">Selected</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div>
-              <label className="text-xs text-neutral-400 block mb-1.5">Apps Script Web App URL</label>
+              <label className="text-xs text-neutral-400 block mb-1.5">
+                {sheetIntegrations.length > 0 ? "Or enter URL manually" : "Apps Script Web App URL"}
+              </label>
               <input
-                autoFocus
+                autoFocus={sheetIntegrations.length === 0}
                 type="text"
                 placeholder="https://script.google.com/macros/s/..."
                 value={sheetUrl}
                 onChange={(e) => setSheetUrl(e.target.value)}
                 className="w-full bg-neutral-900/50 border border-neutral-700 rounded-lg px-3 py-2.5 text-sm text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-indigo-500"
               />
-              <p className="text-[10px] text-neutral-500 mt-1.5">Profiles are exported as a separate tab in your existing sheet</p>
+              <p className="text-[10px] text-neutral-500 mt-1.5">Profiles are exported as a separate tab in your sheet</p>
             </div>
             {exportMsg && (
               <p className={`text-xs rounded-lg px-3 py-2 ${exportMsg.type === "success" ? "bg-emerald-500/10 text-emerald-400" : "bg-rose-500/10 text-rose-400"}`}>

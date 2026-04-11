@@ -453,6 +453,7 @@ export default function Home() {
   async function handleUpdateSheet() {
     if (!editingSheetId || !editSheetName.trim() || !editSheetUrl.trim()) return;
     try {
+      const originalSheet = sheetIntegrations.find(s => s.id === editingSheetId);
       const res = await fetch(`/api/sheet-integrations/${editingSheetId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -461,7 +462,10 @@ export default function Home() {
       if (!res.ok) return;
       const updatedSheet = await res.json();
       setSheetIntegrations(sheetIntegrations.map(s => s.id === editingSheetId ? updatedSheet : s));
-      setSheetWebAppUrl(updatedSheet.url);
+      // Only update the active URL if the sheet being edited was the active one
+      if (originalSheet && originalSheet.url === sheetWebAppUrl) {
+        setSheetWebAppUrl(updatedSheet.url);
+      }
       setEditingSheetId(null);
     } catch { /* silently fail */ }
   }
