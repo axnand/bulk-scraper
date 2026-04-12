@@ -794,29 +794,20 @@ export default function SettingsPage() {
               <form onSubmit={handleAddProvider} className="space-y-5 p-5 rounded-xl bg-neutral-950/50 border border-neutral-800 mb-6">
                 <h3 className="text-sm font-semibold text-white">New AI Provider</h3>
 
-                {/* Step 1: Pick a provider */}
-                <div className="space-y-2">
-                  <label className="text-xs font-medium text-neutral-400">Provider <span className="text-rose-400">*</span></label>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {Object.entries(PROVIDER_PRESETS).map(([key, p]) => (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => handlePresetChange(key)}
-                        className={`px-3 py-2 rounded-lg border text-xs font-medium text-left transition-all ${
-                          selectedPreset === key
-                            ? "bg-indigo-500/15 border-indigo-500/50 text-indigo-300"
-                            : "bg-neutral-900/40 border-neutral-700/50 text-neutral-400 hover:border-neutral-600 hover:text-neutral-300"
-                        }`}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Step 2: Name + URL/Region */}
+                {/* Provider + Name row */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-neutral-400">Provider <span className="text-rose-400">*</span></label>
+                    <select
+                      value={selectedPreset}
+                      onChange={(e) => handlePresetChange(e.target.value)}
+                      className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2.5 text-sm text-neutral-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
+                    >
+                      {Object.entries(PROVIDER_PRESETS).map(([key, p]) => (
+                        <option key={key} value={key}>{p.label}</option>
+                      ))}
+                    </select>
+                  </div>
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-neutral-400">Display Name <span className="text-rose-400">*</span></label>
                     <input
@@ -827,22 +818,24 @@ export default function SettingsPage() {
                       className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2.5 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
                     />
                   </div>
+                </div>
 
-                  {/* Bedrock: Region selector | Custom: URL input | Others: read-only URL */}
-                  {selectedPreset === "bedrock" ? (
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-neutral-400">AWS Region <span className="text-rose-400">*</span></label>
-                      <select
-                        value={newProviderCustomBaseUrl}
-                        onChange={(e) => setNewProviderCustomBaseUrl(e.target.value)}
-                        className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2.5 text-sm text-neutral-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
-                      >
-                        {BEDROCK_REGIONS.map(r => (
-                          <option key={r.value} value={r.value}>{r.label} ({r.value})</option>
-                        ))}
-                      </select>
-                    </div>
-                  ) : selectedPreset === "custom" ? (
+                {/* Bedrock: Region selector | Custom: URL + API format | Others: read-only URL */}
+                {selectedPreset === "bedrock" ? (
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-neutral-400">AWS Region <span className="text-rose-400">*</span></label>
+                    <select
+                      value={newProviderCustomBaseUrl}
+                      onChange={(e) => setNewProviderCustomBaseUrl(e.target.value)}
+                      className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2.5 text-sm text-neutral-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
+                    >
+                      {BEDROCK_REGIONS.map(r => (
+                        <option key={r.value} value={r.value}>{r.label} ({r.value})</option>
+                      ))}
+                    </select>
+                  </div>
+                ) : selectedPreset === "custom" ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-neutral-400">Base URL <span className="text-rose-400">*</span></label>
                       <input
@@ -853,30 +846,27 @@ export default function SettingsPage() {
                         className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2.5 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
                       />
                     </div>
-                  ) : (
                     <div className="space-y-1">
-                      <label className="text-xs font-medium text-neutral-400">Base URL <span className="text-neutral-600">(auto-filled)</span></label>
-                      <div className="w-full rounded-lg bg-neutral-950/50 border border-neutral-800 px-3 py-2.5 text-sm text-neutral-500 font-mono truncate">
-                        {currentPreset.baseUrl}
-                      </div>
+                      <label className="text-xs font-medium text-neutral-400">API Format <span className="text-rose-400">*</span></label>
+                      <select
+                        value={newProviderCustomType}
+                        onChange={(e) => setNewProviderCustomType(e.target.value)}
+                        className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2.5 text-sm text-neutral-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
+                      >
+                        <option value="openai-compatible">OpenAI-Compatible</option>
+                        <option value="anthropic">Anthropic (Claude)</option>
+                      </select>
                     </div>
-                  )}
-                </div>
-
-                {/* Custom provider type selector */}
-                {selectedPreset === "custom" && (
+                  </div>
+                ) : (
                   <div className="space-y-1">
-                    <label className="text-xs font-medium text-neutral-400">API Format <span className="text-rose-400">*</span></label>
-                    <select
-                      value={newProviderCustomType}
-                      onChange={(e) => setNewProviderCustomType(e.target.value)}
-                      className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2.5 text-sm text-neutral-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
-                    >
-                      <option value="openai-compatible">OpenAI-Compatible</option>
-                      <option value="anthropic">Anthropic (Claude)</option>
-                    </select>
+                    <label className="text-xs font-medium text-neutral-400">Base URL <span className="text-neutral-600">(auto-filled)</span></label>
+                    <div className="w-full rounded-lg bg-neutral-950/50 border border-neutral-800 px-3 py-2.5 text-sm text-neutral-500 font-mono truncate">
+                      {currentPreset.baseUrl}
+                    </div>
                   </div>
                 )}
+
 
                 {/* Credentials — Bedrock gets two fields; all others get one */}
                 {selectedPreset === "bedrock" ? (
@@ -1028,7 +1018,7 @@ export default function SettingsPage() {
                   const quickResult = quickTestResults[provider.id];
 
                   return (
-                    <div key={provider.id} className={`rounded-xl border p-4 transition-all ${provider.isDefault ? "bg-indigo-500/5 border-indigo-500/30" : "bg-neutral-500/5 border-neutral-700/50"}`}>
+                    <div key={provider.id} onClick={!provider.isDefault && !isEditing ? () => handleSetDefault(provider.id) : undefined} className={`rounded-xl border p-4 transition-all ${provider.isDefault ? "bg-indigo-500/5 border-indigo-500/30" : `bg-neutral-500/5 border-neutral-700/50 ${!isEditing ? "cursor-pointer hover:border-indigo-500/20 hover:bg-indigo-500/5" : ""}`}`}>
                       {isEditing ? (
                         /* ── Inline Edit Form ── */
                         <div className="space-y-4">
@@ -1119,7 +1109,6 @@ export default function SettingsPage() {
                                 {providerTypeLabels[provider.provider] || provider.provider}
                               </span>
                             </div>
-                            <p className="text-xs text-neutral-500 truncate mb-2">{provider.baseUrl}</p>
                             <div className="flex flex-wrap gap-1.5">
                               {(provider.models || []).map(m => (
                                 <span key={m} className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-400 font-mono border border-neutral-700/50">{m}</span>
@@ -1145,14 +1134,6 @@ export default function SettingsPage() {
                               className="p-2 rounded-lg text-neutral-500 hover:text-indigo-400 hover:bg-indigo-500/10 transition-colors" title="Edit provider">
                               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
                             </button>
-                            {/* Set Default */}
-                            {!provider.isDefault && (
-                              <button onClick={() => handleSetDefault(provider.id)}
-                                className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-neutral-400 hover:text-indigo-400 hover:bg-indigo-500/10 border border-neutral-700/50 hover:border-indigo-500/30 transition-colors"
-                                title="Set as default">
-                                Set Default
-                              </button>
-                            )}
                             {/* Delete */}
                             <button onClick={() => handleDeleteProvider(provider.id)}
                               className="p-2 rounded-lg text-neutral-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors" title="Delete">

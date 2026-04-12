@@ -1603,7 +1603,7 @@ export default function Home() {
             <div className="flex items-center justify-between p-4 border-b border-neutral-800">
               <div>
                 <h2 className="text-sm font-semibold text-white">System Prompt Preview</h2>
-                <p className="text-[11px] text-neutral-500 mt-0.5">{previewPrompt.length.toLocaleString()} characters</p>
+                <p className="text-[11px] text-neutral-500 mt-0.5">{previewPrompt.length.toLocaleString()} chars · ~{Math.round(previewPrompt.length / 4).toLocaleString()} tokens</p>
               </div>
               <button
                 onClick={() => setPreviewPrompt(null)}

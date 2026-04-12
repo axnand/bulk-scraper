@@ -67,7 +67,8 @@ export async function POST(
         url: t.url,
         analysisResult: JSON.parse(t.analysisResult!),
       }))
-      .filter((t) => (t.analysisResult.scorePercent ?? 0) >= threshold);
+      // Skip threshold when user explicitly selected profiles — only apply for bulk "export all"
+      .filter((t) => taskIds && taskIds.length > 0 ? true : (t.analysisResult.scorePercent ?? 0) >= threshold);
 
     if (parsed.length === 0) {
       return NextResponse.json(
