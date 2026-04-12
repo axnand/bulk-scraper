@@ -111,14 +111,28 @@ export async function GET(req: NextRequest) {
         })),
         settings: {
           aiModel: settings?.aiModel || "gpt-4.1",
+          aiProviderId: settings?.aiProviderId || null,
           sheetWebAppUrl: settings?.sheetWebAppUrl || "",
           minScoreThreshold: settings?.minScoreThreshold ?? 0,
           promptRole: settings?.promptRole || null,
           promptGuidelines: settings?.promptGuidelines || null,
           criticalInstructions: settings?.criticalInstructions || null,
         },
+        // All configured providers so the extension can let the user pick one
+        aiProviders: providers.map((p) => ({
+          id: p.id,
+          name: p.name,
+          provider: p.provider,
+          baseUrl: p.baseUrl,
+          apiKey: p.apiKey,
+          models: JSON.parse(p.models),
+          isDefault: p.isDefault,
+        })),
+        // Convenience: the currently active provider (matches settings.aiProviderId or default)
         aiProvider: aiProvider
           ? {
+              id: aiProvider.id,
+              name: aiProvider.name,
               apiKey: aiProvider.apiKey,
               baseUrl: aiProvider.baseUrl,
               provider: aiProvider.provider,
