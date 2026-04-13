@@ -4,7 +4,6 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { DEFAULT_RULE_PROMPTS, DEFAULT_CRITICAL_INSTRUCTIONS } from "@/lib/analyzer";
 import { estimateCost, formatCost, MODEL_PRICING } from "@/lib/model-pricing";
-import { parseAndValidateUrls } from "@/lib/validators";
 
 const DEFAULT_ROLE = "You are a strict ATS evaluator.";
 
@@ -109,6 +108,7 @@ export default function Home() {
   const [jobData, setJobData] = useState<JobResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [invalidUrls, setInvalidUrls] = useState<string[]>([]);
   const [history, setHistory] = useState<HistoryJob[]>([]);
   const [initialFetchDone, setInitialFetchDone] = useState(false);
@@ -118,7 +118,7 @@ export default function Home() {
   const HISTORY_PER_PAGE = 20;
 
   // Analysis config state
-  const [showAdvanced, setShowAdvanced] = useState(true);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [jobDescription, setJobDescription] = useState("");
   const [sheetWebAppUrl, setSheetWebAppUrl] = useState("");
   const [scoringRules, setScoringRules] = useState({
@@ -593,6 +593,17 @@ export default function Home() {
     e.preventDefault();
     if (!urls.trim()) return;
 
+    const missing = [
+      !jobDescription.trim() && "Job Description",
+      !selectedEvalConfigId && "Eval Config",
+      (!aiProviderChosen || !aiModel) && "AI Model",
+    ].filter(Boolean) as string[];
+    if (missing.length > 0) {
+      setValidationError(`Please fill in: ${missing.join(", ")}`);
+      return;
+    }
+    setValidationError(null);
+
     setLoading(true);
     setError(null);
     setInvalidUrls([]);
@@ -738,22 +749,6 @@ export default function Home() {
           {/* Advanced Settings Panel */}
           {showAdvanced && (
             <div className="space-y-6 p-5 rounded-xl bg-neutral-950/50 border border-neutral-800">
-
-              {/* ─── Setup Checklist ─── */}
-              <div className="flex items-center gap-4 pb-4 border-b border-neutral-800/70">
-                {[
-                  { label: "Job Description", done: !!jobDescription.trim() },
-                  { label: "Eval Config", done: !!selectedEvalConfigId },
-                  { label: "AI Model", done: aiProviderChosen && !!aiModel },
-                ].map(({ label, done }) => (
-                  <div key={label} className={`flex items-center gap-1.5 text-xs font-medium ${done ? "text-emerald-400" : "text-amber-400"}`}>
-                    {done
-                      ? <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
-                      : <></>}
-                    {label}
-                  </div>
-                ))}
-              </div>
 
               {/* ─── 1. JD TEMPLATES SECTION (with scoring rules inside) ─── */}
               <div className="space-y-3">
@@ -1579,20 +1574,12 @@ export default function Home() {
             </div>
           )}
 
-          {(() => {
-            const missing = [
-              !jobDescription.trim() && "Job Description",
-              !selectedEvalConfigId && "Eval Config",
-              (!aiProviderChosen || !aiModel) && "AI Model",
-            ].filter(Boolean) as string[];
-            const canSubmit = urls.trim() && missing.length === 0;
-            return (
           <div className="flex items-center justify-between gap-3">
             <div className="flex-1">
               {error ? (
                 <p className="text-sm text-rose-400">{error}</p>
-              ) : !canSubmit && urls.trim() ? (
-                <p className="text-xs text-amber-400/80">Select: {missing.join(", ")}</p>
+              ) : validationError ? (
+                <p className="text-xs text-amber-400">{validationError}</p>
               ) : null}
             </div>
             <div className="flex items-center gap-2">
@@ -1615,7 +1602,7 @@ export default function Home() {
               </button>
               <button
                 type="submit"
-                disabled={loading || !canSubmit}
+                disabled={loading}
                 className="rounded-lg bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-95 flex items-center gap-2"
               >
                 {loading ? (
@@ -1632,8 +1619,6 @@ export default function Home() {
               </button>
             </div>
           </div>
-            );
-          })()}
         </form>
 
         {invalidUrls.length > 0 && (
