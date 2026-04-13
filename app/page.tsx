@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { DEFAULT_RULE_PROMPTS, DEFAULT_CRITICAL_INSTRUCTIONS } from "@/lib/analyzer";
+import { estimateCost, formatCost, MODEL_PRICING } from "@/lib/model-pricing";
 
 const DEFAULT_ROLE = "You are a strict ATS evaluator.";
 
@@ -115,7 +116,7 @@ export default function Home() {
   const HISTORY_PER_PAGE = 20;
 
   // Analysis config state
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(true);
   const [jobDescription, setJobDescription] = useState("");
   const [sheetWebAppUrl, setSheetWebAppUrl] = useState("");
   const [scoringRules, setScoringRules] = useState({
@@ -125,8 +126,9 @@ export default function Home() {
   const [customScoringRules, setCustomScoringRules] = useState<
     { id: string; name: string; maxPoints: number; criteria: string; enabled: boolean }[]
   >([]);
-  const [aiModel, setAiModel] = useState("gpt-4.1");
+  const [aiModel, setAiModel] = useState("");
   const [aiProviderId, setAiProviderId] = useState<string | null>(null);
+  const [aiProviderChosen, setAiProviderChosen] = useState(false);
   const [minScoreThreshold, setMinScoreThreshold] = useState(70);
   const [newRuleName, setNewRuleName] = useState("");
   const [newRuleMax, setNewRuleMax] = useState(10);
@@ -161,7 +163,8 @@ export default function Home() {
   const [evalConfigName, setEvalConfigName] = useState("");
 
   // ─── Preview Prompt state ───
-  const [previewPrompt, setPreviewPrompt] = useState<string | null>(null);
+  const [previewPrompt, setPreviewPrompt] = useState<{ systemPrompt: string; userPrompt: string | null } | null>(null);
+  const [previewPromptTab, setPreviewPromptTab] = useState<"system" | "user">("system");
   const [previewLoading, setPreviewLoading] = useState(false);
 
   // ─── Toast notifications ───
@@ -247,23 +250,27 @@ export default function Home() {
           fetch("/api/sheet-integrations"),
         ]);
         if (jdRes.ok) setJdTemplates(await jdRes.json());
-        if (providersRes.ok) setAiProviders(await providersRes.json());
+        if (providersRes.ok) {
+          const providers = await providersRes.json();
+          setAiProviders(providers);
+          // Auto-select the default provider and its first model
+          const def = providers.find((p: any) => p.isDefault);
+          if (def) {
+            setAiProviderChosen(true);
+            setAiProviderId(def.id);
+            if (def.models?.length > 0) setAiModel(def.models[0]);
+          }
+        }
         if (settingsRes.ok) {
           const s = await settingsRes.json();
-          if (s.aiModel) setAiModel(s.aiModel);
-          if (s.aiProviderId) setAiProviderId(s.aiProviderId);
+          // Only restore sheet and threshold — model/provider require explicit selection per session
           if (s.sheetWebAppUrl) setSheetWebAppUrl(s.sheetWebAppUrl);
           if (s.minScoreThreshold != null) setMinScoreThreshold(s.minScoreThreshold);
         }
         if (evalConfigsRes.ok) {
           const configs: EvaluationConfigType[] = await evalConfigsRes.json();
           setEvaluationConfigs(configs);
-          // Auto-select the system default
-          const defaultConfig = configs.find(c => c.isDefault);
-          if (defaultConfig) {
-            setSelectedEvalConfigId(defaultConfig.id);
-            loadEvalConfigIntoState(defaultConfig);
-          }
+          // Do not auto-select — user must choose explicitly
         }
         if (sheetsRes.ok) {
           const sheets = await sheetsRes.json();
@@ -394,11 +401,13 @@ export default function Home() {
           scoringRules,
           customScoringRules,
           builtInRuleDescriptions,
+          jobDescription: jobDescription || undefined,
         }),
       });
       if (res.ok) {
         const data = await res.json();
-        setPreviewPrompt(data.systemPrompt);
+        setPreviewPromptTab(data.userPrompt ? "user" : "system");
+        setPreviewPrompt({ systemPrompt: data.systemPrompt, userPrompt: data.userPrompt ?? null });
       }
     } catch { /* silently fail */ } finally {
       setPreviewLoading(false);
@@ -730,6 +739,22 @@ export default function Home() {
           {/* Advanced Settings Panel */}
           {showAdvanced && (
             <div className="space-y-6 p-5 rounded-xl bg-neutral-950/50 border border-neutral-800">
+
+              {/* ─── Setup Checklist ─── */}
+              <div className="flex items-center gap-4 pb-4 border-b border-neutral-800/70">
+                {[
+                  { label: "Job Description", done: !!jobDescription.trim() },
+                  { label: "Eval Config", done: !!selectedEvalConfigId },
+                  { label: "AI Model", done: aiProviderChosen && !!aiModel },
+                ].map(({ label, done }) => (
+                  <div key={label} className={`flex items-center gap-1.5 text-xs font-medium ${done ? "text-emerald-400" : "text-amber-400"}`}>
+                    {done
+                      ? <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+                      : <></>}
+                    {label}
+                  </div>
+                ))}
+              </div>
 
               {/* ─── 1. JD TEMPLATES SECTION (with scoring rules inside) ─── */}
               <div className="space-y-3">
@@ -1346,18 +1371,21 @@ export default function Home() {
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <select
-                    value={aiProviderId || ""}
+                    value={!aiProviderChosen ? "__unset__" : (aiProviderId || "")}
                     onChange={(e) => {
+                      if (e.target.value === "__unset__") return;
+                      setAiProviderChosen(true);
                       const id = e.target.value || null;
                       setAiProviderId(id);
+                      setAiModel("");
                       if (id) {
                         const p = aiProviders.find((p: any) => p.id === id);
                         if (p && p.models?.length > 0) setAiModel(p.models[0]);
                       }
                     }}
-                    className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
+                    className={`w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 focus:outline-none transition-colors ${!aiProviderChosen ? "text-neutral-500" : "text-neutral-200"}`}
                   >
-                    <option value="">Default (OpenAI via env key)</option>
+                    <option value="__unset__" disabled>— Select a provider —</option>
                     {aiProviders.map((p: any) => (
                       <option key={p.id} value={p.id}>
                         {p.name}{p.isDefault ? " *" : ""}
@@ -1366,25 +1394,19 @@ export default function Home() {
                   </select>
                   {aiProviderId ? (
                     <select
-                      value={aiModel}
-                      onChange={(e) => setAiModel(e.target.value)}
-                      className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
+                      value={aiModel || "__unset__"}
+                      onChange={(e) => { if (e.target.value !== "__unset__") setAiModel(e.target.value); }}
+                      className={`w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 focus:outline-none transition-colors ${!aiModel ? "text-neutral-500" : "text-neutral-200"}`}
                     >
+                      <option value="__unset__" disabled>— Select a model —</option>
                       {(aiProviders.find((p: any) => p.id === aiProviderId)?.models || []).map((m: string) => (
                         <option key={m} value={m}>{m}</option>
                       ))}
                     </select>
                   ) : (
-                    <select
-                      value={aiModel}
-                      onChange={(e) => setAiModel(e.target.value)}
-                      className="w-full rounded-lg bg-neutral-900/50 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-colors"
-                    >
-                      <option value="gpt-4.1">GPT-4.1</option>
-                      <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
-                      <option value="gpt-4o">GPT-4o</option>
-                      <option value="gpt-4o-mini">GPT-4o Mini</option>
-                    </select>
+                    <div className="w-full rounded-lg bg-neutral-900/30 border border-neutral-800 px-3 py-2 text-sm text-neutral-600 flex items-center">
+                      — Select a provider first —
+                    </div>
                   )}
                 </div>
               </div>
@@ -1539,12 +1561,22 @@ export default function Home() {
             </div>
           )}
 
-          <div className="flex items-center justify-between">
-            {error ? (
-              <p className="text-sm text-rose-400">{error}</p>
-            ) : (
-              <div />
-            )}
+          {(() => {
+            const missing = [
+              !jobDescription.trim() && "Job Description",
+              !selectedEvalConfigId && "Eval Config",
+              (!aiProviderChosen || !aiModel) && "AI Model",
+            ].filter(Boolean) as string[];
+            const canSubmit = urls.trim() && missing.length === 0;
+            return (
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex-1">
+              {error ? (
+                <p className="text-sm text-rose-400">{error}</p>
+              ) : !canSubmit && urls.trim() ? (
+                <p className="text-xs text-amber-400/80">Select: {missing.join(", ")}</p>
+              ) : null}
+            </div>
             <div className="flex items-center gap-2">
               {/* Preview Prompt Button */}
               <button
@@ -1565,7 +1597,7 @@ export default function Home() {
               </button>
               <button
                 type="submit"
-                disabled={loading || !urls.trim()}
+                disabled={loading || !canSubmit}
                 className="rounded-lg bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-95 flex items-center gap-2"
               >
                 {loading ? (
@@ -1582,6 +1614,8 @@ export default function Home() {
               </button>
             </div>
           </div>
+            );
+          })()}
         </form>
 
         {invalidUrls.length > 0 && (
@@ -1597,27 +1631,87 @@ export default function Home() {
       </section>
 
       {/* Preview Prompt Modal */}
-      {previewPrompt !== null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={() => setPreviewPrompt(null)}>
-          <div className="bg-neutral-900 border border-neutral-700 rounded-2xl max-w-4xl w-full max-h-[80vh] flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-4 border-b border-neutral-800">
-              <div>
-                <h2 className="text-sm font-semibold text-white">System Prompt Preview</h2>
-                <p className="text-[11px] text-neutral-500 mt-0.5">{previewPrompt.length.toLocaleString()} chars · ~{Math.round(previewPrompt.length / 4).toLocaleString()} tokens</p>
+      {previewPrompt !== null && (() => {
+        const sysTokens  = Math.round(previewPrompt.systemPrompt.length / 4);
+        const userTokens = previewPrompt.userPrompt ? Math.round(previewPrompt.userPrompt.length / 4) : 0;
+        const totalInputTokens = sysTokens + userTokens;
+        const outputTokens = 2000; // max_tokens used by the analyzer
+        const costPerProfile = aiModel ? estimateCost(totalInputTokens, outputTokens, aiModel) : null;
+        const pricingKnown = aiModel ? aiModel in MODEL_PRICING : false;
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={() => setPreviewPrompt(null)}>
+            <div className="bg-neutral-900 border border-neutral-700 rounded-2xl max-w-4xl w-full max-h-[80vh] flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between p-4 border-b border-neutral-800">
+                <div>
+                  <h2 className="text-sm font-semibold text-white">Prompt Preview</h2>
+                  <p className="text-[11px] text-neutral-500 mt-0.5">
+                    {previewPromptTab === "system"
+                      ? `${previewPrompt.systemPrompt.length.toLocaleString()} chars · ~${sysTokens.toLocaleString()} tokens`
+                      : previewPrompt.userPrompt
+                        ? `${previewPrompt.userPrompt.length.toLocaleString()} chars · ~${userTokens.toLocaleString()} tokens (placeholder profile)`
+                        : ""}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setPreviewPrompt(null)}
+                  className="text-neutral-400 hover:text-white transition-colors p-1 rounded-lg hover:bg-neutral-800"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
               </div>
-              <button
-                onClick={() => setPreviewPrompt(null)}
-                className="text-neutral-400 hover:text-white transition-colors p-1 rounded-lg hover:bg-neutral-800"
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4">
-              <pre className="text-xs text-neutral-300 whitespace-pre-wrap font-mono leading-relaxed">{previewPrompt}</pre>
+
+              {/* Cost estimate bar */}
+              <div className="px-4 py-2.5 bg-neutral-950/60 border-b border-neutral-800 flex flex-wrap items-center gap-x-4 gap-y-1">
+                <span className="text-[11px] text-neutral-500">
+                  Total input ~<span className="text-neutral-300 font-mono">{totalInputTokens.toLocaleString()}</span> tokens
+                  {" "}+ <span className="text-neutral-300 font-mono">{outputTokens.toLocaleString()}</span> output (est.)
+                </span>
+                {costPerProfile ? (
+                  <span className="text-[11px]">
+                    <span className="text-neutral-500">≈ </span>
+                    <span className="text-emerald-400 font-mono font-medium">{formatCost(costPerProfile.totalCost)}</span>
+                    <span className="text-neutral-500"> / profile</span>
+                    <span className="text-neutral-600 ml-2">
+                      (in {formatCost(costPerProfile.inputCost)} + out {formatCost(costPerProfile.outputCost)})
+                    </span>
+                  </span>
+                ) : aiModel && !pricingKnown ? (
+                  <span className="text-[11px] text-neutral-600">pricing unknown for {aiModel}</span>
+                ) : !aiModel ? (
+                  <span className="text-[11px] text-neutral-600">select a model to see cost estimate</span>
+                ) : null}
+                <span className="text-[10px] text-neutral-700 ml-auto">prices approx. — verify at provider</span>
+              </div>
+
+              {/* Tabs */}
+              <div className="flex gap-1 px-4 pt-3 border-b border-neutral-800">
+                <button
+                  onClick={() => setPreviewPromptTab("system")}
+                  className={`px-3 py-1.5 text-xs rounded-t font-medium transition-colors ${previewPromptTab === "system" ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-300"}`}
+                >
+                  System Prompt
+                </button>
+                <button
+                  onClick={() => setPreviewPromptTab("user")}
+                  disabled={!previewPrompt.userPrompt}
+                  className={`px-3 py-1.5 text-xs rounded-t font-medium transition-colors ${previewPromptTab === "user" ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-300"} disabled:opacity-30 disabled:cursor-not-allowed`}
+                >
+                  User Message {!previewPrompt.userPrompt && "(add JD first)"}
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {previewPromptTab === "system" && (
+                  <pre className="text-xs text-neutral-300 whitespace-pre-wrap font-mono leading-relaxed">{previewPrompt.systemPrompt}</pre>
+                )}
+                {previewPromptTab === "user" && previewPrompt.userPrompt && (
+                  <pre className="text-xs text-neutral-300 whitespace-pre-wrap font-mono leading-relaxed">{previewPrompt.userPrompt}</pre>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Progress Section */}
       {jobId && (

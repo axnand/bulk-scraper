@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { estimateCost, formatCost } from "@/lib/model-pricing";
 
 interface TaskResult {
   id: string;
@@ -793,14 +794,25 @@ function ProfileCard({
                       <span className="text-[10px] text-neutral-500 font-medium">Model</span>
                       <p className="text-xs text-neutral-400 font-mono">{analysis.__debug.model}</p>
                     </div>
-                    {analysis.__debug.usage && (
-                      <div className="bg-neutral-900/50 rounded-lg p-2">
-                        <span className="text-[10px] text-neutral-500 font-medium">Token Usage</span>
-                        <p className="text-xs text-neutral-400 font-mono">
-                          Prompt: {analysis.__debug.usage.prompt_tokens} | Completion: {analysis.__debug.usage.completion_tokens} | Total: {analysis.__debug.usage.total_tokens}
-                        </p>
-                      </div>
-                    )}
+                    {analysis.__debug.usage && (() => {
+                      const usage = analysis.__debug.usage;
+                      const cost = estimateCost(usage.prompt_tokens, usage.completion_tokens, analysis.__debug.model);
+                      return (
+                        <div className="bg-neutral-900/50 rounded-lg p-2">
+                          <span className="text-[10px] text-neutral-500 font-medium">Token Usage</span>
+                          <p className="text-xs text-neutral-400 font-mono">
+                            Prompt: {usage.prompt_tokens} | Completion: {usage.completion_tokens} | Total: {usage.total_tokens}
+                          </p>
+                          {cost ? (
+                            <p className="text-xs text-emerald-400/80 font-mono mt-0.5">
+                              Cost: {formatCost(cost.totalCost)} (in {formatCost(cost.inputCost)} + out {formatCost(cost.outputCost)})
+                            </p>
+                          ) : (
+                            <p className="text-[10px] text-neutral-600 mt-0.5">pricing unknown for {analysis.__debug.model}</p>
+                          )}
+                        </div>
+                      );
+                    })()}
                     {analysis.__debug.preComputed && (
                       <div className="bg-neutral-900/50 rounded-lg p-2">
                         <span className="text-[10px] text-neutral-500 font-medium">Pre-computed</span>

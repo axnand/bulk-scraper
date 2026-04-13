@@ -110,7 +110,7 @@ export async function GET(req: NextRequest) {
           url: s.url,
         })),
         settings: {
-          aiModel: settings?.aiModel || "gpt-4.1",
+          aiModel: settings?.aiModel || "",
           aiProviderId: settings?.aiProviderId || null,
           sheetWebAppUrl: settings?.sheetWebAppUrl || "",
           minScoreThreshold: settings?.minScoreThreshold ?? 0,

@@ -12,7 +12,7 @@ export async function GET() {
     return NextResponse.json(
       settings || {
         id: "global",
-        aiModel: "gpt-4.1",
+        aiModel: "",
         aiProviderId: null,
         sheetWebAppUrl: "",
         minScoreThreshold: 0,
@@ -35,7 +35,7 @@ export async function PUT(req: NextRequest) {
       where: { id: "global" },
       create: {
         id: "global",
-        aiModel: body.aiModel || "gpt-4.1",
+        aiModel: body.aiModel || "",
         aiProviderId: body.aiProviderId || null,
         sheetWebAppUrl: body.sheetWebAppUrl || "",
         minScoreThreshold: body.minScoreThreshold ?? 0,

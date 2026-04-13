@@ -117,7 +117,7 @@ export async function POST(req: NextRequest) {
                 customScoringRules: resolvedCustomScoringRules,
                 sheetWebAppUrl: body.sheetWebAppUrl || "",
                 jdTitle: body.jdTitle || "Bulk Analysis",
-                aiModel: body.aiModel || "gpt-4.1",
+                aiModel: body.aiModel,
                 aiProviderId: body.aiProviderId || undefined,
                 minScoreThreshold: body.minScoreThreshold ?? 0,
                 ...(promptRole && { promptRole }),

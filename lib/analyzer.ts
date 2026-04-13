@@ -557,7 +557,7 @@ Be strict and evidence-based. Do NOT assume missing data. Do NOT give benefit of
   return `${identity}\n\n${behavior}\n\nSCORING RULES (mutually exclusive pairs: fill ONE, leave other as ""):\n\n${allRulesText}\n\n${jsonBlock}`;
 }
 
-function buildUserPrompt(profileData: any, jobDescription: string, candidateInfo: CandidateInfo): string {
+export function buildUserPrompt(profileData: any, jobDescription: string, candidateInfo: CandidateInfo): string {
   const jd = parseJobDescription(jobDescription);
 
   let prompt = `## Job Description\n`;
@@ -726,7 +726,8 @@ export async function analyzeProfile(
 
   // ── Pass 2: LLM evaluation ──
   const userPrompt = buildUserPrompt(profileData, config.jobDescription, candidateInfo);
-  const model = config.aiModel || "gpt-4.1";
+  const model = config.aiModel;
+  if (!model) throw new Error("No AI model configured. Please select a provider and model before running analysis.");
 
   // Build system prompt — user's role/guidelines are stitched in automatically
   const systemPrompt = buildSystemPrompt(rules, customRules, {
