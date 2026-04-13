@@ -719,17 +719,7 @@ export default function Home() {
               disabled={loading}
               required
             />
-            {(() => {
-              if (!urls.trim()) return <p className="text-xs text-neutral-600">Paste LinkedIn profile URLs, one per line or space-separated.</p>;
-              const { valid, invalid } = parseAndValidateUrls(urls);
-              return (
-                <div className="flex items-center gap-3 text-xs">
-                  <span className="text-emerald-400 font-medium">✓ {valid.length} valid</span>
-                  {invalid.length > 0 && <span className="text-neutral-500">· {invalid.length} skipped</span>}
-                  {valid.length === 0 && <span className="text-amber-400">No valid LinkedIn URLs found</span>}
-                </div>
-              );
-            })()}
+            <p className="text-xs text-neutral-600">Paste LinkedIn profile URLs, one per line or space-separated.</p>
           </div>
 
           {/* Analysis Config Toggle */}
