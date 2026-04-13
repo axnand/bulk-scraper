@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { DEFAULT_RULE_PROMPTS, DEFAULT_CRITICAL_INSTRUCTIONS } from "@/lib/analyzer";
 import { estimateCost, formatCost, MODEL_PRICING } from "@/lib/model-pricing";
+import { parseAndValidateUrls } from "@/lib/validators";
 
 const DEFAULT_ROLE = "You are a strict ATS evaluator.";
 
@@ -93,6 +94,7 @@ interface JobResponse {
     done: number;
     failed: number;
   };
+  lastProcessedName?: string | null;
 }
 
 interface SheetIntegrationType {
@@ -302,11 +304,11 @@ export default function Home() {
     }
   }
 
-  // Select an eval config
+  // Select an eval config — auto-opens the editor for non-default configs
   function selectEvalConfig(config: EvaluationConfigType) {
     setSelectedEvalConfigId(config.id);
     loadEvalConfigIntoState(config);
-    setEditingEvalConfig(false);
+    setEditingEvalConfig(!config.isDefault);
     setShowNewEvalConfigInput(false);
     setEvalConfigEditTitle(config.title);
   }
@@ -717,10 +719,17 @@ export default function Home() {
               disabled={loading}
               required
             />
-            <div className="flex justify-between text-xs text-neutral-500">
-              <span>Supports bulk input</span>
-              <span>{urls.split(/\s+/).filter(Boolean).length} URLs detected</span>
-            </div>
+            {(() => {
+              if (!urls.trim()) return <p className="text-xs text-neutral-600">Paste LinkedIn profile URLs, one per line or space-separated.</p>;
+              const { valid, invalid } = parseAndValidateUrls(urls);
+              return (
+                <div className="flex items-center gap-3 text-xs">
+                  <span className="text-emerald-400 font-medium">✓ {valid.length} valid</span>
+                  {invalid.length > 0 && <span className="text-neutral-500">· {invalid.length} skipped</span>}
+                  {valid.length === 0 && <span className="text-amber-400">No valid LinkedIn URLs found</span>}
+                </div>
+              );
+            })()}
           </div>
 
           {/* Analysis Config Toggle */}
@@ -870,7 +879,12 @@ export default function Home() {
                         }`}
                     />
                     <div className="flex items-center justify-between">
-                      <p className="text-[11px] text-neutral-500">Profiles will be scored against this JD.</p>
+                      <div className="flex items-center gap-2">
+                        <p className="text-[11px] text-neutral-500">Profiles will be scored against this JD.</p>
+                        {jobDescription.trim() && (
+                          <span className="text-[11px] text-neutral-600 font-mono">· ~{Math.round(jobDescription.length / 4).toLocaleString()} tokens</span>
+                        )}
+                      </div>
                       <div className="flex items-center gap-2">
                         {editingJdTemplate && selectedJdTemplateId && (
                           <button
@@ -908,7 +922,7 @@ export default function Home() {
                 )}
 
                 {/* ─── SCORING RULES (inside JD section, always editable) ─── */}
-                <details className="group" open>
+                <details className="group">
                   <summary className="flex items-center gap-2 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden">
                     <svg className="w-4 h-4 text-emerald-400 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                     <span className="text-xs font-semibold text-white">Scoring Rules</span>
@@ -1193,7 +1207,7 @@ export default function Home() {
                     </div>
 
                     {/* Evaluator Role */}
-                    <details className="group/eval" open>
+                    <details className="group/eval">
                       <summary className="text-xs text-violet-400 hover:text-violet-300 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5">
                         <svg className="w-3.5 h-3.5 transition-transform group-open/eval:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                         Evaluator Role
@@ -1223,7 +1237,7 @@ export default function Home() {
                     </details>
 
                     {/* Critical Instructions */}
-                    <details className="group/crit" open>
+                    <details className="group/crit">
                       <summary className="text-xs text-amber-400 hover:text-amber-300 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5">
                         <svg className="w-3.5 h-3.5 transition-transform group-open/crit:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                         Critical Instructions (Behavioral Rules)
@@ -1253,7 +1267,7 @@ export default function Home() {
                     </details>
 
                     {/* Evaluation Guidelines */}
-                    <details className="group/guide" open>
+                    <details className="group/guide">
                       <summary className="text-xs text-emerald-400 hover:text-emerald-300 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5">
                         <svg className="w-3.5 h-3.5 transition-transform group-open/guide:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                         Evaluation Guidelines
@@ -1409,6 +1423,20 @@ export default function Home() {
                     </div>
                   )}
                 </div>
+                {/* Inline cost estimate */}
+                {aiModel && (() => {
+                  const estInput = 1500 + Math.round(jobDescription.length / 4);
+                  const cost = estimateCost(estInput, 2000, aiModel);
+                  if (!cost) return aiModel in MODEL_PRICING ? null : (
+                    <p className="text-[11px] text-neutral-600 mt-1">pricing unknown for {aiModel}</p>
+                  );
+                  return (
+                    <p className="text-[11px] text-neutral-500 mt-1">
+                      Est. <span className="text-emerald-400 font-mono font-medium">{formatCost(cost.totalCost)}</span> / profile
+                      <span className="text-neutral-600 ml-1">(in {formatCost(cost.inputCost)} + out {formatCost(cost.outputCost)})</span>
+                    </p>
+                  );
+                })()}
               </div>
 
               <hr className="border-neutral-800/50" />
@@ -1746,9 +1774,16 @@ export default function Home() {
                     )}
                   </div>
                 </div>
-                <p className="text-xs text-neutral-500 float-right">
-                  {jobData.processedCount} of {jobData.totalTasks} processed
-                </p>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-neutral-600">
+                    {jobData.status === "PROCESSING" && jobData.lastProcessedName && (
+                      <span className="text-neutral-500">↻ {jobData.lastProcessedName}</span>
+                    )}
+                  </span>
+                  <span className="text-xs text-neutral-500">
+                    {jobData.processedCount} of {jobData.totalTasks} processed
+                  </span>
+                </div>
               </div>
 
               {/* Stats Grid */}

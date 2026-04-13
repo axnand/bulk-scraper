@@ -1097,13 +1097,13 @@ export default function SettingsPage() {
                         /* ── Provider Card ── */
                         <div className="flex items-start gap-4">
                           <div className="pt-1">
-                            <div className={`w-3 h-3 rounded-full ${provider.isDefault ? "bg-indigo-400" : "bg-neutral-500"}`} />
+                            <div className={`w-2 h-2 rounded-full mt-1 ${provider.isDefault ? "bg-indigo-400" : "bg-neutral-600"}`} />
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 mb-1 flex-wrap">
                               <h3 className="text-sm font-semibold text-white truncate">{provider.name}</h3>
                               {provider.isDefault && (
-                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 font-medium uppercase tracking-wider border border-indigo-500/30">Default</span>
+                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 font-semibold border border-indigo-500/40">★ Default</span>
                               )}
                               <span className="text-[10px] px-2 py-0.5 rounded-full bg-neutral-500/10 text-neutral-400 font-medium border border-neutral-700/50">
                                 {providerTypeLabels[provider.provider] || provider.provider}

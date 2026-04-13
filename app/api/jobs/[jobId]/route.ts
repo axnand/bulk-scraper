@@ -9,16 +9,21 @@ export async function GET(
         const { jobId } = await params;
 
         // Fetch Job and its Tasks
-        const job = await prisma.job.findUnique({
-            where: { id: jobId },
-            include: {
-                tasks: {
-                    select: {
-                        status: true,
+        const [job, lastDoneTask] = await Promise.all([
+            prisma.job.findUnique({
+                where: { id: jobId },
+                include: {
+                    tasks: {
+                        select: { status: true },
                     },
                 },
-            },
-        });
+            }),
+            prisma.task.findFirst({
+                where: { jobId, status: "DONE" },
+                orderBy: { updatedAt: "desc" },
+                select: { analysisResult: true },
+            }),
+        ]);
 
         if (!job) {
             return NextResponse.json({ error: "Job not found" }, { status: 404 });
@@ -39,6 +44,15 @@ export async function GET(
             }
         });
 
+        // Extract the name of the most recently processed candidate
+        let lastProcessedName: string | null = null;
+        if (lastDoneTask?.analysisResult) {
+            try {
+                const ar = JSON.parse(lastDoneTask.analysisResult);
+                lastProcessedName = ar.candidateInfo?.name || null;
+            } catch { /* ignore parse errors */ }
+        }
+
         return NextResponse.json({
             id: job.id,
             status: job.status,
@@ -48,6 +62,7 @@ export async function GET(
             failedCount: (job as any).failedCount ?? 0,
             createdAt: job.createdAt,
             tasks: tasksOverview,
+            lastProcessedName,
         });
     } catch (error) {
         console.error("Error fetching job status:", error);
