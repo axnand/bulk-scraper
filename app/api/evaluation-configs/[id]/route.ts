@@ -27,18 +27,29 @@ export async function PUT(
 
     const body = await req.json();
 
+    const parseJson = (val: string | null, fallback: any) => {
+      if (!val) return fallback;
+      try { return JSON.parse(val); } catch { return fallback; }
+    };
+
     const config = await prisma.evaluationConfig.update({
       where: { id },
       data: {
         ...(body.title != null && { title: body.title.trim() }),
-        ...(body.promptRole !== undefined && {
-          promptRole: body.promptRole || null,
+        ...(body.promptRole !== undefined && { promptRole: body.promptRole || null }),
+        ...(body.criticalInstructions !== undefined && { criticalInstructions: body.criticalInstructions || null }),
+        ...(body.promptGuidelines !== undefined && { promptGuidelines: body.promptGuidelines || null }),
+        ...(body.builtInRuleDescriptions !== undefined && {
+          builtInRuleDescriptions:
+            body.builtInRuleDescriptions && Object.keys(body.builtInRuleDescriptions).length > 0
+              ? JSON.stringify(body.builtInRuleDescriptions)
+              : null,
         }),
-        ...(body.criticalInstructions !== undefined && {
-          criticalInstructions: body.criticalInstructions || null,
+        ...(body.scoringRules !== undefined && {
+          scoringRules: body.scoringRules ? JSON.stringify(body.scoringRules) : null,
         }),
-        ...(body.promptGuidelines !== undefined && {
-          promptGuidelines: body.promptGuidelines || null,
+        ...(body.customScoringRules !== undefined && {
+          customScoringRules: body.customScoringRules ? JSON.stringify(body.customScoringRules) : null,
         }),
       },
     });
@@ -50,6 +61,9 @@ export async function PUT(
       promptRole: config.promptRole,
       criticalInstructions: config.criticalInstructions,
       promptGuidelines: config.promptGuidelines,
+      builtInRuleDescriptions: parseJson(config.builtInRuleDescriptions, {}),
+      scoringRules: parseJson(config.scoringRules, null),
+      customScoringRules: parseJson(config.customScoringRules, []),
       createdAt: config.createdAt,
       updatedAt: config.updatedAt,
     });

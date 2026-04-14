@@ -124,14 +124,17 @@ model PromptTemplate {
 }
 
 model EvaluationConfig {
-  id                   String   @id @default(cuid())
-  title                String
-  isDefault            Boolean  @default(false)
-  promptRole           String?  @db.Text
-  criticalInstructions String?  @db.Text
-  promptGuidelines     String?  @db.Text
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                      String   @id @default(cuid())
+  title                   String
+  isDefault               Boolean  @default(false)
+  promptRole              String?  @db.Text
+  criticalInstructions    String?  @db.Text
+  promptGuidelines        String?  @db.Text
+  builtInRuleDescriptions String?  @db.Text  // JSON: {"growth":"...","mba":"...",...}
+  scoringRules            String?  @db.Text  // JSON: {"stability":true,"growth":false,...}
+  customScoringRules      String?  @db.Text  // JSON: [{id,name,maxPoints,criteria,enabled}]
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
 }
 
 model AppSettings {

@@ -33,7 +33,11 @@ async function ensureDefaultAndList() {
     orderBy: [{ isDefault: "desc" }, { updatedAt: "desc" }],
   });
 
-  // Return only prompt-related fields (scoring lives in JD templates)
+  const parseJson = (val: string | null, fallback: any) => {
+    if (!val) return fallback;
+    try { return JSON.parse(val); } catch { return fallback; }
+  };
+
   return configs.map((c) => ({
     id: c.id,
     title: c.title,
@@ -41,6 +45,9 @@ async function ensureDefaultAndList() {
     promptRole: c.promptRole,
     criticalInstructions: c.criticalInstructions,
     promptGuidelines: c.promptGuidelines,
+    builtInRuleDescriptions: parseJson(c.builtInRuleDescriptions, {}),
+    scoringRules: parseJson(c.scoringRules, null),
+    customScoringRules: parseJson(c.customScoringRules, []),
     createdAt: c.createdAt,
     updatedAt: c.updatedAt,
   }));
@@ -70,12 +77,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const parseJson = (val: any, fallback: any) => {
+      if (!val) return fallback;
+      try { return JSON.parse(val); } catch { return fallback; }
+    };
+    const toJson = (val: any) => (val && Object.keys(val).length > 0) || Array.isArray(val) ? JSON.stringify(val) : null;
+
     const data = {
       title: body.title.trim(),
       isDefault: false,
       promptRole: body.promptRole ?? null,
       criticalInstructions: body.criticalInstructions ?? null,
       promptGuidelines: body.promptGuidelines ?? null,
+      builtInRuleDescriptions: body.builtInRuleDescriptions ? toJson(body.builtInRuleDescriptions) : null,
+      scoringRules: body.scoringRules ? JSON.stringify(body.scoringRules) : null,
+      customScoringRules: body.customScoringRules ? JSON.stringify(body.customScoringRules) : null,
     };
 
     const config = await prisma.evaluationConfig.create({ data });
@@ -87,6 +103,9 @@ export async function POST(req: NextRequest) {
       promptRole: config.promptRole,
       criticalInstructions: config.criticalInstructions,
       promptGuidelines: config.promptGuidelines,
+      builtInRuleDescriptions: parseJson(config.builtInRuleDescriptions, {}),
+      scoringRules: parseJson(config.scoringRules, null),
+      customScoringRules: parseJson(config.customScoringRules, []),
       createdAt: config.createdAt,
       updatedAt: config.updatedAt,
     });

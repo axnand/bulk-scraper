@@ -675,7 +675,14 @@ function ProfileCard({
                     { label: 'MBA', logKey: 'mba', scoreKey1: "mbaA", scoreKey2: "mbaOthers", max: 15 },
                     { label: 'Skillset Match', logKey: 'skillMatch', scoreKey1: 'skillsetMatch', max: 10 },
                     { label: 'Location', logKey: 'location', scoreKey1: 'locationMatch', max: 5 },
-                  ].filter(d => analysis.scoringLogs && analysis.scoringLogs[d.logKey] !== undefined).map(dim => {
+                  ].filter(d => {
+                    if (!analysis.scoringLogs || analysis.scoringLogs[d.logKey] === undefined) return false;
+                    // If enabledRules is stored (new analyses), use it to hide disabled dimensions
+                    if (analysis.enabledRules !== undefined) {
+                      return (analysis.enabledRules as any)[d.logKey] !== false;
+                    }
+                    return true;
+                  }).map(dim => {
                     let val = 0;
                     if (typeof analysis.scoring[dim.scoreKey1] === 'number') {
                       val = analysis.scoring[dim.scoreKey1];

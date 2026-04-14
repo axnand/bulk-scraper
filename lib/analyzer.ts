@@ -77,6 +77,7 @@ export interface AnalysisResult {
   candidateInfo: CandidateInfo;
   scoring: Record<string, number | string>;
   scoringLogs: Record<string, string>;
+  enabledRules?: ScoringRules;
   maxScore: number;
   totalScore: number;
   scorePercent: number;
@@ -520,12 +521,15 @@ export function buildSystemPrompt(
     scoringSchema.push(`    "custom_${r.id}": <0 to ${r.maxPoints} integer>`);
   }
 
-  const customLogSchema = enabledCustomRules
-    .map(
-      (r) =>
-        `    "custom_${r.id}": "<1-2 sentence: evidence and reasoning for ${r.name} score>"`
-    )
-    .join(",\n");
+  const logsSchemaEntries: string[] = [];
+  if (enabled.growth) logsSchemaEntries.push(`    "growth": "<1-2 sentence: what evidence you found (or didn't), which sub-rule triggered, why this score>"`);
+  if (enabled.graduation) logsSchemaEntries.push(`    "graduation": "<MUST state: 1) degree name, 2) BTech/BE or Non-BTech classification, 3) institution name, 4) Tier 1/Tier 2/Neither, 5) score from lookup table. Example: 'BBA (Non-BTech) from De La Salle University (Tier 2) → gradTier2=5'>"`);
+  if (enabled.companyType) logsSchemaEntries.push(`    "companyType": "<1-2 sentence: company name, why classified as this type, which sub-rule>"`);
+  if (enabled.mba) logsSchemaEntries.push(`    "mba": "<1-2 sentence: State the MBA/PGDM institution name and tier, OR state 'No MBA/PGDM found in the candidate profile'. NEVER output empty strings or raw score values here — always write a human-readable explanation>"`);
+  if (enabled.skillMatch) logsSchemaEntries.push(`    "skillMatch": "<1-2 sentence: list which JD-required skills/competencies the candidate has vs lacks, then match %>"`);
+  for (const r of enabledCustomRules) {
+    logsSchemaEntries.push(`    "custom_${r.id}": "<1-2 sentence: evidence and reasoning for ${r.name} score>"`);
+  }
 
   const jsonBlock = `Respond with ONLY valid JSON (no markdown, no code fences):
 {
@@ -533,11 +537,7 @@ export function buildSystemPrompt(
 ${scoringSchema.join(",\n")}
   },
   "scoringLogs": {
-    "growth": "<1-2 sentence: what evidence you found (or didn't), which sub-rule triggered, why this score>",
-    "graduation": "<MUST state: 1) degree name, 2) BTech/BE or Non-BTech classification, 3) institution name, 4) Tier 1/Tier 2/Neither, 5) score from lookup table. Example: 'BBA (Non-BTech) from De La Salle University (Tier 2) → gradTier2=5'>",
-    "companyType": "<1-2 sentence: company name, why classified as this type, which sub-rule>",
-    "mba": "<1-2 sentence: State the MBA/PGDM institution name and tier, OR state 'No MBA/PGDM found in the candidate profile'. NEVER output empty strings or raw score values here — always write a human-readable explanation>",
-    "skillMatch": "<1-2 sentence: list which JD-required skills/competencies the candidate has vs lacks, then match %>"${customLogSchema ? ",\n" + customLogSchema : ""}
+${logsSchemaEntries.join(",\n")}
   },
   "skillBreakdown": {
     "matchedSkills": ["<skill/competency REQUIRED BY THE JD that candidate HAS>", ...],
@@ -822,6 +822,7 @@ export async function analyzeProfile(
     candidateInfo,
     scoring,
     scoringLogs,
+    enabledRules: rules,
     maxScore,
     totalScore,
     scorePercent,

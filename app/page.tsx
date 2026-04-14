@@ -80,6 +80,9 @@ interface EvaluationConfigType {
   promptRole: string | null;
   criticalInstructions: string | null;
   promptGuidelines: string | null;
+  builtInRuleDescriptions: Record<string, string> | null;
+  scoringRules: Record<string, boolean> | null;
+  customScoringRules: { id: string; name: string; maxPoints: number; criteria: string; enabled: boolean }[] | null;
 }
 
 interface JobResponse {
@@ -290,17 +293,25 @@ export default function Home() {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   }
 
-  // Load an evaluation config into the working state (prompt fields only)
+  const DEFAULT_SCORING_RULES = { stability: true, growth: true, graduation: true, companyType: true, mba: true, skillMatch: true, location: true };
+
+  // Load an evaluation config into the working state (prompt fields + scoring rules + rule descriptions)
   function loadEvalConfigIntoState(config: EvaluationConfigType) {
     if (config.isDefault) {
-      // System default — show built-in defaults
+      // System default — reset everything to built-in defaults
       setPromptRole(DEFAULT_ROLE);
       setCriticalInstructions(DEFAULT_CRITICAL_INSTRUCTIONS);
       setPromptGuidelines("");
+      setBuiltInRuleDescriptions({});
+      setScoringRules(DEFAULT_SCORING_RULES);
+      setCustomScoringRules([]);
     } else {
       setPromptRole(config.promptRole || "");
       setCriticalInstructions(config.criticalInstructions || "");
       setPromptGuidelines(config.promptGuidelines || "");
+      setBuiltInRuleDescriptions(config.builtInRuleDescriptions || {});
+      if (config.scoringRules) setScoringRules({ ...DEFAULT_SCORING_RULES, ...config.scoringRules });
+      setCustomScoringRules(config.customScoringRules || []);
     }
   }
 
@@ -325,6 +336,8 @@ export default function Home() {
           promptRole: DEFAULT_ROLE,
           criticalInstructions: DEFAULT_CRITICAL_INSTRUCTIONS,
           promptGuidelines: null,
+          scoringRules,
+          customScoringRules,
         }),
       });
       if (!res.ok) return;
@@ -346,7 +359,7 @@ export default function Home() {
     } catch { /* silently fail */ }
   }
 
-  // Update an existing eval config (prompt fields only)
+  // Update an existing eval config (prompt fields + scoring rules + rule descriptions)
   async function updateEvalConfig(id: string) {
     setEvalConfigSaving(true);
     try {
@@ -358,6 +371,9 @@ export default function Home() {
           promptRole: promptRole || null,
           criticalInstructions: criticalInstructions || null,
           promptGuidelines: promptGuidelines || null,
+          builtInRuleDescriptions: Object.keys(builtInRuleDescriptions).length > 0 ? builtInRuleDescriptions : null,
+          scoringRules,
+          customScoringRules,
         }),
       });
       if (!res.ok) return;
@@ -489,7 +505,10 @@ export default function Home() {
       setScoringRules(template.scoringRules as typeof scoringRules);
     }
     setCustomScoringRules(template.customScoringRules || []);
-    setBuiltInRuleDescriptions(template.builtInRuleDescriptions || {});
+    // Merge: eval config rule descs as base, template rule descs override per-rule
+    const evalConfig = evaluationConfigs.find(c => c.id === selectedEvalConfigId);
+    const evalBase = (evalConfig && !evalConfig.isDefault) ? (evalConfig.builtInRuleDescriptions || {}) : {};
+    setBuiltInRuleDescriptions({ ...evalBase, ...(template.builtInRuleDescriptions || {}) });
     setExpandedRuleKey(null);
     setSelectedJdTemplateId(template.id);
     setEditingJdTemplate(false);

@@ -85,6 +85,13 @@ export async function POST(req: NextRequest) {
                     if (evalConfig.promptRole?.trim()) promptRole = evalConfig.promptRole;
                     if (evalConfig.promptGuidelines?.trim()) promptGuidelines = evalConfig.promptGuidelines;
                     if (evalConfig.criticalInstructions?.trim()) criticalInstructions = evalConfig.criticalInstructions;
+                    // Merge eval config rule descriptions as base — body/JD template overrides win per rule
+                    if (evalConfig.builtInRuleDescriptions) {
+                        try {
+                            const evalDescs = JSON.parse(evalConfig.builtInRuleDescriptions) as Record<string, string>;
+                            resolvedBuiltInRuleDescriptions = { ...evalDescs, ...resolvedBuiltInRuleDescriptions };
+                        } catch { /* ignore invalid JSON */ }
+                    }
                     console.log(`[Jobs] Using EvaluationConfig "${evalConfig.title}" (${evalConfig.id}) for prompt config`);
                 }
             } catch (e) {
