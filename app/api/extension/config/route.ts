@@ -90,7 +90,8 @@ export async function GET(req: NextRequest) {
       aiProvider = providers.find((p) => p.isDefault) || providers[0] || null;
     }
 
-    // Evaluation configs only carry prompt settings (scoring lives in JD templates)
+    // Evaluation configs carry prompt settings + per-rule description overrides
+    // (scoring rules themselves live in JD templates, not here)
     const evaluationConfigs = evalConfigs.map((c) => ({
       id: c.id,
       title: c.title,
@@ -98,6 +99,9 @@ export async function GET(req: NextRequest) {
       promptRole: c.promptRole,
       criticalInstructions: c.criticalInstructions,
       promptGuidelines: c.promptGuidelines,
+      builtInRuleDescriptions: c.builtInRuleDescriptions
+        ? JSON.parse(c.builtInRuleDescriptions)
+        : {},
     }));
 
     return NextResponse.json(
