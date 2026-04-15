@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { DEFAULT_RULE_PROMPTS, DEFAULT_CRITICAL_INSTRUCTIONS } from "@/lib/analyzer";
 import { estimateCost, formatCost, MODEL_PRICING } from "@/lib/model-pricing";
@@ -160,6 +160,10 @@ export default function Home() {
   const [editingJdTemplate, setEditingJdTemplate] = useState(false);
   const [showNewJdForm, setShowNewJdForm] = useState(false);
 
+  // Auto-save refs — debounce timer and a flag to skip saves triggered by load functions
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipAutoSaveRef = useRef(false);
+
   // ─── Evaluation Config state ───
   const [evaluationConfigs, setEvaluationConfigs] = useState<EvaluationConfigType[]>([]);
   const [selectedEvalConfigId, setSelectedEvalConfigId] = useState<string | null>(null);
@@ -286,6 +290,34 @@ export default function Home() {
     loadConfig();
   }, []);
 
+  // Auto-save scoring rules + rule descriptions to the active JD template whenever they change.
+  // skipAutoSaveRef is set by load functions so we don't write back what we just read.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!selectedJdTemplateId) return;
+    if (skipAutoSaveRef.current) {
+      skipAutoSaveRef.current = false;
+      return;
+    }
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      fetch(`/api/jd-templates/${selectedJdTemplateId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scoringRules: { ...scoringRules },
+          customScoringRules: [...customScoringRules],
+          builtInRuleDescriptions: { ...builtInRuleDescriptions },
+        }),
+      })
+        .then(r => r.ok ? r.json() : null)
+        .then(updated => {
+          if (updated) setJdTemplates(prev => prev.map(t => t.id === updated.id ? updated : t));
+        })
+        .catch(() => {});
+    }, 800);
+  }, [scoringRules, customScoringRules, builtInRuleDescriptions, selectedJdTemplateId]);
+
   // Lightweight toast helper — auto-dismisses after 3 seconds
   function showToast(message: string, type: 'success' | 'error' = 'success') {
     const id = Date.now();
@@ -297,6 +329,7 @@ export default function Home() {
 
   // Load an evaluation config into the working state (prompt fields + scoring rules + rule descriptions)
   function loadEvalConfigIntoState(config: EvaluationConfigType) {
+    skipAutoSaveRef.current = true; // state changes below are loads, not user edits
     if (config.isDefault) {
       // System default — reset everything to built-in defaults
       setPromptRole(DEFAULT_ROLE);
@@ -499,6 +532,7 @@ export default function Home() {
 
   // Load a JD template into the form — loads JD text AND scoring rules
   function loadJdTemplate(template: JdTemplate) {
+    skipAutoSaveRef.current = true; // state changes below are loads, not user edits
     setJdTemplateEditTitle(template.title);
     setJobDescription(template.content);
     if (template.scoringRules && Object.keys(template.scoringRules).length > 0) {
@@ -535,6 +569,7 @@ export default function Home() {
       setJdTemplates([newTemplate, ...jdTemplates]);
       setJdTemplateName("");
       setJdTemplateEditTitle(newTemplate.title);
+      skipAutoSaveRef.current = true; // just saved explicitly — skip the triggered effect
       setSelectedJdTemplateId(newTemplate.id);
       setShowNewJdForm(false);
       setEditingJdTemplate(false);
