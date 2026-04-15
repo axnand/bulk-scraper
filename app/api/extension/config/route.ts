@@ -92,6 +92,11 @@ export async function GET(req: NextRequest) {
 
     // Evaluation configs carry prompt settings + per-rule description overrides
     // (scoring rules themselves live in JD templates, not here)
+    const parseJson = (val: string | null, fallback: any) => {
+      if (!val) return fallback;
+      try { return JSON.parse(val); } catch { return fallback; }
+    };
+
     const evaluationConfigs = evalConfigs.map((c) => ({
       id: c.id,
       title: c.title,
@@ -99,9 +104,9 @@ export async function GET(req: NextRequest) {
       promptRole: c.promptRole,
       criticalInstructions: c.criticalInstructions,
       promptGuidelines: c.promptGuidelines,
-      builtInRuleDescriptions: c.builtInRuleDescriptions
-        ? JSON.parse(c.builtInRuleDescriptions)
-        : {},
+      builtInRuleDescriptions: parseJson(c.builtInRuleDescriptions, {}),
+      scoringRules: parseJson(c.scoringRules, null),
+      customScoringRules: parseJson(c.customScoringRules, []),
     }));
 
     return NextResponse.json(
