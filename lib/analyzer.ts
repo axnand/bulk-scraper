@@ -135,21 +135,45 @@ const RULE_POINTS: Record<string, number> = {
 // ─── LLM Rule Prompt Blocks ───────────────────────────────────────
 
 export const DEFAULT_RULE_PROMPTS: Record<string, string> = {
-  growth: `GROWTH (Max: 15) — MUTUALLY EXCLUSIVE. Evaluate ONLY full-time roles. IGNORE internships, trainee positions, and part-time roles entirely — they do not exist for this evaluation.
+  growth: `**GROWTH (Max: 15) — MUTUALLY EXCLUSIVE**
 
-   USE THIS SENIORITY LADDER TO COMPARE TITLES (lowest → highest):
-   Executive/Associate → Senior Executive/Specialist → Lead/Team Lead → Manager/Assistant Manager → Senior Manager → Director/AVP → VP/Head → CXO/Partner
+**Scope**
+* Use ONLY full-time roles
+* Ignore internships, trainee, part-time
 
-   RULES:
-   - Internal promotion = moved UP at least one seniority level within the SAME company (e.g. "Sales Executive" → "Senior Sales Executive" at same company). A mere title variation without level change (e.g. "Sales Executive" → "Sales Executive - Key Accounts") is NOT a promotion.
-   - External growth = joined a NEW company at a HIGHER seniority level than the previous full-time role (e.g. "Senior Executive at Company A" → "Manager at Company B").
-   - Lateral move = same seniority level at a different company or different function at same level. This is NOT growth.
+---
 
-   SCORING:
-   - Internal promotion found → promotionSameCompany=15, promotionWithChange=""
-   - Only external growth found (no internal promotion) → promotionSameCompany="", promotionWithChange=10
-   - BOTH internal AND external → promotionSameCompany=15, promotionWithChange=""
-   - NEITHER (no clear upward movement, or insufficient data) → both ""`,
+**Seniority (low → high)**
+Executive/Associate → Senior Executive/Specialist → Lead/Team Lead → Manager/Assistant Manager → Senior Manager → Director/AVP → VP/Head → CXO/Partner
+
+---
+
+**Rules**
+* Sort roles chronologically
+* Compare each role with previous full-time role only
+* Map titles to ladder; if unclear → IGNORE (no guessing)
+
+**Growth Types**
+* Internal: same company + higher level
+* External: new company + higher level
+* Same level → NOT growth
+
+---
+
+**Scoring**
+* Any internal → promotionSameCompany=15, promotionWithChange=""
+* Else if any external → promotionSameCompany="", promotionWithChange=10
+* Else → both ""
+
+---
+
+**Default**
+Any ambiguity → NO growth
+
+---
+
+**Output**
+{"promotionSameCompany":<15 or "">,"promotionWithChange":<10 or "">}`,
 
   graduation: `GRADUATION (Max: 15) — MUTUALLY EXCLUSIVE — Evaluate ONLY the UNDERGRADUATE degree. Do NOT use the MBA/PGDM institution here — MBA is scored separately.
 
@@ -160,7 +184,23 @@ export const DEFAULT_RULE_PROMPTS: Record<string, string> = {
    - "Non-BTech" means ALL other undergrad degrees: BCA, BBA, BCom, BA, BSc (non-CS/non-engineering), B.Sc IT, BMS, Management, Finance, Arts, etc. These are NOT equivalent to BTech/BE even if the institution is prestigious. A Bachelor of Management is Non-BTech. A Bachelor of Commerce is Non-BTech.
 
    STEP 2 — CLASSIFY THE INSTITUTION TIER, THEN LOOK UP SCORE:
-   Use your knowledge to classify the UNDERGRADUATE institution as Tier 1 (premier national/global institutions), Tier 2 (well-known reputable institutions), or neither. Do NOT use the MBA institution for this rule.
+   **STRICT TIER CLASSIFICATION RULES (DO NOT GUESS)**
+
+   **Tier 1 (ONLY)**
+   * India: IITs, NITs, IIITs, BITS Pilani, top DU colleges
+   * Global: Top globally elite universities (e.g., Ivy League, Oxford, Cambridge, MIT, Stanford)
+
+   **Tier 2 (ONLY)**
+   * India: Well-known government/state universities and top private institutes (e.g., VIT, SRM, Manipal)
+   * Global: Well-known, reputable universities with strong academic standing but NOT elite (e.g., top public universities, Russell Group except Oxbridge)
+
+   **Neither**
+   * ALL other institutions (including most private universities)
+
+   **DEFAULT RULE (CRITICAL)**
+   If the institution is not **clearly and confidently identifiable** as Tier 1 or Tier 2:
+   → classify as **Neither**
+   DO NOT infer tier from vague reputation, partial familiarity, or assumptions. When in doubt → ALWAYS "Neither".
 
    SCORE LOOKUP TABLE (degree type × institution tier):
    | Degree Type  | Tier 1 Institution | Tier 2 Institution | Neither |
