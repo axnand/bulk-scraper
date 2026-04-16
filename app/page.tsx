@@ -142,6 +142,8 @@ export default function Home() {
   // Built-in rule description overrides (keyed by rule key e.g. "growth")
   const [builtInRuleDescriptions, setBuiltInRuleDescriptions] = useState<Record<string, string>>({});
   const [expandedRuleKey, setExpandedRuleKey] = useState<string | null>(null);
+  const [savingRuleKey, setSavingRuleKey] = useState<string | null>(null);
+  const [savedRuleKey, setSavedRuleKey] = useState<string | null>(null);
 
   // Prompt config — working copy from selected eval config
   const [promptRole, setPromptRole] = useState("");
@@ -666,7 +668,9 @@ export default function Home() {
             jdTitle: jdTemplates.find(t => t.id === selectedJdTemplateId)?.title || "Bulk Analysis",
             // Send evaluationConfigId for prompt config resolution
             evaluationConfigId: selectedEvalConfigId || undefined,
-            // Send scoring fields inline from the JD working state
+            // Send the template ID so the server can resolve scoring config from DB (source of truth)
+            jdTemplateId: selectedJdTemplateId || undefined,
+            // Also send current UI state as fallback when no template is selected
             scoringRules,
             customScoringRules: customScoringRules.length > 0 ? customScoringRules : undefined,
             builtInRuleDescriptions: Object.keys(builtInRuleDescriptions).length > 0 ? builtInRuleDescriptions : undefined,
@@ -1024,12 +1028,39 @@ export default function Home() {
                                     )}
                                     <button
                                       type="button"
-                                      onClick={() => saveScoringToTemplate({ builtInRuleDescriptions: { ...builtInRuleDescriptions } })}
-                                      disabled={!selectedJdTemplateId}
-                                      className="text-[10px] px-2 py-0.5 rounded-md bg-emerald-600/20 border border-emerald-500/30 text-emerald-400 font-medium hover:bg-emerald-600/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+                                      disabled={!selectedJdTemplateId || savingRuleKey === rule.key}
+                                      onClick={async () => {
+                                        setSavingRuleKey(rule.key);
+                                        setSavedRuleKey(null);
+                                        await saveScoringToTemplate({ builtInRuleDescriptions: { ...builtInRuleDescriptions } });
+                                        setSavingRuleKey(null);
+                                        setSavedRuleKey(rule.key);
+                                        setTimeout(() => setSavedRuleKey(k => k === rule.key ? null : k), 2000);
+                                      }}
+                                      className={`text-[10px] px-2 py-0.5 rounded-md border font-medium transition-all flex items-center gap-1 disabled:cursor-not-allowed
+                                        ${savedRuleKey === rule.key
+                                          ? 'bg-emerald-500/25 border-emerald-400/50 text-emerald-300'
+                                          : savingRuleKey === rule.key
+                                            ? 'bg-emerald-600/10 border-emerald-500/20 text-emerald-500/60'
+                                            : 'bg-emerald-600/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-600/30 disabled:opacity-40'
+                                        }`}
                                     >
-                                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
-                                      Save
+                                      {savingRuleKey === rule.key ? (
+                                        <>
+                                          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                                          Saving…
+                                        </>
+                                      ) : savedRuleKey === rule.key ? (
+                                        <>
+                                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                                          Saved
+                                        </>
+                                      ) : (
+                                        <>
+                                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                                          Save
+                                        </>
+                                      )}
                                     </button>
                                   </div>
                                 </div>

@@ -75,6 +75,24 @@ export async function POST(req: NextRequest) {
         let resolvedCustomScoringRules = body.customScoringRules || [];
         let resolvedBuiltInRuleDescriptions = body.builtInRuleDescriptions || {};
 
+        // If a JD template ID is provided, pull scoring config directly from DB — it is the source of truth.
+        // This ensures edits saved via the UI are always reflected, even if the client state was stale.
+        if (body.jdTemplateId) {
+            try {
+                const jdTemplate = await prisma.jdTemplate.findUnique({
+                    where: { id: body.jdTemplateId },
+                });
+                if (jdTemplate) {
+                    try { resolvedScoringRules = JSON.parse(jdTemplate.scoringRules) || {}; } catch { /* keep body fallback */ }
+                    try { resolvedCustomScoringRules = JSON.parse(jdTemplate.customScoringRules) || []; } catch { /* keep body fallback */ }
+                    try { resolvedBuiltInRuleDescriptions = JSON.parse(jdTemplate.builtInRuleDescriptions || "{}") || {}; } catch { /* keep body fallback */ }
+                    console.log(`[Jobs] Resolved scoring config from JD template "${jdTemplate.title}" (${jdTemplate.id})`);
+                }
+            } catch (e) {
+                console.warn("[Jobs] Failed to load JD template, falling back to body:", e);
+            }
+        }
+
         if (body.evaluationConfigId) {
             // New path: resolve PROMPT config from EvaluationConfig (scoring comes from body/JD)
             try {

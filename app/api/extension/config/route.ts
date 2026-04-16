@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { DEFAULT_RULE_PROMPTS } from "@/lib/analyzer";
 
 export const dynamic = "force-dynamic";
 
@@ -113,6 +114,9 @@ export async function GET(req: NextRequest) {
       {
         jdTemplates,
         evaluationConfigs,
+        // Default AI prompt text for each LLM-scored rule — the extension uses
+        // these as the base description; per-JD builtInRuleDescriptions override.
+        defaultRulePrompts: DEFAULT_RULE_PROMPTS,
         sheetIntegrations: sheetIntegrations.map((s) => ({
           id: s.id,
           name: s.name,
