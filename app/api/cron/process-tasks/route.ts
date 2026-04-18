@@ -31,6 +31,17 @@ export async function GET(req: NextRequest) {
   console.log("[Cron Safety Net] Running health check...");
 
   try {
+    // Snapshot task state BEFORE recovery so we can see what was stuck
+    const [pendingBefore, processingBefore, doneBefore, failedBefore] = await Promise.all([
+      prisma.task.count({ where: { status: "PENDING" } }),
+      prisma.task.count({ where: { status: "PROCESSING" } }),
+      prisma.task.count({ where: { status: "DONE" } }),
+      prisma.task.count({ where: { status: "FAILED" } }),
+    ]);
+    console.log(
+      `[Cron Safety Net] Task state BEFORE recovery: PENDING=${pendingBefore} PROCESSING=${processingBefore} DONE=${doneBefore} FAILED=${failedBefore}`
+    );
+
     // 1. Recover stale state
     const recovery = await recoverStaleState();
 
@@ -87,21 +98,43 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 5. Check for pending tasks and re-trigger if needed
+    // 5. Check for pending/stuck tasks and re-trigger if needed
     const pendingCount = await prisma.task.count({
       where: { status: "PENDING" },
     });
 
-    if (pendingCount > 0) {
+    // Tasks stuck in PROCESSING for > 2 min (before they hit the 5-min stale threshold)
+    // This catches cases where the Vercel function was killed mid-flight but tasks haven't
+    // aged enough to be reset by recoverStaleState yet
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+    const stuckProcessingCount = await prisma.task.count({
+      where: { status: "PROCESSING", updatedAt: { lt: twoMinutesAgo } },
+    });
+
+    const [pendingAfter, processingAfter] = await Promise.all([
+      prisma.task.count({ where: { status: "PENDING" } }),
+      prisma.task.count({ where: { status: "PROCESSING" } }),
+    ]);
+    console.log(
+      `[Cron Safety Net] Task state AFTER recovery: PENDING=${pendingAfter} PROCESSING=${processingAfter} | stuckProcessing(>2min)=${stuckProcessingCount}`
+    );
+
+    const shouldTrigger = pendingCount > 0 || stuckProcessingCount > 0;
+    if (shouldTrigger) {
       console.log(
-        `[Cron Safety Net] Found ${pendingCount} pending tasks. Triggering processor...`
+        `[Cron Safety Net] Triggering processor — pendingCount=${pendingCount} stuckProcessingCount=${stuckProcessingCount}`
       );
       await triggerProcessing();
+    } else {
+      console.log(
+        `[Cron Safety Net] No work to do — pendingCount=${pendingCount} processingAfter=${processingAfter} (in-flight, healthy)`
+      );
     }
 
     return NextResponse.json({
       message: "Safety net check complete",
       pendingCount,
+      stuckProcessingCount,
       recoveredTasks: recovery.recoveredTasks,
       checkedAccounts: recovery.checkedAccounts,
       cleanedJobs: staleJobs.length,

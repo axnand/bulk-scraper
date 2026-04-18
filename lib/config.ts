@@ -15,8 +15,8 @@ export const CONFIG = {
   // Retry settings
   MAX_RETRIES: 3,
 
-  // Stale task threshold (5 minutes)
-  STALE_TASK_MS: 5 * 60 * 1000,
+  // Stale task threshold (2 minutes — cron fires every 1 min, so recovery happens within ~2 ticks)
+  STALE_TASK_MS: 2 * 60 * 1000,
 
   // Task/Job cleanup after completion (48 hours)
   TASK_CLEANUP_MS: 48 * 60 * 60 * 1000,
