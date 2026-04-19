@@ -40,6 +40,7 @@ export async function GET(
       id: requisition.id,
       title: requisition.title,
       department: requisition.department,
+      recruiterName: requisition.recruiterName,
       archived: requisition.archived,
       createdAt: requisition.createdAt,
       updatedAt: requisition.updatedAt,
@@ -72,6 +73,7 @@ export async function PUT(
     if (typeof body.recruiterName === "string") patch.recruiterName = body.recruiterName;
     if ("startDate" in body) patch.startDate = body.startDate ? new Date(body.startDate) : null;
     if (typeof body.archived === "boolean") patch.archived = body.archived;
+    if (typeof body.isActive === "boolean") patch.isActive = body.isActive;
 
     // Config merge — only specified keys overwrite
     const CONFIG_KEYS = [

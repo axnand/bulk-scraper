@@ -478,6 +478,28 @@ export function computeCareerStats(workExperience: any[]): CareerStats {
 // ─── Candidate Info Extraction (Deterministic) ────────────────────
 
 function extractCandidateInfo(profileData: any): CandidateInfo {
+  // ── Resume / plain-text mode ──
+  // When a PDF resume is uploaded, profileData is { resumeText, sourceFileName, extractedInfo?, work_experience? }.
+  // Regex-extracted fields (from the LinkedIn PDF header) take precedence; anything we
+  // couldn't pluck out is left blank and the AI fills it in from the raw text.
+  if (profileData?.resumeText) {
+    const ex = profileData.extractedInfo || {};
+    const careerStats = computeCareerStats(profileData.work_experience || []);
+    return {
+      name: ex.name || profileData.sourceFileName?.replace(/\.pdf$/i, "") || "Unknown",
+      btech: "",
+      graduation: "",
+      mba: "",
+      currentOrg: ex.currentOrg || "",
+      currentDesignation: ex.currentDesignation || "",
+      totalExperienceYears: careerStats.totalExperienceYears,
+      companiesSwitched: careerStats.jobSwitchCount,
+      stabilityAvgYears: careerStats.averageTenureYears,
+      currentLocation: ex.currentLocation || "",
+      graduationYear: null,
+    };
+  }
+
   const education = profileData.education || [];
   const experience = profileData.work_experience || [];
 
@@ -738,6 +760,21 @@ export function buildSystemPrompt(
 }
 
 export function buildUserPrompt(profileData: any, jobDescription: string, candidateInfo: CandidateInfo): string {
+  // ── Resume / plain-text mode ──
+  // profileData comes from an uploaded PDF: { resumeText, sourceFileName }
+  if (profileData?.resumeText) {
+    let prompt = `## Job Description\n${jobDescription}\n\n`;
+    prompt += `## Candidate Resume\n`;
+    prompt += `**File:** ${profileData.sourceFileName || "Unknown"}\n\n`;
+    prompt += `### Raw Resume Text\n`;
+    prompt += `${profileData.resumeText}\n\n`;
+    prompt += `---\n`;
+    prompt += `NOTE: This candidate was sourced from an uploaded resume/LinkedIn PDF export, not a live LinkedIn scrape.\n`;
+    prompt += `Extract all relevant information (name, company, role, experience, education, skills) DIRECTLY from the raw text above.\n`;
+    prompt += `For pre-computed fields like stability and location: score them as 0 since structured data is unavailable.\n`;
+    return prompt;
+  }
+
   const jd = parseJobDescription(jobDescription);
 
   let prompt = `## Job Description\n`;

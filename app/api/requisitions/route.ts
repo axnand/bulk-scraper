@@ -50,6 +50,7 @@ export async function GET(req: NextRequest) {
         recruiterName: r.recruiterName,
         startDate: r.startDate,
         archived: r.archived,
+        isActive: r.isActive,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
         runCount: runs.length,

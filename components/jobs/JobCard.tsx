@@ -8,6 +8,7 @@ export interface RequisitionSummary {
   department: string;
   recruiterName: string;
   startDate: string | null;
+  isActive: boolean;
   runCount: number;
   totalCandidates: number;
   analyzedCount: number;
@@ -46,6 +47,8 @@ export function JobCard({
   const pct = r.activeRunProgress && r.activeRunProgress.total > 0
     ? Math.round((r.activeRunProgress.processed / r.activeRunProgress.total) * 100)
     : 0;
+  // Use the explicit isActive field set by the recruiter; fall back to computed for old records
+  const isActive = r.isActive ?? (r.activeRunStatus !== null || (r.lastRunAt && (Date.now() - new Date(r.lastRunAt).getTime()) < 30 * 24 * 60 * 60 * 1000));
 
   if (viewMode === "list") {
     return (
@@ -55,7 +58,15 @@ export function JobCard({
       >
         <CardContent className="flex items-center gap-4 p-4">
           <div className="flex-1 min-w-0">
-            <p className="font-semibold text-foreground truncate">{r.title}</p>
+            <div className="flex items-center gap-2">
+              <p className="font-semibold text-foreground truncate">{r.title}</p>
+              <span className={cn(
+                "inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider shrink-0",
+                isActive ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20" : "bg-muted text-muted-foreground border border-border"
+              )}>
+                {isActive ? "Active" : "Inactive"}
+              </span>
+            </div>
             {r.department && <p className="text-xs text-muted-foreground truncate mt-0.5">{r.department}</p>}
           </div>
           {r.recruiterName && (
@@ -109,9 +120,17 @@ export function JobCard({
     >
       <CardContent className="p-5 flex flex-col h-full gap-3">
         <div className="flex items-start justify-between gap-2">
-          <p className="font-semibold text-base text-foreground leading-snug line-clamp-2 flex-1 group-hover:text-primary transition-colors">
-            {r.title}
-          </p>
+          <div className="flex-1 min-w-0 space-y-1.5">
+            <p className="font-semibold text-base text-foreground leading-snug line-clamp-2 group-hover:text-primary transition-colors">
+              {r.title}
+            </p>
+            <span className={cn(
+              "inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
+              isActive ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20" : "bg-muted text-muted-foreground border border-border"
+            )}>
+              {isActive ? "Active" : "Inactive"}
+            </span>
+          </div>
           {onEdit && (
             <button
               onClick={e => { e.stopPropagation(); onEdit(r); }}
@@ -123,7 +142,7 @@ export function JobCard({
         </div>
 
         {r.department && (
-          <p className="text-xs text-muted-foreground -mt-1.5">{r.department}</p>
+          <p className="text-xs text-muted-foreground">{r.department}</p>
         )}
 
         <div className="flex items-center gap-4 text-xs text-muted-foreground">

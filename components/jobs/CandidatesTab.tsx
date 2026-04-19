@@ -1,9 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { estimateCost, formatCost } from "@/lib/model-pricing";
 import { getEffectiveRules } from "@/lib/analyzer";
-import { FilterBar, FilterDivider, FilterPills, FilterText, FilterNumber, SortSelect } from "@/components/ui/filter-bar";
+import { FilterBar, FilterDivider, FilterPills, FilterText, FilterNumber, SortSelect, FilterSelect } from "@/components/ui/filter-bar";
+import { Users, TrendingUp, Minus, TrendingDown, Award } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Card, CardContent } from "@/components/ui/card";
 
 interface TaskResult {
   id: string;
@@ -16,6 +19,9 @@ interface TaskResult {
   runId?: string;
   runIndex?: number;
   addedAt?: string;
+  source?: string;
+  sourceFileName?: string | null;
+  hasResume?: boolean;
 }
 
 interface JobResults {
@@ -49,7 +55,9 @@ export function CandidatesTab({ data, requisitionId, onRefresh }: Props) {
   const [filterFit, setFilterFit] = useState("All");
   const [filterLocation, setFilterLocation] = useState("");
   const [filterMinExp, setFilterMinExp] = useState("");
+  const [filterDate, setFilterDate] = useState("all");
   const [sort, setSort] = useState("score-desc");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [exportLoading, setExportLoading] = useState(false);
@@ -118,6 +126,20 @@ export function CandidatesTab({ data, requisitionId, onRefresh }: Props) {
     }
   }
 
+  const kpiStats = useMemo(() => {
+    let strong = 0, moderate = 0, notFit = 0, scoreSum = 0, scoreCount = 0;
+    for (const t of data.tasks) {
+      if (t.analysisResult) {
+        const a = t.analysisResult;
+        if (a.recommendation === "Strong Fit") strong++;
+        else if (a.recommendation === "Moderate Fit") moderate++;
+        else if (a.recommendation === "Not a Fit") notFit++;
+        if (typeof a.scorePercent === "number") { scoreSum += a.scorePercent; scoreCount++; }
+      }
+    }
+    return { strong, moderate, notFit, avgScore: scoreCount > 0 ? Math.round(scoreSum / scoreCount) : 0 };
+  }, [data.tasks]);
+
   const completedTasks = data.tasks.filter(t => t.status === "DONE");
   const analysedTasks = completedTasks.filter(t => t.analysisResult);
   const allAnalysedIds = analysedTasks.map(t => t.id);
@@ -125,11 +147,32 @@ export function CandidatesTab({ data, requisitionId, onRefresh }: Props) {
 
   return (
     <div className={`space-y-6 ${selectMode ? "pb-28" : ""}`}>
-      {/* Summary Stats */}
-      <div className="grid grid-cols-3 gap-3">
-        <StatCard label="Total" value={data.totalTasks} color="text-foreground" />
-        <StatCard label="Success" value={data.successCount} color="text-emerald-400" />
-        <StatCard label="Failed" value={data.failedCount} color="text-rose-400" />
+      {/* KPI Stats */}
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatTile label="Total" value={data.totalTasks} icon={Users} tone="neutral" />
+          <StatTile label="Strong Fit" value={kpiStats.strong} icon={TrendingUp} tone="emerald" />
+          <StatTile label="Moderate" value={kpiStats.moderate} icon={Minus} tone="amber" />
+          <StatTile label="Not a Fit" value={kpiStats.notFit} icon={TrendingDown} tone="rose" />
+        </div>
+        {/* <Card>
+          <CardContent className="p-4 space-y-2">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Award className="h-3.5 w-3.5" />
+              <span className="uppercase tracking-wider font-medium">Average Score</span>
+            </div>
+            <div className="flex items-baseline gap-1">
+              <span className="text-2xl font-bold text-foreground">{kpiStats.avgScore}</span>
+              <span className="text-sm text-muted-foreground">%</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+              <div
+                className={cn("h-full rounded-full", kpiStats.avgScore >= 70 ? "bg-emerald-500" : kpiStats.avgScore >= 40 ? "bg-amber-500" : "bg-rose-500")}
+                style={{ width: `${kpiStats.avgScore}%` }}
+              />
+            </div>
+          </CardContent>
+        </Card> */}
       </div>
 
       {/* Completed Profiles */}
@@ -159,34 +202,69 @@ export function CandidatesTab({ data, requisitionId, onRefresh }: Props) {
             </div>
 
             {completedTasks.length > 1 && (
-              <FilterBar>
-                <FilterPills
-                  value={filterFit}
-                  onChange={setFilterFit}
-                  options={[
-                    { label: "All", value: "All", color: "default" },
-                    { label: "Strong Fit", value: "Strong Fit", color: "emerald" },
-                    { label: "Moderate Fit", value: "Moderate Fit", color: "amber" },
-                    { label: "Not a Fit", value: "Not a Fit", color: "rose" },
-                  ]}
-                />
-                <FilterDivider />
-                <FilterText value={filterLocation} onChange={setFilterLocation} placeholder="Location…" icon="location" />
-                <FilterNumber value={filterMinExp} onChange={setFilterMinExp} placeholder="Min exp (yrs)" />
-                <FilterText value={search} onChange={setSearch} placeholder="Name…" icon="search" />
-                <FilterDivider />
-                <SortSelect
-                  value={sort}
-                  onChange={setSort}
-                  options={[
-                    { label: "Score: High → Low", value: "score-desc" },
-                    { label: "Score: Low → High", value: "score-asc" },
-                    { label: "Experience: High → Low", value: "exp-desc" },
-                    { label: "Experience: Low → High", value: "exp-asc" },
-                    { label: "Name: A → Z", value: "name-asc" },
-                  ]}
-                />
-              </FilterBar>
+              <div className="space-y-2">
+                <FilterBar>
+                  <FilterText value={search} onChange={setSearch} placeholder="Name…" icon="search" />
+                  <FilterDivider />
+                  <FilterPills
+                    value={filterFit}
+                    onChange={setFilterFit}
+                    options={[
+                      { label: "All", value: "All", color: "default" },
+                      { label: "Strong Fit", value: "Strong Fit", color: "emerald" },
+                      { label: "Moderate Fit", value: "Moderate Fit", color: "amber" },
+                      { label: "Not a Fit", value: "Not a Fit", color: "rose" },
+                    ]}
+                  />
+                  <FilterDivider />
+                  <SortSelect
+                    value={sort}
+                    onChange={setSort}
+                    options={[
+                      { label: "Score: High → Low", value: "score-desc" },
+                      { label: "Score: Low → High", value: "score-asc" },
+                      { label: "Date: Newest First", value: "date-desc" },
+                      { label: "Date: Oldest First", value: "date-asc" },
+                      { label: "Experience: High → Low", value: "exp-desc" },
+                      { label: "Experience: Low → High", value: "exp-asc" },
+                      { label: "Name: A → Z", value: "name-asc" },
+                    ]}
+                  />
+                  <FilterDivider />
+                  <button
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                    className={cn(
+                      "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors border",
+                      showAdvanced || filterLocation || filterMinExp || filterDate !== "all"
+                        ? "bg-primary/10 text-primary border-primary/20"
+                        : "bg-transparent text-muted-foreground border-transparent hover:bg-muted"
+                    )}
+                  >
+                    More Filters
+                    {(filterLocation || filterMinExp || filterDate !== "all") && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+                    )}
+                  </button>
+                </FilterBar>
+
+                {showAdvanced && (
+                  <FilterBar>
+                    <FilterSelect
+                      value={filterDate}
+                      onChange={setFilterDate}
+                      icon="calendar"
+                      options={[
+                        { label: "All Time", value: "all" },
+                        { label: "Last 24 Hours", value: "24h" },
+                        { label: "Last 7 Days", value: "7d" },
+                        { label: "Last 30 Days", value: "30d" },
+                      ]}
+                    />
+                    <FilterText value={filterLocation} onChange={setFilterLocation} placeholder="Location…" icon="location" />
+                    <FilterNumber value={filterMinExp} onChange={setFilterMinExp} placeholder="Min exp (yrs)" />
+                  </FilterBar>
+                )}
+              </div>
             )}
           </div>
 
@@ -209,6 +287,15 @@ export function CandidatesTab({ data, requisitionId, onRefresh }: Props) {
                   const exp = analysis?.candidateInfo?.totalExperienceYears ?? -1;
                   if (exp < parseFloat(filterMinExp)) return false;
                 }
+                if (filterDate !== "all") {
+                  const added = task.addedAt ? new Date(task.addedAt) : null;
+                  if (!added) return false;
+                  const now = new Date();
+                  const diffHours = (now.getTime() - added.getTime()) / (1000 * 60 * 60);
+                  if (filterDate === "24h" && diffHours > 24) return false;
+                  if (filterDate === "7d" && diffHours > 24 * 7) return false;
+                  if (filterDate === "30d" && diffHours > 24 * 30) return false;
+                }
                 return true;
               })
               .sort((a, b) => {
@@ -216,6 +303,16 @@ export function CandidatesTab({ data, requisitionId, onRefresh }: Props) {
                 const bA = b.analysisResult;
                 if (sort === "score-desc") return (bA?.scorePercent ?? -1) - (aA?.scorePercent ?? -1);
                 if (sort === "score-asc") return (aA?.scorePercent ?? -1) - (bA?.scorePercent ?? -1);
+                if (sort === "date-desc") {
+                  const aDate = a.addedAt ? new Date(a.addedAt).getTime() : 0;
+                  const bDate = b.addedAt ? new Date(b.addedAt).getTime() : 0;
+                  return bDate - aDate;
+                }
+                if (sort === "date-asc") {
+                  const aDate = a.addedAt ? new Date(a.addedAt).getTime() : 0;
+                  const bDate = b.addedAt ? new Date(b.addedAt).getTime() : 0;
+                  return aDate - bDate;
+                }
                 if (sort === "exp-desc") return (bA?.candidateInfo?.totalExperienceYears ?? -1) - (aA?.candidateInfo?.totalExperienceYears ?? -1);
                 if (sort === "exp-asc") return (aA?.candidateInfo?.totalExperienceYears ?? -1) - (bA?.candidateInfo?.totalExperienceYears ?? -1);
                 if (sort === "name-asc") {
@@ -399,10 +496,17 @@ function ProfileCard({ task, jobConfig, expanded, onToggle }: { task: TaskResult
   const analysis = task.analysisResult;
   if (!profile) return null;
 
-  const name = [profile.first_name, profile.last_name].filter(Boolean).join(" ") || "Unknown";
-  const headline = profile.headline || profile.occupation || "";
-  const location = profile.location || "";
+  const extracted = profile.extractedInfo || {};
+  const scrapedName = [profile.first_name, profile.last_name].filter(Boolean).join(" ");
+  const name =
+    scrapedName ||
+    extracted.name ||
+    analysis?.candidateInfo?.name ||
+    "Unknown";
+  const headline = profile.headline || profile.occupation || extracted.currentDesignation || "";
+  const location = analysis?.candidateInfo?.currentLocation || profile.location || extracted.currentLocation || "";
   const publicId = profile.public_identifier || "";
+  const info = analysis?.candidateInfo;
 
   return (
     <div className="bg-card border border-border rounded-xl overflow-hidden">
@@ -419,26 +523,61 @@ function ProfileCard({ task, jobConfig, expanded, onToggle }: { task: TaskResult
               onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
             />
           ) : (
-            `${(profile.first_name || "?")[0]}${(profile.last_name || "")[0] || ""}`
+            (() => {
+              const parts = (name || "?").split(/\s+/).filter(Boolean);
+              const first = parts[0]?.[0] || "?";
+              const last = parts.length > 1 ? parts[parts.length - 1][0] : "";
+              return `${first}${last}`;
+            })()
           )}
         </div>
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-foreground font-medium truncate">{name}</p>
+            <p className="text-foreground font-medium truncate text-base">{name}</p>
             {task.addedAt && (
               <span className="text-[10px] text-muted-foreground/60 shrink-0">
                 {new Date(task.addedAt).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}
               </span>
             )}
           </div>
-          <p className="text-sm text-muted-foreground truncate">{headline}</p>
-          {location && <p className="text-xs text-muted-foreground/70 truncate">{location}</p>}
+          {info ? (
+            <div className="flex items-center gap-1.5 mt-1 text-xs text-muted-foreground truncate">
+              {info.currentDesignation && (
+                <span className="font-medium text-foreground/80 truncate max-w-[200px]">
+                  {info.currentDesignation}
+                </span>
+              )}
+              {info.currentDesignation && info.currentOrg && <span>at</span>}
+              {info.currentOrg && (
+                <span className="truncate max-w-[150px]">{info.currentOrg}</span>
+              )}
+              {(info.currentDesignation || info.currentOrg) && <span className="opacity-50">•</span>}
+              
+              {info.totalExperienceYears > 0 && (
+                <span className="whitespace-nowrap px-1.5 py-0.5 rounded-md bg-muted/50 border border-border/50 text-[10px] font-medium text-foreground/70">
+                  {info.totalExperienceYears} yrs exp
+                </span>
+              )}
+              
+              {location && (
+                <>
+                  <span className="opacity-50">•</span>
+                  <span className="truncate max-w-[150px]">{location}</span>
+                </>
+              )}
+            </div>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground truncate">{headline}</p>
+              {location && <p className="text-xs text-muted-foreground/70 truncate mt-0.5">{location}</p>}
+            </>
+          )}
         </div>
 
         {analysis && (
           <div className="flex flex-col items-end gap-1 shrink-0 min-w-[72px]">
-            <span className={`text-xl font-bold tabular-nums leading-none ${
+            <span className={`text-lg font-bold tabular-nums leading-none ${
               analysis.scorePercent >= 70 ? "text-emerald-500"
               : analysis.scorePercent >= 40 ? "text-amber-500"
               : "text-rose-500"
@@ -464,7 +603,23 @@ function ProfileCard({ task, jobConfig, expanded, onToggle }: { task: TaskResult
             <div className="space-y-4">
               {analysis.candidateInfo && (
                 <div className="bg-background/50 rounded-lg p-3">
-                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Candidate Info</p>
+                  <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Candidate Info</p>
+                    {task.hasResume && (
+                      <a
+                        href={`/api/tasks/${task.id}/resume`}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1.5 text-[11px] font-medium text-primary hover:underline px-2 py-1 rounded-md bg-primary/10 border border-primary/20"
+                      >
+                        <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        View Resume
+                      </a>
+                    )}
+                  </div>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
                     {analysis.candidateInfo.currentOrg && <InfoField label="Current Org" value={analysis.candidateInfo.currentOrg} />}
                     {analysis.candidateInfo.currentDesignation && <InfoField label="Designation" value={analysis.candidateInfo.currentDesignation} />}
@@ -712,12 +867,25 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
+function StatTile({ label, value, icon: Icon, tone }: {
+  label: string; value: number; icon: React.ComponentType<{ className?: string }>; tone: "neutral" | "emerald" | "amber" | "rose";
+}) {
+  const tones: Record<string, string> = {
+    neutral: "text-foreground",
+    emerald: "text-emerald-600 dark:text-emerald-400",
+    amber:   "text-amber-600 dark:text-amber-400",
+    rose:    "text-rose-600 dark:text-rose-400",
+  };
   return (
-    <div className="bg-card border border-border rounded-xl p-3 text-center">
-      <p className="text-xs text-muted-foreground uppercase tracking-wider">{label}</p>
-      <p className={`text-2xl font-bold ${color}`}>{value}</p>
-    </div>
+    <Card>
+      <CardContent className="p-3">
+        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-medium text-muted-foreground">
+          <Icon className="h-3 w-3" />
+          {label}
+        </div>
+        <p className={cn("text-2xl font-bold mt-1", tones[tone])}>{value}</p>
+      </CardContent>
+    </Card>
   );
 }
 

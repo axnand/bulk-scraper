@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { LayoutGrid, List, Plus, Search } from "lucide-react";
 import { JobCard, RequisitionSummary } from "@/components/jobs/JobCard";
 import { CreatableCombobox } from "@/components/ui/creatable-combobox";
@@ -27,6 +28,7 @@ export default function JobsPage() {
   const [editTitle, setEditTitle] = useState("");
   const [editDepartment, setEditDepartment] = useState("");
   const [editRecruiter, setEditRecruiter] = useState("");
+  const [editIsActive, setEditIsActive] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -95,6 +97,7 @@ export default function JobsPage() {
     setEditTitle(r.title);
     setEditDepartment(r.department);
     setEditRecruiter(r.recruiterName);
+    setEditIsActive(r.isActive ?? true);
     setSaveError(null);
     setConfirmDelete(false);
   }
@@ -124,6 +127,7 @@ export default function JobsPage() {
           title: editTitle.trim(),
           department: editDepartment.trim(),
           recruiterName: editRecruiter.trim(),
+          isActive: editIsActive,
         }),
       });
       if (!res.ok) {
@@ -133,7 +137,7 @@ export default function JobsPage() {
       }
       setReqs(prev => prev.map(r =>
         r.id === editingReq.id
-          ? { ...r, title: editTitle.trim(), department: editDepartment.trim(), recruiterName: editRecruiter.trim() }
+          ? { ...r, title: editTitle.trim(), department: editDepartment.trim(), recruiterName: editRecruiter.trim(), isActive: editIsActive }
           : r
       ));
       setEditingReq(null);
@@ -349,6 +353,26 @@ export default function JobsPage() {
                 value={editRecruiter}
                 onChange={setEditRecruiter}
                 placeholder="e.g. Priya Sharma"
+              />
+            </div>
+
+            {/* Active / Inactive toggle */}
+            <div className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-4 py-3">
+              <div className="space-y-0.5">
+                <Label htmlFor="edit-isactive" className="text-sm font-medium cursor-pointer">
+                  {editIsActive ? "Active" : "Inactive"}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  {editIsActive
+                    ? "This role is open and visible on the dashboard"
+                    : "This role is paused — no new analysis will be triggered"}
+                </p>
+              </div>
+              <Switch
+                id="edit-isactive"
+                checked={editIsActive}
+                onCheckedChange={setEditIsActive}
+                className="data-[state=checked]:bg-emerald-500"
               />
             </div>
             {saveError && <p className="text-xs text-destructive">{saveError}</p>}

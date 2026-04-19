@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   ChevronRight, UserPlus, Users, LayoutDashboard, SlidersHorizontal, Settings2,
-  Plus, Upload, Pause, Play, XCircle, Building2, Calendar, History,
+  Plus, Upload, Pause, Play, XCircle, Building2, Calendar, History, UploadCloud,
 } from "lucide-react";
 import { CandidatesTab } from "@/components/jobs/CandidatesTab";
 import { DashboardTab } from "@/components/jobs/DashboardTab";
@@ -20,6 +20,7 @@ import { JdDescriptionTab } from "@/components/jobs/JdDescriptionTab";
 import { HistoryTab } from "@/components/jobs/HistoryTab";
 import { BulkAddModal } from "@/components/jobs/BulkAddModal";
 import { AddManuallyModal } from "@/components/jobs/AddManuallyModal";
+import { UploadResumesModal } from "@/components/jobs/UploadResumesModal";
 
 interface RunSummary {
   id: string;
@@ -42,12 +43,16 @@ interface TaskResult {
   runId?: string;
   runIndex?: number;
   addedAt?: string;
+  source?: string;
+  sourceFileName?: string | null;
+  hasResume?: boolean;
 }
 
 interface RequisitionDetail {
   id: string;
   title: string;
   department: string;
+  recruiterName: string;
   archived: boolean;
   createdAt: string;
   updatedAt: string;
@@ -59,6 +64,7 @@ interface CombinedView {
   id: string;
   title: string;
   department: string;
+  recruiterName: string;
   status: string;
   totalTasks: number;
   processedCount: number;
@@ -90,6 +96,7 @@ function combine(
     id: requisition.id,
     title: requisition.title,
     department: requisition.department,
+    recruiterName: requisition.recruiterName,
     status: activeRun?.status || (requisition.runs[0]?.status ?? "IDLE"),
     totalTasks: tasks.length,
     processedCount: successCount + failedCount,
@@ -118,6 +125,7 @@ export default function RequisitionDetailPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [showManualAdd, setShowManualAdd] = useState(false);
+  const [showUploadResumes, setShowUploadResumes] = useState(false);
 
   useEffect(() => {
     if (tabParam && VALID_TABS.has(tabParam)) {
@@ -300,7 +308,11 @@ export default function RequisitionDetailPage() {
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setShowBulkAdd(true)} className="gap-2 cursor-pointer">
                   <Upload className="h-4 w-4" />
-                  Bulk Add
+                  Bulk Add URLs
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setShowUploadResumes(true)} className="gap-2 cursor-pointer border-t border-border mt-1 pt-1">
+                  <UploadCloud className="h-4 w-4" />
+                  Upload Resumes / ZIP
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -310,7 +322,7 @@ export default function RequisitionDetailPage() {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
-        <div className="border-b border-border px-8 shrink-0 bg-background">
+        <div className="border-b border-border pr-8 shrink-0 bg-background">
           <TabsList className="bg-transparent h-auto p-0 gap-0">
             <TabsTrigger
               value="candidates"
@@ -392,6 +404,12 @@ export default function RequisitionDetailPage() {
       <AddManuallyModal
         open={showManualAdd}
         onClose={() => setShowManualAdd(false)}
+        requisitionId={requisitionId}
+        onSuccess={fetchAll}
+      />
+      <UploadResumesModal
+        isOpen={showUploadResumes}
+        onClose={() => setShowUploadResumes(false)}
         requisitionId={requisitionId}
         onSuccess={fetchAll}
       />

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { FileText, Users, TrendingUp, Minus, TrendingDown, Award, Clock } from "lucide-react";
+import { FileText, Users, TrendingUp, Minus, TrendingDown, Award, UserCircle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +19,7 @@ interface JobResults {
   id: string;
   title: string;
   department: string;
+  recruiterName?: string;
   status: string;
   totalTasks: number;
   processedCount: number;
@@ -47,18 +48,6 @@ const BUILT_IN_LABELS: Record<string, string> = {
   location: "Location",
 };
 
-function timeAgo(iso: string | Date | undefined | null): string {
-  if (!iso) return "—";
-  const diff = Date.now() - new Date(iso).getTime();
-  const m = Math.floor(diff / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  return `${d}d ago`;
-}
-
 export function DashboardTab({ data }: Props) {
   const cfg = data.config || {};
   const jd = cfg.jobDescription || "";
@@ -66,7 +55,6 @@ export function DashboardTab({ data }: Props) {
   const stats = useMemo(() => {
     let strong = 0, moderate = 0, notFit = 0, scoreSum = 0, scoreCount = 0;
     let pending = 0, processing = 0, done = 0, failed = 0;
-    let lastDone: { name: string; at: Date } | null = null;
 
     for (const t of data.tasks) {
       if (t.status === "PENDING") pending++;
@@ -84,16 +72,11 @@ export function DashboardTab({ data }: Props) {
           scoreSum += a.scorePercent;
           scoreCount++;
         }
-        const name = a.candidateInfo?.name;
-        if (name && t.status === "DONE") {
-          const at = new Date((t as any).updatedAt || Date.now());
-          if (!lastDone || at > lastDone.at) lastDone = { name, at };
-        }
       }
     }
     const avgScore = scoreCount > 0 ? Math.round(scoreSum / scoreCount) : 0;
 
-    return { strong, moderate, notFit, avgScore, pending, processing, done, failed, lastDone };
+    return { strong, moderate, notFit, avgScore, pending, processing, done, failed };
   }, [data.tasks]);
 
   const total = data.totalTasks || 0;
@@ -206,19 +189,18 @@ export function DashboardTab({ data }: Props) {
           </CardContent>
         </Card>
 
-        {/* Last processed */}
-        {stats.lastDone && (
-          <Card>
-            <CardContent className="p-4 flex items-center gap-3">
-              <Clock className="h-4 w-4 text-muted-foreground shrink-0" />
-              <div className="min-w-0 flex-1">
-                <p className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground">Last processed</p>
-                <p className="text-sm text-foreground truncate">{stats.lastDone.name}</p>
-                <p className="text-[11px] text-muted-foreground">{timeAgo(stats.lastDone.at)}</p>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+        {/* Assigned Recruiter */}
+        <Card>
+          <CardContent className="p-4 flex items-center gap-3">
+            <UserCircle className="h-4 w-4 text-muted-foreground shrink-0" />
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground">Assigned Recruiter</p>
+              <p className="text-sm text-foreground truncate">
+                {data.recruiterName?.trim() || <span className="text-muted-foreground italic">Unassigned</span>}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

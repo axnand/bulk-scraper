@@ -78,6 +78,9 @@ async function processOneTask(
     url: string;
     jobId: string;
     retryCount: number;
+    source: string;
+    sourceFileName: string | null;
+    result: string | null;
     job: { status: string; id: string };
   },
   account: { id: string; accountId: string; dsn: string | null; apiKey: string | null }
@@ -310,6 +313,141 @@ async function processOneTask(
   }
 }
 
+// ─── Resume Task Processor (no Unipile account needed) ────────────────────────────
+
+async function updateJobProgress(jobId: string, succeeded: boolean) {
+  const updatedJob = await prisma.job.update({
+    where: { id: jobId },
+    data: {
+      processedCount: { increment: 1 },
+      ...(succeeded ? { successCount: { increment: 1 } } : { failedCount: { increment: 1 } }),
+    },
+  });
+  if (updatedJob.processedCount >= updatedJob.totalTasks) {
+    const finalStatus = updatedJob.successCount > 0 ? "COMPLETED" : "FAILED";
+    await prisma.job.update({ where: { id: jobId }, data: { status: finalStatus } });
+  }
+  return updatedJob;
+}
+
+async function processResumeTask(
+  task: {
+    id: string;
+    url: string;
+    jobId: string;
+    retryCount: number;
+    source: string;
+    sourceFileName: string | null;
+    result: string | null;
+    job: { status: string; id: string };
+  }
+): Promise<void> {
+  const tag = `[ResumeTask ${task.id.slice(-6)}]`;
+
+  // Optimistic claim — only succeed if still PENDING
+  const claimed = await prisma.task
+    .update({
+      where: { id: task.id, status: "PENDING" },
+      data: { status: "PROCESSING" },
+    })
+    .catch(() => null);
+
+  if (!claimed) {
+    console.log(`${tag} Claim failed — already grabbed by another worker.`);
+    return;
+  }
+
+  console.log(`${tag} Claimed resume task: ${task.sourceFileName || task.url}`);
+
+  if (task.job.status === "CANCELLED") {
+    await prisma.task.update({ where: { id: task.id }, data: { status: "FAILED", errorMessage: "Job was cancelled" } });
+    await updateJobProgress(task.jobId, false);
+    return;
+  }
+
+  if (task.job.status === "PAUSED") {
+    await prisma.task.update({ where: { id: task.id }, data: { status: "PENDING" } });
+    return;
+  }
+
+  // Ensure job is PROCESSING
+  if (task.job.status === "PENDING") {
+    await prisma.job
+      .update({ where: { id: task.job.id, status: "PENDING" }, data: { status: "PROCESSING" } })
+      .catch(() => {});
+  }
+
+  try {
+    // Parse pre-stored resume text
+    let preloaded: any = null;
+    try {
+      preloaded = task.result ? JSON.parse(task.result) : null;
+    } catch { /* ignore JSON parse errors */ }
+
+    if (!preloaded?.resumeText) {
+      console.error(`${tag} No resumeText found in task.result — marking failed.`);
+      await prisma.task.update({ where: { id: task.id }, data: { status: "FAILED", errorMessage: "No extracted text available" } });
+      await updateJobProgress(task.jobId, false);
+      return;
+    }
+
+    const jobConfig = await getJobConfig(task.jobId);
+
+    if (!jobConfig?.jobDescription) {
+      // No JD configured — mark done without analysis (user can re-run after setting JD)
+      console.log(`${tag} No JD configured — marking DONE without analysis.`);
+      await prisma.task.update({ where: { id: task.id }, data: { status: "DONE" } });
+      await updateJobProgress(task.jobId, true);
+      return;
+    }
+
+    const analysisStart = Date.now();
+    console.log(`${tag} Running AI analysis on resume text (${preloaded.resumeText.length} chars)...`);
+
+    const analysisResult = await analyzeProfile(preloaded, jobConfig);
+    const analysisResultJson = JSON.stringify(analysisResult);
+
+    console.log(`${tag} Analysis OK — ${Date.now() - analysisStart}ms. score=${analysisResult.scorePercent}% → ${analysisResult.recommendation}`);
+
+    await prisma.task.update({
+      where: { id: task.id },
+      data: {
+        status: "DONE",
+        analysisResult: analysisResultJson,
+        // result column keeps the resumeText so the UI can display the source
+      },
+    });
+
+    await updateJobProgress(task.jobId, true);
+
+    // Sheet export (if configured)
+    const sheetUrl = (jobConfig as any).sheetWebAppUrl;
+    if (sheetUrl) {
+      const { exportToSheet, buildSheetPayload } = await import("@/lib/sheets");
+      const minThreshold = (jobConfig as any).minScoreThreshold ?? 0;
+      if (analysisResult.scorePercent >= minThreshold) {
+        const payload = buildSheetPayload(
+          task.url,
+          analysisResult,
+          (jobConfig as any).jdTitle || "Resume Upload",
+          jobConfig.scoringRules as Record<string, boolean | undefined>,
+          jobConfig
+        );
+        await exportToSheet(sheetUrl, payload).catch((e: any) => {
+          console.warn(`${tag} Sheet export failed: ${e.message}`);
+        });
+      }
+    }
+  } catch (err: any) {
+    console.error(`${tag} FAILED: ${err.message}`);
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { status: "FAILED", errorMessage: err.message || "Analysis failed" },
+    });
+    await updateJobProgress(task.jobId, false);
+  }
+}
+
 // ─── Processing Loop (runs inside after(), no HTTP self-calls) ──────
 
 async function logAccountPoolState(label: string) {
@@ -342,6 +480,27 @@ async function runProcessingCycle(): Promise<{
     console.log(`[Process] Recovery: ${recovery.recoveredTasks} stale tasks reset, ${recovery.checkedAccounts} BUSY accounts checked`);
   }
 
+  // 1. Drain resume/zip tasks — no Unipile accounts needed
+  const resumeTasks = await prisma.task.findMany({
+    where: {
+      status: "PENDING",
+      source: { in: ["resume", "zip_import"] },
+      job: { 
+        status: { notIn: ["PAUSED", "CANCELLED"] },
+        requisition: { isActive: true } 
+      },
+    },
+    orderBy: [{ retryCount: "asc" }, { createdAt: "asc" }],
+    take: 20, // process up to 20 resume tasks per cycle concurrently
+    include: { job: { select: { status: true, id: true } } },
+  });
+
+  if (resumeTasks.length > 0) {
+    console.log(`[Process] Found ${resumeTasks.length} PENDING resume tasks — processing without accounts...`);
+    await Promise.allSettled(resumeTasks.map((task) => processResumeTask(task as any)));
+  }
+
+  // 2. Process LinkedIn tasks
   const concurrency = await getWorkerConcurrency();
   console.log(`[Process] Worker concurrency: ${concurrency}`);
 
@@ -350,7 +509,11 @@ async function runProcessingCycle(): Promise<{
   const pendingTasks = await prisma.task.findMany({
     where: {
       status: "PENDING",
-      job: { status: { notIn: ["PAUSED", "CANCELLED"] } },
+      source: "linkedin_url", // only URL-based tasks go through Unipile
+      job: { 
+        status: { notIn: ["PAUSED", "CANCELLED"] },
+        requisition: { isActive: true } 
+      },
     },
     orderBy: [{ retryCount: "asc" }, { createdAt: "asc" }],
     take: concurrency,
@@ -360,7 +523,7 @@ async function runProcessingCycle(): Promise<{
   if (pendingTasks.length === 0) {
     const processingCount = await prisma.task.count({ where: { status: "PROCESSING" } });
     console.log(`[Process] No PENDING tasks found. PROCESSING in-flight: ${processingCount}`);
-    return { processed: 0, succeeded: 0, failed: 0, remaining: 0 };
+    return { processed: resumeTasks.length, succeeded: 0, failed: 0, remaining: 0 };
   }
 
   console.log(`[Process] Found ${pendingTasks.length} PENDING tasks. Acquiring accounts...`);
@@ -372,7 +535,7 @@ async function runProcessingCycle(): Promise<{
   if (accounts.length === 0) {
     const remaining = await prisma.task.count({ where: { status: "PENDING" } });
     console.warn(`[Process] NO ACCOUNTS AVAILABLE — ${remaining} tasks stuck waiting. Check account pool state above.`);
-    return { processed: 0, succeeded: 0, failed: 0, remaining };
+    return { processed: resumeTasks.length, succeeded: 0, failed: 0, remaining };
   }
 
   const pairs = pendingTasks
@@ -396,7 +559,7 @@ async function runProcessingCycle(): Promise<{
 
   console.log(`[Process] Cycle complete in ${Date.now() - cycleStart}ms — dispatched=${pairs.length} settled_ok=${succeeded} settled_err=${failed} remaining=${remaining}`);
 
-  return { processed: pairs.length, succeeded, failed, remaining };
+  return { processed: resumeTasks.length + pairs.length, succeeded, failed, remaining };
 }
 
 async function logOverallJobState(label: string) {

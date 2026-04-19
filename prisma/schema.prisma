@@ -34,6 +34,7 @@ model Requisition {
   startDate     DateTime?
   config        String?   @db.Text // JSON: JD, scoring rules, AI model, sheet target — the long-lived role config
   archived      Boolean   @default(false)
+  isActive      Boolean   @default(true)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   jobs          Job[]
@@ -64,6 +65,9 @@ model Task {
   id             String   @id @default(cuid())
   jobId          String
   url            String   @db.Text
+  source         String   @default("linkedin_url") // "linkedin_url" | "resume" | "zip_import"
+  sourceFileName String?  // original filename for resume/zip imports
+  sourceFileUrl  String?  // S3 object key for the original PDF (resume/zip_import tasks)
   status         String   @default("PENDING") // PENDING, PROCESSING, DONE, FAILED
   result         String?  @db.Text // JSON string (raw Unipile profile data)
   analysisResult String?  @db.Text // JSON string (AI scoring output)
