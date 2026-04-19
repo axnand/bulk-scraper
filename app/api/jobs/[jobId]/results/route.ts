@@ -39,17 +39,15 @@ export async function GET(
 
     return NextResponse.json({
       id: job.id,
+      title: (job as any).title || "Untitled Requisition",
+      department: (job as any).department || "",
       status: job.status,
       totalTasks: job.totalTasks,
       processedCount: job.processedCount,
       successCount: (job as any).successCount ?? 0,
       failedCount: (job as any).failedCount ?? 0,
       createdAt: job.createdAt,
-      config: {
-        sheetWebAppUrl: config.sheetWebAppUrl || "",
-        jdTitle: config.jdTitle || "",
-        minScoreThreshold: config.minScoreThreshold ?? 0,
-      },
+      config,
       tasks: parsedTasks,
     });
   } catch (error) {

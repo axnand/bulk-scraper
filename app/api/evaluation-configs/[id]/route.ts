@@ -32,6 +32,11 @@ export async function PUT(
       try { return JSON.parse(val); } catch { return fallback; }
     };
 
+    const toJsonOrNull = (val: any) =>
+      val && typeof val === "object" && Object.keys(val).length > 0
+        ? JSON.stringify(val)
+        : null;
+
     const config = await prisma.evaluationConfig.update({
       where: { id },
       data: {
@@ -40,16 +45,19 @@ export async function PUT(
         ...(body.criticalInstructions !== undefined && { criticalInstructions: body.criticalInstructions || null }),
         ...(body.promptGuidelines !== undefined && { promptGuidelines: body.promptGuidelines || null }),
         ...(body.builtInRuleDescriptions !== undefined && {
-          builtInRuleDescriptions:
-            body.builtInRuleDescriptions && Object.keys(body.builtInRuleDescriptions).length > 0
-              ? JSON.stringify(body.builtInRuleDescriptions)
-              : null,
+          builtInRuleDescriptions: toJsonOrNull(body.builtInRuleDescriptions),
         }),
         ...(body.scoringRules !== undefined && {
           scoringRules: body.scoringRules ? JSON.stringify(body.scoringRules) : null,
         }),
         ...(body.customScoringRules !== undefined && {
           customScoringRules: body.customScoringRules ? JSON.stringify(body.customScoringRules) : null,
+        }),
+        ...(body.ruleDefinitions !== undefined && {
+          ruleDefinitions: toJsonOrNull(body.ruleDefinitions),
+        }),
+        ...(body.promptEnvelope !== undefined && {
+          promptEnvelope: toJsonOrNull(body.promptEnvelope),
         }),
       },
     });
@@ -64,6 +72,8 @@ export async function PUT(
       builtInRuleDescriptions: parseJson(config.builtInRuleDescriptions, {}),
       scoringRules: parseJson(config.scoringRules, null),
       customScoringRules: parseJson(config.customScoringRules, []),
+      ruleDefinitions: parseJson(config.ruleDefinitions, {}),
+      promptEnvelope: parseJson(config.promptEnvelope, {}),
       createdAt: config.createdAt,
       updatedAt: config.updatedAt,
     });

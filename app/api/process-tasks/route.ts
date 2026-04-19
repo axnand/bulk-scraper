@@ -215,7 +215,8 @@ async function processOneTask(
               task.url,
               analysisResult,
               jdTitle,
-              jobConfig.scoringRules
+              jobConfig.scoringRules as Record<string, boolean | undefined>,
+              jobConfig
             );
             try {
               await exportToSheet(sheetUrl, payload);

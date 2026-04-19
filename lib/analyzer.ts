@@ -32,6 +32,38 @@ export interface CustomScoringRule {
   enabled: boolean;
 }
 
+export interface ScoreParameter {
+  key: string;              // JSON field name e.g. "promotionSameCompany"
+  label: string;            // human label e.g. "Same Company"
+  allowedValuesHint: string; // rendered in prompt e.g. `<15 or "">`
+  maxPoints: number;        // used for totals + sheets labels
+}
+
+export interface RuleDefinition {
+  key: string;              // stable slug, e.g. "growth" or the custom rule id
+  label: string;
+  type: "built-in" | "custom";
+  description: string;      // rule scoring prompt block; empty for pre-computed rules
+  scoreParameters: ScoreParameter[];
+  logFormat: string;        // instruction shown inside scoringLogs for this rule
+  isPreComputed?: boolean;  // true for stability/location — skipped from LLM prompt
+}
+
+export interface PromptEnvelope {
+  /** Identity line. Tokens: {role}, {today}. */
+  identityTemplate: string;
+  /** Default role substituted into {role} when no override is provided. */
+  defaultRole: string;
+  /** Header rendered before promptGuidelines (when set). */
+  guidelinesSectionHeader: string;
+  /** Header rendered before customPrompt (when set). */
+  recruiterContextHeader: string;
+  /** Header rendered before the scoring rule blocks. */
+  scoringSectionHeader: string;
+  /** Full JSON response schema + footer. Tokens: {scoringFields}, {scoringLogsFields}. */
+  responseSchemaTemplate: string;
+}
+
 export interface AnalysisConfig {
   jobDescription: string;
   customPrompt?: string;
@@ -39,14 +71,18 @@ export interface AnalysisConfig {
   customScoringRules?: CustomScoringRule[];
   aiModel?: string;
   aiProviderId?: string;
-  /** User-defined AI evaluator identity. Replaces the default "You are a strict ATS evaluator..." header. */
+  /** User-defined AI evaluator identity. Substituted into {role} token of identityTemplate. */
   promptRole?: string;
   /** User-defined evaluation guidelines. Injected after the critical instructions block. */
   promptGuidelines?: string;
   /** Override the default CRITICAL INSTRUCTIONS behavioral rules block. */
   criticalInstructions?: string;
-  /** Override individual built-in rule descriptions. Keyed by rule ID (growth, graduation, etc.). */
+  /** Legacy: override individual built-in rule descriptions. Keyed by rule key. Superseded by ruleDefinitions. */
   builtInRuleDescriptions?: Record<string, string>;
+  /** Full per-rule overrides: description, scoreParameters, logFormat. Keyed by rule key. */
+  ruleDefinitions?: Record<string, Partial<RuleDefinition>>;
+  /** Per-field overrides for identity / section headers / response schema. */
+  promptEnvelope?: Partial<PromptEnvelope>;
 }
 
 export interface CandidateInfo {
@@ -114,28 +150,29 @@ const MBA_KEYWORDS = [
   "post graduate diploma in management",
 ];
 
-const LLM_RULE_POINTS: Record<string, number> = {
-  growth: 15,
-  graduation: 15,
-  companyType: 15,
-  mba: 15,
-  skillMatch: 10,
-};
+// ─── Built-in Rule Order (controls display + prompt order) ────────
 
-const PRE_COMPUTED_POINTS: Record<string, number> = {
-  stability: 10,
-  location: 5,
-};
+const BUILT_IN_RULE_ORDER = ["stability", "growth", "graduation", "companyType", "mba", "skillMatch", "location"] as const;
 
-const RULE_POINTS: Record<string, number> = {
-  ...PRE_COMPUTED_POINTS,
-  ...LLM_RULE_POINTS,
-};
+// ─── Default Rule Definitions (source of truth for all defaults) ──
 
-// ─── LLM Rule Prompt Blocks ───────────────────────────────────────
-
-export const DEFAULT_RULE_PROMPTS: Record<string, string> = {
-  growth: `**GROWTH (Max: 15) — MUTUALLY EXCLUSIVE**
+export const DEFAULT_RULE_DEFINITIONS: Record<string, RuleDefinition> = {
+  stability: {
+    key: "stability",
+    label: "Stability",
+    type: "built-in",
+    description: "",
+    isPreComputed: true,
+    scoreParameters: [
+      { key: "stability", label: "Stability", allowedValuesHint: "<10 or 7 or 0>", maxPoints: 10 },
+    ],
+    logFormat: "",
+  },
+  growth: {
+    key: "growth",
+    label: "Growth",
+    type: "built-in",
+    description: `**GROWTH (Max: 15) — MUTUALLY EXCLUSIVE**
 
 **Scope**
 * Use ONLY full-time roles
@@ -174,8 +211,17 @@ Any ambiguity → NO growth
 
 **Output**
 {"promotionSameCompany":<15 or "">,"promotionWithChange":<10 or "">}`,
-
-  graduation: `GRADUATION (Max: 15) — MUTUALLY EXCLUSIVE — Evaluate ONLY the UNDERGRADUATE degree. Do NOT use the MBA/PGDM institution here — MBA is scored separately.
+    scoreParameters: [
+      { key: "promotionSameCompany", label: "Same Company", allowedValuesHint: '<15 or "">', maxPoints: 15 },
+      { key: "promotionWithChange", label: "With Change", allowedValuesHint: '<10 or "">', maxPoints: 10 },
+    ],
+    logFormat: "<1-2 sentence: what evidence you found (or didn't), which sub-rule triggered, why this score>",
+  },
+  graduation: {
+    key: "graduation",
+    label: "Graduation",
+    type: "built-in",
+    description: `GRADUATION (Max: 15) — MUTUALLY EXCLUSIVE — Evaluate ONLY the UNDERGRADUATE degree. Do NOT use the MBA/PGDM institution here — MBA is scored separately.
 
    YOU MUST FOLLOW THESE TWO STEPS IN ORDER:
 
@@ -209,26 +255,107 @@ Any ambiguity → NO growth
    | Non-BTech   | gradTier1=7       | gradTier2=5       | both "" |
 
    IMPORTANT: Non-BTech from Tier 2 is ALWAYS 5, never 10. Only BTech/BE from Tier 2 gets 10. If the degree is BBA, BCom, BMS, Management, Finance, or anything other than BTech/BE/BS-Engineering, the maximum possible Tier 2 score is 5.`,
-
-  companyType: `COMPANY TYPE (Max: 15) — MUTUALLY EXCLUSIVE, based on CURRENT/most recent company
+    scoreParameters: [
+      { key: "gradTier1", label: "Tier 1", allowedValuesHint: '<15 or 7 or "">', maxPoints: 15 },
+      { key: "gradTier2", label: "Tier 2", allowedValuesHint: '<10 or 5 or "">', maxPoints: 10 },
+    ],
+    logFormat: "<MUST state: 1) degree name, 2) BTech/BE or Non-BTech classification, 3) institution name, 4) Tier 1/Tier 2/Neither, 5) score from lookup table. Example: 'BBA (Non-BTech) from De La Salle University (Tier 2) → gradTier2=5'>",
+  },
+  companyType: {
+    key: "companyType",
+    label: "Company Type",
+    type: "built-in",
+    description: `COMPANY TYPE (Max: 15) — MUTUALLY EXCLUSIVE, based on CURRENT/most recent company
    - Product B2B Retail/CRM/SalesTech company → salesCRM=15, otherB2B=""
    - Product B2B SaaS non-CRM (cloud, infra, developer tools, data platforms, HR tech, fintech B2B, AI/ML platforms, cybersecurity, analytics) → salesCRM="", otherB2B=10
    - Service-based/IT consulting company → salesCRM="", otherB2B=7
    - Product B2C or unrelated → both ""
    Use your knowledge to classify the company. If the company name or candidate's role strongly implies a B2B SaaS product company (e.g. selling software to businesses), classify it as B2B SaaS even if you are not 100% familiar with the company. Do NOT default to 0 when there is reasonable evidence — score based on the best available classification.
    Examples for reference only: Salesforce/HubSpot/Zoho/Freshworks = B2B SalesTech/CRM, AWS/Atlassian/Datadog/Snowflake/Darktrace/FieldAssist/LeadSquared = B2B SaaS non-CRM, TCS/Infosys/Wipro/Accenture = Service-based, Swiggy/Netflix/Zomato = B2C.`,
-
-  mba: `MBA (Max: 15) — MUTUALLY EXCLUSIVE
+    scoreParameters: [
+      { key: "salesCRM", label: "Sales/CRM", allowedValuesHint: '<15 or "">', maxPoints: 15 },
+      { key: "otherB2B", label: "Other B2B", allowedValuesHint: '<10 or 7 or "">', maxPoints: 10 },
+    ],
+    logFormat: "<1-2 sentence: company name, why classified as this type, which sub-rule>",
+  },
+  mba: {
+    key: "mba",
+    label: "MBA",
+    type: "built-in",
+    description: `MBA (Max: 15) — MUTUALLY EXCLUSIVE
    - MBA/PGDM from Tier 1 institution → mbaA=15, mbaOthers=""
    - MBA/PGDM from other institution → mbaA="", mbaOthers=10
    - No MBA/PGDM → both ""
    Use your knowledge to classify the MBA institution as Tier 1 (premier national/global business schools) or other.`,
-
-  skillMatch: `SKILLSET MATCH (Max: 10) — First extract the KEY SKILLS/COMPETENCIES required by the Job Description (e.g. lead generation, CRM, B2B SaaS, ABM, sales tools, domain expertise, languages, certifications, etc.). Then check which of those JD-required skills the candidate actually possesses based on their experience, education, skills section, and certifications. Do NOT just list the candidate's own LinkedIn skills — compare candidate capabilities against what the JD asks for.
+    scoreParameters: [
+      { key: "mbaA", label: "MBA Tier 1", allowedValuesHint: '<15 or "">', maxPoints: 15 },
+      { key: "mbaOthers", label: "MBA Others", allowedValuesHint: '<10 or "">', maxPoints: 10 },
+    ],
+    logFormat: "<1-2 sentence: State the MBA/PGDM institution name and tier, OR state 'No MBA/PGDM found in the candidate profile'. NEVER output empty strings or raw score values here — always write a human-readable explanation>",
+  },
+  skillMatch: {
+    key: "skillMatch",
+    label: "Skill Match",
+    type: "built-in",
+    description: `SKILLSET MATCH (Max: 10) — First extract the KEY SKILLS/COMPETENCIES required by the Job Description (e.g. lead generation, CRM, B2B SaaS, ABM, sales tools, domain expertise, languages, certifications, etc.). Then check which of those JD-required skills the candidate actually possesses based on their experience, education, skills section, and certifications. Do NOT just list the candidate's own LinkedIn skills — compare candidate capabilities against what the JD asks for.
    - >70% of JD-required skills/competencies matched → 10
    - 40-70% matched → 5
    - <40% matched → 0`,
+    scoreParameters: [
+      { key: "skillsetMatch", label: "Skill Match", allowedValuesHint: "<0 or 5 or 10>", maxPoints: 10 },
+    ],
+    logFormat: "<1-2 sentence: list which JD-required skills/competencies the candidate has vs lacks, then match %>",
+  },
+  location: {
+    key: "location",
+    label: "Location",
+    type: "built-in",
+    description: "",
+    isPreComputed: true,
+    scoreParameters: [
+      { key: "locationMatch", label: "Location", allowedValuesHint: "<5 or 0>", maxPoints: 5 },
+    ],
+    logFormat: "",
+  },
 };
+
+// ─── Default Prompt Envelope ──────────────────────────────────────
+
+export const DEFAULT_PROMPT_ENVELOPE: PromptEnvelope = {
+  identityTemplate: "{role} Today's date is {today}. Do NOT treat recent or current dates as typos — they are valid. Score the candidate using ONLY the rules below. Stability, location, and candidate info are pre-computed — do NOT evaluate them.",
+  defaultRole: "You are a strict ATS evaluator.",
+  guidelinesSectionHeader: "ADDITIONAL EVALUATION GUIDELINES (follow these strictly in all scoring decisions):",
+  recruiterContextHeader: "RECRUITER CONTEXT (for this specific job — use to guide ALL scoring decisions below):",
+  scoringSectionHeader: `SCORING RULES (mutually exclusive pairs: fill ONE, leave other as ""):`,
+  responseSchemaTemplate: `Respond with ONLY valid JSON (no markdown, no code fences):
+{
+  "scoring": {
+{scoringFields}
+  },
+  "scoringLogs": {
+{scoringLogsFields}
+  },
+  "skillBreakdown": {
+    "matchedSkills": ["<skill/competency REQUIRED BY THE JD that candidate HAS>", ...],
+    "missingSkills": ["<skill/competency REQUIRED BY THE JD that candidate LACKS>", ...],
+    "matchPercent": <integer 0-100>
+  },
+  "remarks": "<concise overall reasoning — reference any disqualifiers found>",
+  "experienceSummary": "<2-3 sentence career summary>",
+  "strengths": ["<string>", ...],
+  "gaps": ["<string>", ...],
+  "flags": ["<ONLY genuine disqualifiers — hard JD requirements candidate clearly fails. Empty array [] if none>", ...]
+}
+
+Be strict and evidence-based. Do NOT assume missing data. Do NOT give benefit of the doubt.`,
+};
+
+// Legacy export for backward compat (used by ScoringRulesTab to populate default description)
+export const DEFAULT_RULE_PROMPTS: Record<string, string> = Object.fromEntries(
+  Object.entries(DEFAULT_RULE_DEFINITIONS)
+    .filter(([, d]) => !d.isPreComputed)
+    .map(([k, d]) => [k, d.description])
+);
 
 // ─── Location Matching (Deterministic) ────────────────────────────
 
@@ -471,130 +598,143 @@ export const DEFAULT_CRITICAL_INSTRUCTIONS = `CRITICAL INSTRUCTIONS:
    - Do NOT flag items that are "preferred" or "nice to have" as disqualifiers.
    List genuine disqualifiers in "flags". If there are none, return an empty array.`;
 
+// ─── Effective Rule Builder ───────────────────────────────────────
+
+/**
+ * Returns the merged list of RuleDefinitions for a job config.
+ * Built-in rules are taken in canonical order; custom rules appended.
+ * Each rule carries its enabled flag resolved from scoringRules toggles.
+ */
+export function getEffectiveRules(opts: {
+  scoringRules?: ScoringRules;
+  customScoringRules?: CustomScoringRule[];
+  builtInRuleDescriptions?: Record<string, string>;
+  ruleDefinitions?: Record<string, Partial<RuleDefinition>>;
+}): Array<RuleDefinition & { enabled: boolean }> {
+  const results: Array<RuleDefinition & { enabled: boolean }> = [];
+
+  for (const key of BUILT_IN_RULE_ORDER) {
+    const base = DEFAULT_RULE_DEFINITIONS[key];
+    const override = opts.ruleDefinitions?.[key] || {};
+    const legacyDesc = opts.builtInRuleDescriptions?.[key];
+    const enabled = (opts.scoringRules as any)?.[key] !== false;
+
+    results.push({
+      ...base,
+      ...override,
+      key,
+      description: override.description ?? legacyDesc ?? base.description,
+      scoreParameters: override.scoreParameters ?? base.scoreParameters,
+      logFormat: override.logFormat ?? base.logFormat,
+      enabled,
+    });
+  }
+
+  for (const r of (opts.customScoringRules || [])) {
+    const override = opts.ruleDefinitions?.[r.id] || {};
+    results.push({
+      key: r.id,
+      label: override.label ?? r.name,
+      type: "custom",
+      description: override.description ?? r.criteria,
+      isPreComputed: false,
+      scoreParameters: override.scoreParameters ?? [
+        {
+          key: `custom_${r.id}`,
+          label: override.label ?? r.name,
+          allowedValuesHint: `<0 to ${r.maxPoints} integer>`,
+          maxPoints: r.maxPoints,
+        },
+      ],
+      logFormat: override.logFormat ?? `<1-2 sentence: evidence and reasoning for ${r.name} score>`,
+      enabled: r.enabled,
+    });
+  }
+
+  return results;
+}
+
+/** Max points for a rule = max of its score parameter maxPoints (handles mutex pairs correctly). */
+function ruleMax(rule: RuleDefinition): number {
+  return Math.max(0, ...rule.scoreParameters.map((p) => p.maxPoints));
+}
+
 // ─── Prompt Builders ─────────────────────────────────────────────
 
 /**
  * Assembles the full system prompt from 4 layers:
- *   1. Identity (user-configurable via promptRole)
- *   2. Behavioral rules (built-in + user's guidelines + per-job recruiter context)
- *   3. Scoring rules (auto-generated from enabled dimensions)
- *   4. JSON output schema (internal, never user-facing)
+ *   1. Identity (configurable via promptRole + identityTemplate)
+ *   2. Behavioral rules (built-in + user guidelines + recruiter context)
+ *   3. Scoring rules (auto-generated from enabled rule definitions)
+ *   4. JSON output schema (from responseSchemaTemplate with dynamic field injection)
  */
 export function buildSystemPrompt(
   scoringRules: ScoringRules,
   customScoringRules: CustomScoringRule[],
   options?: {
-    customPrompt?: string;       // Per-job recruiter context (from job creation form)
-    promptRole?: string;         // User's evaluator identity (from Settings)
-    promptGuidelines?: string;   // User's evaluation guidelines (from Settings)
-    criticalInstructions?: string;           // Override default behavioral rules
-    builtInRuleDescriptions?: Record<string, string>; // Override per-rule descriptions
+    customPrompt?: string;
+    promptRole?: string;
+    promptGuidelines?: string;
+    criticalInstructions?: string;
+    builtInRuleDescriptions?: Record<string, string>;
+    ruleDefinitions?: Record<string, Partial<RuleDefinition>>;
+    promptEnvelope?: Partial<PromptEnvelope>;
   }
 ): string {
   const opts = options || {};
-  const enabled: Record<string, boolean> = {};
-  for (const key of Object.keys(LLM_RULE_POINTS)) {
-    enabled[key] = (scoringRules as any)[key] !== false;
-  }
+  const envelope: PromptEnvelope = { ...DEFAULT_PROMPT_ENVELOPE, ...opts.promptEnvelope };
 
-  const enabledCustomRules = (customScoringRules || []).filter((r) => r.enabled);
+  const allRules = getEffectiveRules({
+    scoringRules,
+    customScoringRules,
+    builtInRuleDescriptions: opts.builtInRuleDescriptions,
+    ruleDefinitions: opts.ruleDefinitions,
+  });
+  const enabledRules = allRules.filter((r) => r.enabled);
 
   // ── SECTION 1: Identity ──
   const today = new Date().toISOString().split("T")[0];
-  const identity = opts.promptRole?.trim()
-    ? `${opts.promptRole.trim()} Today's date is ${today}. Do NOT treat recent or current dates as typos — they are valid. Score the candidate using ONLY the rules below. Stability, location, and candidate info are pre-computed — do NOT evaluate them.`
-    : `You are a strict ATS evaluator. Today's date is ${today}. Do NOT treat recent or current dates as typos — they are valid. Score the candidate using ONLY the rules below. Stability, location, and candidate info are pre-computed — do NOT evaluate them.`;
+  const role = opts.promptRole?.trim() || envelope.defaultRole;
+  const identity = envelope.identityTemplate
+    .replace("{role}", role)
+    .replace("{today}", today);
 
   // ── SECTION 2: Behavioral instructions ──
   let behavior = opts.criticalInstructions?.trim() || DEFAULT_CRITICAL_INSTRUCTIONS;
 
   if (opts.promptGuidelines?.trim()) {
-    behavior += `\n\nADDITIONAL EVALUATION GUIDELINES (follow these strictly in all scoring decisions):\n${opts.promptGuidelines.trim()}`;
+    behavior += `\n\n${envelope.guidelinesSectionHeader}\n${opts.promptGuidelines.trim()}`;
   }
-
   if (opts.customPrompt?.trim()) {
-    behavior += `\n\nRECRUITER CONTEXT (for this specific job — use to guide ALL scoring decisions below):\n${opts.customPrompt.trim()}`;
+    behavior += `\n\n${envelope.recruiterContextHeader}\n${opts.customPrompt.trim()}`;
   }
 
-  // ── SECTION 3: Scoring rules (auto-generated from config toggles) ──
-  const ruleDescriptions = { ...DEFAULT_RULE_PROMPTS, ...(opts.builtInRuleDescriptions || {}) };
+  // ── SECTION 3: Scoring rules ──
   let ruleNum = 0;
-  const rulesText = Object.entries(ruleDescriptions)
-    .filter(([k]) => enabled[k])
-    .map(([, text]) => {
-      ruleNum++;
-      return `${ruleNum}. ${text}`;
-    })
-    .join("\n\n");
-
-  const customRulesText = enabledCustomRules
+  const allRulesText = enabledRules
+    .filter((r) => !r.isPreComputed && r.description.trim())
     .map((r) => {
       ruleNum++;
-      return `${ruleNum}. ${r.name.toUpperCase()} (Max: ${r.maxPoints})\n   ${r.criteria}`;
+      return `${ruleNum}. ${r.description}`;
     })
     .join("\n\n");
 
-  const allRulesText = [rulesText, customRulesText].filter(Boolean).join("\n\n");
+  // ── SECTION 4: JSON output schema ──
+  const scoringFields = enabledRules
+    .filter((r) => !r.isPreComputed)
+    .flatMap((r) => r.scoreParameters.map((p) => `    "${p.key}": ${p.allowedValuesHint}`))
+    .join(",\n");
 
-  // ── SECTION 4: JSON output schema (internal — never user-facing) ──
-  const scoringSchema: string[] = [];
-  if (enabled.growth) {
-    scoringSchema.push('    "promotionSameCompany": <15 or "">');
-    scoringSchema.push('    "promotionWithChange": <10 or "">');
-  }
-  if (enabled.graduation) {
-    scoringSchema.push('    "gradTier1": <15 or 7 or "">');
-    scoringSchema.push('    "gradTier2": <10 or 5 or "">');
-  }
-  if (enabled.companyType) {
-    scoringSchema.push('    "salesCRM": <15 or "">');
-    scoringSchema.push('    "otherB2B": <10 or 7 or "">');
-  }
-  if (enabled.mba) {
-    scoringSchema.push('    "mbaA": <15 or "">');
-    scoringSchema.push('    "mbaOthers": <10 or "">');
-  }
-  if (enabled.skillMatch) {
-    scoringSchema.push('    "skillsetMatch": <0 or 5 or 10>');
-  }
-  for (const r of enabledCustomRules) {
-    scoringSchema.push(`    "custom_${r.id}": <0 to ${r.maxPoints} integer>`);
-  }
+  const logsFields = enabledRules
+    .filter((r) => !r.isPreComputed && r.logFormat.trim())
+    .map((r) => `    "${r.key}": "${r.logFormat}"`)
+    .join(",\n");
 
-  const logsSchemaEntries: string[] = [];
-  if (enabled.growth) logsSchemaEntries.push(`    "growth": "<1-2 sentence: what evidence you found (or didn't), which sub-rule triggered, why this score>"`);
-  if (enabled.graduation) logsSchemaEntries.push(`    "graduation": "<MUST state: 1) degree name, 2) BTech/BE or Non-BTech classification, 3) institution name, 4) Tier 1/Tier 2/Neither, 5) score from lookup table. Example: 'BBA (Non-BTech) from De La Salle University (Tier 2) → gradTier2=5'>"`);
-  if (enabled.companyType) logsSchemaEntries.push(`    "companyType": "<1-2 sentence: company name, why classified as this type, which sub-rule>"`);
-  if (enabled.mba) logsSchemaEntries.push(`    "mba": "<1-2 sentence: State the MBA/PGDM institution name and tier, OR state 'No MBA/PGDM found in the candidate profile'. NEVER output empty strings or raw score values here — always write a human-readable explanation>"`);
-  if (enabled.skillMatch) logsSchemaEntries.push(`    "skillMatch": "<1-2 sentence: list which JD-required skills/competencies the candidate has vs lacks, then match %>"`);
-  for (const r of enabledCustomRules) {
-    logsSchemaEntries.push(`    "custom_${r.id}": "<1-2 sentence: evidence and reasoning for ${r.name} score>"`);
-  }
+  const jsonBlock = envelope.responseSchemaTemplate
+    .replace("{scoringFields}", scoringFields)
+    .replace("{scoringLogsFields}", logsFields);
 
-  const jsonBlock = `Respond with ONLY valid JSON (no markdown, no code fences):
-{
-  "scoring": {
-${scoringSchema.join(",\n")}
-  },
-  "scoringLogs": {
-${logsSchemaEntries.join(",\n")}
-  },
-  "skillBreakdown": {
-    "matchedSkills": ["<skill/competency REQUIRED BY THE JD that candidate HAS>", ...],
-    "missingSkills": ["<skill/competency REQUIRED BY THE JD that candidate LACKS>", ...],
-    "matchPercent": <integer 0-100>
-  },
-  "remarks": "<concise overall reasoning — reference any disqualifiers found>",
-  "experienceSummary": "<2-3 sentence career summary>",
-  "strengths": ["<string>", ...],
-  "gaps": ["<string>", ...],
-  "flags": ["<ONLY genuine disqualifiers — hard JD requirements candidate clearly fails. Empty array [] if none>", ...]
-}
-
-Be strict and evidence-based. Do NOT assume missing data. Do NOT give benefit of the doubt.`;
-
-  // ── Stitch all sections ──
-  return `${identity}\n\n${behavior}\n\nSCORING RULES (mutually exclusive pairs: fill ONE, leave other as ""):\n\n${allRulesText}\n\n${jsonBlock}`;
+  return `${identity}\n\n${behavior}\n\n${envelope.scoringSectionHeader}\n\n${allRulesText}\n\n${jsonBlock}`;
 }
 
 export function buildUserPrompt(profileData: any, jobDescription: string, candidateInfo: CandidateInfo): string {
@@ -776,6 +916,8 @@ export async function analyzeProfile(
     promptGuidelines: config.promptGuidelines,
     criticalInstructions: config.criticalInstructions,
     builtInRuleDescriptions: config.builtInRuleDescriptions,
+    ruleDefinitions: config.ruleDefinitions,
+    promptEnvelope: config.promptEnvelope,
   });
   console.log(`[Analyzer] System prompt built (${systemPrompt.length} chars), role=${config.promptRole ? 'custom' : 'default'}, guidelines=${config.promptGuidelines ? 'custom' : 'default'}`);
 
@@ -807,31 +949,26 @@ export async function analyzeProfile(
   // ── Pass 3: Merge deterministic + LLM ──
   const llmScoring = llmResult.scoring || {};
 
-  function ruleVal(ruleKey: string, field: string): number | string {
-    if ((rules as any)[ruleKey] === false) return "";
-    return coerce(llmScoring[field]);
-  }
+  const effectiveRules = getEffectiveRules({
+    scoringRules: rules,
+    customScoringRules: customRules,
+    builtInRuleDescriptions: config.builtInRuleDescriptions,
+    ruleDefinitions: config.ruleDefinitions,
+  });
+  const enabledEffectiveRules = effectiveRules.filter((r) => r.enabled);
 
   const scoring: Record<string, number | string> = {
     stability: stabilityScore,
-    promotionSameCompany: ruleVal("growth", "promotionSameCompany"),
-    promotionWithChange: ruleVal("growth", "promotionWithChange"),
-    gradTier1: ruleVal("graduation", "gradTier1"),
-    gradTier2: ruleVal("graduation", "gradTier2"),
-    salesCRM: ruleVal("companyType", "salesCRM"),
-    otherB2B: ruleVal("companyType", "otherB2B"),
-    mbaA: ruleVal("mba", "mbaA"),
-    mbaOthers: ruleVal("mba", "mbaOthers"),
-    skillsetMatch: ruleVal("skillMatch", "skillsetMatch"),
     locationMatch: locationScore,
   };
 
-  // Merge custom rule scores
-  const enabledCustomRules = customRules.filter((r) => r.enabled);
-  for (const r of enabledCustomRules) {
-    const val = coerce(llmScoring[`custom_${r.id}`]);
-    scoring[`custom_${r.id}`] =
-      typeof val === "number" ? Math.min(val, r.maxPoints) : 0;
+  for (const rule of enabledEffectiveRules) {
+    if (rule.isPreComputed) continue;
+    for (const param of rule.scoreParameters) {
+      const raw = coerce(llmScoring[param.key]);
+      const maxP = param.maxPoints;
+      scoring[param.key] = typeof raw === "number" ? Math.min(raw, maxP) : raw;
+    }
   }
 
   // Compute total
@@ -840,10 +977,11 @@ export async function analyzeProfile(
     0
   );
 
-  let maxScore = Object.entries(RULE_POINTS)
-    .filter(([k]) => (rules as any)[k] !== false)
-    .reduce((sum, [, v]) => sum + v, 0);
-  for (const r of enabledCustomRules) maxScore += r.maxPoints;
+  const maxScore = enabledEffectiveRules.reduce((sum, r) => sum + ruleMax(r), 0);
+  const enabledCustomRules = enabledEffectiveRules
+    .filter((r) => r.type === "custom")
+    .map((r) => customRules.find((c) => c.id === r.key)!)
+    .filter(Boolean);
 
   const scorePercent =
     maxScore > 0 ? Math.round((totalScore / maxScore) * 1000) / 10 : 0;

@@ -24,6 +24,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       jobs: jobs.map((job: any) => ({
         id: job.id,
+        requisitionId: job.requisitionId ?? null,
+        title: job.title || "Untitled Requisition",
+        department: job.department || "",
         status: job.status,
         totalTasks: job.totalTasks,
         processedCount: job.processedCount,
@@ -51,14 +54,13 @@ export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
 
-        if (!body || !body.urls || typeof body.urls !== "string") {
-            return NextResponse.json(
-                { error: "Invalid request payload. Expected 'urls' string." },
-                { status: 400 }
-            );
-        }
+        const rawUrls: string = body?.urls || "";
+        const jobTitle: string = body?.title || body?.jdTitle || "Untitled Requisition";
+        const jobDepartment: string = body?.department || "";
 
-        const { valid, invalid } = parseAndValidateUrls(body.urls);
+        const { valid, invalid } = rawUrls.trim()
+            ? parseAndValidateUrls(rawUrls)
+            : { valid: [] as string[], invalid: [] as string[] };
 
         if (valid.length === 0) {
             return NextResponse.json(
@@ -132,34 +134,59 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        // 2. Build config object (if analysis fields provided)
-        let config: string | undefined;
-        if (body.jobDescription || body.customPrompt || body.scoringRules || body.customScoringRules || body.evaluationConfigId || promptRole || promptGuidelines || criticalInstructions || body.builtInRuleDescriptions) {
-            config = JSON.stringify({
-                jobDescription: body.jobDescription || "",
-                customPrompt: body.customPrompt || "",
-                scoringRules: resolvedScoringRules,
-                customScoringRules: resolvedCustomScoringRules,
-                sheetWebAppUrl: body.sheetWebAppUrl || "",
-                jdTitle: body.jdTitle || "Bulk Analysis",
-                aiModel: body.aiModel,
-                aiProviderId: body.aiProviderId || undefined,
-                minScoreThreshold: body.minScoreThreshold ?? 0,
-                ...(promptRole && { promptRole }),
-                ...(promptGuidelines && { promptGuidelines }),
-                ...(criticalInstructions && { criticalInstructions }),
-                ...(Object.keys(resolvedBuiltInRuleDescriptions).length > 0 && { builtInRuleDescriptions: resolvedBuiltInRuleDescriptions }),
+        // 2. Build config object
+        const config = JSON.stringify({
+            jobDescription: body.jobDescription || "",
+            customPrompt: body.customPrompt || "",
+            scoringRules: resolvedScoringRules,
+            customScoringRules: resolvedCustomScoringRules,
+            sheetWebAppUrl: body.sheetWebAppUrl || "",
+            jdTitle: jobTitle,
+            aiModel: body.aiModel,
+            aiProviderId: body.aiProviderId || undefined,
+            minScoreThreshold: body.minScoreThreshold ?? 0,
+            ...(promptRole && { promptRole }),
+            ...(promptGuidelines && { promptGuidelines }),
+            ...(criticalInstructions && { criticalInstructions }),
+            ...(Object.keys(resolvedBuiltInRuleDescriptions).length > 0 && { builtInRuleDescriptions: resolvedBuiltInRuleDescriptions }),
+        });
+
+        // 2. Resolve parent Requisition (create or find by title; keeps the extension contract working)
+        let requisitionId: string | null = body?.requisitionId || null;
+        if (!requisitionId) {
+            const existing = await prisma.requisition.findFirst({
+                where: { title: jobTitle, archived: false },
+                orderBy: { updatedAt: "desc" },
             });
+            if (existing) {
+                requisitionId = existing.id;
+            } else {
+                const created = await prisma.requisition.create({
+                    data: { title: jobTitle, department: jobDepartment, config },
+                });
+                requisitionId = created.id;
+            }
         }
 
-        // 2. Create the Job first
+        // 3. Create the Job (bulk run) under the requisition
         const job = await prisma.job.create({
             data: {
+                requisitionId,
+                title: jobTitle,
+                department: jobDepartment,
                 totalTasks: valid.length,
-                status: "PENDING",
-                config: config || null,
+                status: valid.length > 0 ? "PENDING" : "COMPLETED",
+                config,
             },
         });
+
+        // bump requisition updatedAt so it sorts to top
+        if (requisitionId) {
+            await prisma.requisition.update({
+                where: { id: requisitionId },
+                data: { updatedAt: new Date() },
+            }).catch(() => {});
+        }
 
         // 3. Batch-insert tasks in chunks to avoid DB timeouts
         const BATCH_SIZE = 100;
@@ -174,17 +201,20 @@ export async function POST(req: NextRequest) {
             });
         }
 
-        // 4. Kick off processing immediately via after()
-        console.log(`[Jobs] Job ${job.id} created, scheduling after() trigger...`);
-        after(async () => {
-            console.log(`[Jobs] after() callback fired for job ${job.id}`);
-            await triggerProcessing();
-            console.log(`[Jobs] after() callback completed for job ${job.id}`);
-        });
+        // 4. Kick off processing only if there are tasks
+        if (valid.length > 0) {
+            console.log(`[Jobs] Job ${job.id} created, scheduling after() trigger...`);
+            after(async () => {
+                console.log(`[Jobs] after() callback fired for job ${job.id}`);
+                await triggerProcessing();
+                console.log(`[Jobs] after() callback completed for job ${job.id}`);
+            });
+        }
 
         return NextResponse.json({
             message: "Job created successfully",
             jobId: job.id,
+            requisitionId,
             totalTasks: valid.length,
             invalidUrls: invalid.length > 0 ? invalid : undefined,
         });

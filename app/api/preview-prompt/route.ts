@@ -42,6 +42,8 @@ export async function POST(req: NextRequest) {
       promptGuidelines: body.promptGuidelines || undefined,
       criticalInstructions: body.criticalInstructions || undefined,
       builtInRuleDescriptions: body.builtInRuleDescriptions || undefined,
+      ruleDefinitions: body.ruleDefinitions || undefined,
+      promptEnvelope: body.promptEnvelope || undefined,
     });
 
     let userPrompt: string | null = null;

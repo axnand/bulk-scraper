@@ -48,6 +48,8 @@ async function ensureDefaultAndList() {
     builtInRuleDescriptions: parseJson(c.builtInRuleDescriptions, {}),
     scoringRules: parseJson(c.scoringRules, null),
     customScoringRules: parseJson(c.customScoringRules, []),
+    ruleDefinitions: parseJson(c.ruleDefinitions, {}),
+    promptEnvelope: parseJson(c.promptEnvelope, {}),
     createdAt: c.createdAt,
     updatedAt: c.updatedAt,
   }));
@@ -92,6 +94,8 @@ export async function POST(req: NextRequest) {
       builtInRuleDescriptions: body.builtInRuleDescriptions ? toJson(body.builtInRuleDescriptions) : null,
       scoringRules: body.scoringRules ? JSON.stringify(body.scoringRules) : null,
       customScoringRules: body.customScoringRules ? JSON.stringify(body.customScoringRules) : null,
+      ruleDefinitions: body.ruleDefinitions && Object.keys(body.ruleDefinitions).length > 0 ? JSON.stringify(body.ruleDefinitions) : null,
+      promptEnvelope: body.promptEnvelope && Object.keys(body.promptEnvelope).length > 0 ? JSON.stringify(body.promptEnvelope) : null,
     };
 
     const config = await prisma.evaluationConfig.create({ data });
@@ -106,6 +110,8 @@ export async function POST(req: NextRequest) {
       builtInRuleDescriptions: parseJson(config.builtInRuleDescriptions, {}),
       scoringRules: parseJson(config.scoringRules, null),
       customScoringRules: parseJson(config.customScoringRules, []),
+      ruleDefinitions: parseJson(config.ruleDefinitions, {}),
+      promptEnvelope: parseJson(config.promptEnvelope, {}),
       createdAt: config.createdAt,
       updatedAt: config.updatedAt,
     });

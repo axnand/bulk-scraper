@@ -1,0 +1,1042 @@
+"use client";
+
+import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
+import {
+  Users, Cpu, Plus, Pencil, Trash2, Zap, CheckCircle2, XCircle,
+  ChevronLeft, Info, Power, PowerOff, Server, Star,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
+
+// ─── Provider Presets ───────────────────────────────────────────────
+
+const PROVIDER_PRESETS: Record<string, {
+  label: string;
+  name: string;
+  baseUrl: string;
+  providerType: string;
+  suggestedModels: string[];
+}> = {
+  openai:    { label: "OpenAI",              name: "OpenAI",       baseUrl: "https://api.openai.com/v1",                               providerType: "openai-compatible", suggestedModels: ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "o4-mini", "o3-mini"] },
+  gemini:    { label: "Google Gemini",       name: "Google Gemini",baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", providerType: "openai-compatible", suggestedModels: ["gemini-2.5-pro-preview-03-25", "gemini-2.5-flash-preview-04-17", "gemini-2.0-flash", "gemini-1.5-pro"] },
+  groq:      { label: "Groq",               name: "Groq",         baseUrl: "https://api.groq.com/openai/v1",                          providerType: "openai-compatible", suggestedModels: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"] },
+  anthropic: { label: "Anthropic (Claude)", name: "Anthropic",    baseUrl: "https://api.anthropic.com/v1",                            providerType: "anthropic",         suggestedModels: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"] },
+  bedrock:   { label: "AWS Bedrock",        name: "AWS Bedrock",  baseUrl: "",                                                        providerType: "bedrock",           suggestedModels: ["anthropic.claude-3-5-sonnet-20241022-v2:0", "anthropic.claude-3-5-haiku-20241022-v1:0", "meta.llama3-70b-instruct-v1:0", "mistral.mistral-large-2402-v1:0", "amazon.nova-pro-v1:0"] },
+  mistral:   { label: "Mistral",            name: "Mistral",      baseUrl: "https://api.mistral.ai/v1",                               providerType: "openai-compatible", suggestedModels: ["mistral-large-latest", "mistral-small-latest", "open-mixtral-8x22b"] },
+  deepseek:  { label: "DeepSeek",           name: "DeepSeek",     baseUrl: "https://api.deepseek.com/v1",                             providerType: "openai-compatible", suggestedModels: ["deepseek-chat", "deepseek-reasoner"] },
+  together:  { label: "Together AI",        name: "Together AI",  baseUrl: "https://api.together.xyz/v1",                             providerType: "openai-compatible", suggestedModels: ["meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo", "mistralai/Mixtral-8x7B-Instruct-v0.1"] },
+  ollama:    { label: "Ollama (Local)",     name: "Ollama",       baseUrl: "http://localhost:11434/v1",                               providerType: "openai-compatible", suggestedModels: ["llama3.2", "llama3.1", "mistral", "qwen2.5", "phi4"] },
+  custom:    { label: "Custom / Self-hosted",name: "",            baseUrl: "",                                                        providerType: "openai-compatible", suggestedModels: [] },
+};
+
+const BEDROCK_REGIONS = [
+  { value: "us-east-1",      label: "US East (N. Virginia)" },
+  { value: "us-west-2",      label: "US West (Oregon)" },
+  { value: "eu-west-1",      label: "Europe (Ireland)" },
+  { value: "eu-central-1",   label: "Europe (Frankfurt)" },
+  { value: "ap-southeast-1", label: "Asia Pacific (Singapore)" },
+  { value: "ap-northeast-1", label: "Asia Pacific (Tokyo)" },
+  { value: "ap-south-1",     label: "Asia Pacific (Mumbai)" },
+];
+
+// ─── Types ─────────────────────────────────────────────────────────
+
+interface Account {
+  id: string;
+  accountId: string;
+  name: string;
+  dsn: string;
+  apiKey: string;
+  status: string;
+  requestCount: number;
+  dailyCount: number;
+  dailyResetAt: string | null;
+  cooldownUntil: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+}
+
+interface AiProvider {
+  id: string;
+  name: string;
+  provider: string;
+  baseUrl: string;
+  apiKey: string;
+  secretKey?: string | null;
+  models: string[];
+  isDefault: boolean;
+  createdAt: string;
+}
+
+// ─── Small helpers ──────────────────────────────────────────────────
+
+function Spinner({ className }: { className?: string }) {
+  return (
+    <svg className={cn("animate-spin", className)} fill="none" viewBox="0 0 24 24">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+    </svg>
+  );
+}
+
+function StatCard({ label, value, color }: { label: string; value: number | string; color?: string }) {
+  return (
+    <Card>
+      <CardContent className="p-5 text-center">
+        <p className={cn("text-2xl font-bold", color ?? "text-foreground")}>{value}</p>
+        <p className="text-xs text-muted-foreground mt-1">{label}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function AlertBanner({ success, message }: { success: boolean; message: string }) {
+  return (
+    <div className={cn(
+      "flex items-start gap-2 text-sm p-3 rounded-lg border",
+      success
+        ? "bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950/30 dark:border-emerald-800 dark:text-emerald-400"
+        : "bg-destructive/5 border-destructive/20 text-destructive",
+    )}>
+      {success ? <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" /> : <XCircle className="h-4 w-4 shrink-0 mt-0.5" />}
+      <span>{message}</span>
+    </div>
+  );
+}
+
+const STATUS_CONFIG: Record<string, { dot: string; badge: string; card: string; label: string }> = {
+  ACTIVE:   { dot: "bg-emerald-500",               badge: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800",   card: "border-emerald-200/70 bg-emerald-50/30 dark:border-emerald-900/40 dark:bg-emerald-950/10", label: "Active" },
+  BUSY:     { dot: "bg-amber-500 animate-pulse",   badge: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800",             card: "border-amber-200/70 bg-amber-50/30 dark:border-amber-900/40 dark:bg-amber-950/10",         label: "Processing" },
+  COOLDOWN: { dot: "bg-orange-500",                badge: "bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950/40 dark:text-orange-400 dark:border-orange-800",       card: "border-orange-200/70 bg-orange-50/30",                                                       label: "Cooldown" },
+  DISABLED: { dot: "bg-muted-foreground/40",       badge: "bg-muted text-muted-foreground border-border",                                                                           card: "border-border bg-muted/20 opacity-60",                                                       label: "Disabled" },
+};
+
+const PROVIDER_TYPE_LABELS: Record<string, string> = {
+  "openai-compatible": "OpenAI-Compatible",
+  "anthropic": "Anthropic",
+  "bedrock": "AWS Bedrock",
+};
+
+// ─── Page ───────────────────────────────────────────────────────────
+
+export default function SettingsPage() {
+  const [activeTab, setActiveTab] = useState<"accounts" | "models">("accounts");
+
+  // ── Accounts state ──
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
+  const [accountsError, setAccountsError] = useState<string | null>(null);
+
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [formName, setFormName] = useState("");
+  const [formAccountId, setFormAccountId] = useState("");
+  const [formDsn, setFormDsn] = useState("");
+  const [formApiKey, setFormApiKey] = useState("");
+  const [formSubmitting, setFormSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ success?: boolean; message?: string; error?: string } | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDsn, setEditDsn] = useState("");
+  const [editApiKey, setEditApiKey] = useState("");
+  const [editAccountId, setEditAccountId] = useState("");
+
+  // ── Providers state ──
+  const [aiProviders, setAiProviders] = useState<AiProvider[]>([]);
+  const [providersLoading, setProvidersLoading] = useState(true);
+
+  const [showAddProvider, setShowAddProvider] = useState(false);
+  const [selectedPreset, setSelectedPreset] = useState("openai");
+  const [newProviderName, setNewProviderName] = useState("OpenAI");
+  const [newProviderApiKey, setNewProviderApiKey] = useState("");
+  const [newProviderCustomBaseUrl, setNewProviderCustomBaseUrl] = useState("");
+  const [newProviderCustomType, setNewProviderCustomType] = useState("openai-compatible");
+  const [newProviderSecretKey, setNewProviderSecretKey] = useState("");
+  const [newSelectedModels, setNewSelectedModels] = useState<string[]>([]);
+  const [newCustomModelInput, setNewCustomModelInput] = useState("");
+  const [providerTestResult, setProviderTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [providerTestLoading, setProviderTestLoading] = useState(false);
+  const [providerFormError, setProviderFormError] = useState<string | null>(null);
+  const [providerSubmitting, setProviderSubmitting] = useState(false);
+
+  const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
+  const [editProviderName, setEditProviderName] = useState("");
+  const [editProviderApiKey, setEditProviderApiKey] = useState("");
+  const [editProviderSecretKey, setEditProviderSecretKey] = useState("");
+  const [editSelectedModels, setEditSelectedModels] = useState<string[]>([]);
+  const [editCustomModelInput, setEditCustomModelInput] = useState("");
+  const [editTestResult, setEditTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [editTestLoading, setEditTestLoading] = useState(false);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+
+  const [quickTestId, setQuickTestId] = useState<string | null>(null);
+  const [quickTestResults, setQuickTestResults] = useState<Record<string, { success: boolean; message: string }>>({});
+
+  // ── Fetch ──
+
+  const fetchAccounts = useCallback(async () => {
+    try {
+      const res = await fetch("/api/accounts", { cache: "no-store" });
+      if (!res.ok) throw new Error("Failed to fetch accounts");
+      const data = await res.json();
+      setAccounts(data.accounts || []);
+    } catch (err: any) {
+      setAccountsError(err.message);
+    } finally {
+      setAccountsLoading(false);
+    }
+  }, []);
+
+  const fetchProviders = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ai-providers", { cache: "no-store" });
+      if (!res.ok) throw new Error("Failed");
+      setAiProviders(await res.json());
+    } catch { /* silent */ } finally {
+      setProvidersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchAccounts();
+    fetchProviders();
+    const t = setInterval(fetchAccounts, 5000);
+    return () => clearInterval(t);
+  }, [fetchAccounts, fetchProviders]);
+
+  // ── Account handlers ──
+
+  async function handleTestConnection() {
+    if (!formDsn || !formApiKey || !formAccountId) {
+      setTestResult({ error: "Fill in Account ID, DSN, and API Key first." });
+      return;
+    }
+    setTesting(true); setTestResult(null);
+    try {
+      const res = await fetch("/api/accounts/test", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dsn: formDsn, apiKey: formApiKey, accountId: formAccountId }),
+      });
+      setTestResult(await res.json());
+    } catch { setTestResult({ error: "Network error." }); } finally { setTesting(false); }
+  }
+
+  async function handleAddAccount(e: React.FormEvent) {
+    e.preventDefault();
+    if (!formAccountId || !formDsn || !formApiKey) return;
+    setFormSubmitting(true); setFormError(null);
+    try {
+      const res = await fetch("/api/accounts", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: formName, accountId: formAccountId, dsn: formDsn, apiKey: formApiKey }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setFormError(data.error || "Failed"); return; }
+      setFormName(""); setFormAccountId(""); setFormDsn(""); setFormApiKey("");
+      setShowAddForm(false); setTestResult(null);
+      fetchAccounts();
+    } catch { setFormError("Network error"); } finally { setFormSubmitting(false); }
+  }
+
+  async function handleDeleteAccount(id: string) {
+    if (!confirm("Delete this account?")) return;
+    try {
+      await fetch(`/api/accounts/${id}`, { method: "DELETE" });
+      fetchAccounts();
+    } catch { alert("Network error"); }
+  }
+
+  async function handleToggleStatus(id: string, currentStatus: string) {
+    const newStatus = currentStatus === "DISABLED" ? "ACTIVE" : "DISABLED";
+    try {
+      await fetch(`/api/accounts/${id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      fetchAccounts();
+    } catch { alert("Failed to update"); }
+  }
+
+  async function handleSaveEdit(id: string) {
+    try {
+      const update: any = { name: editName, dsn: editDsn, accountId: editAccountId };
+      if (editApiKey && !editApiKey.includes("•")) update.apiKey = editApiKey;
+      await fetch(`/api/accounts/${id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(update),
+      });
+      setEditingId(null); fetchAccounts();
+    } catch { alert("Failed to update"); }
+  }
+
+  function startEditing(account: Account) {
+    setEditingId(account.id); setEditName(account.name); setEditDsn(account.dsn);
+    setEditApiKey(account.apiKey.length > 14 ? `••••••••${account.apiKey.slice(-4)}` : account.apiKey);
+    setEditAccountId(account.accountId);
+  }
+
+  // ── Provider helpers ──
+
+  function getEffectiveBaseUrl() {
+    if (selectedPreset === "bedrock" || selectedPreset === "custom") return newProviderCustomBaseUrl;
+    return PROVIDER_PRESETS[selectedPreset]?.baseUrl ?? "";
+  }
+
+  function getEffectiveProviderType() {
+    return selectedPreset === "custom" ? newProviderCustomType : PROVIDER_PRESETS[selectedPreset]?.providerType ?? "openai-compatible";
+  }
+
+  function handlePresetChange(preset: string) {
+    setSelectedPreset(preset);
+    const p = PROVIDER_PRESETS[preset];
+    if (p.name) setNewProviderName(p.name);
+    setNewSelectedModels([]); setNewCustomModelInput(""); setNewProviderSecretKey(""); setProviderTestResult(null);
+    if (preset === "bedrock") setNewProviderCustomBaseUrl("us-east-1");
+    else if (preset !== "custom") setNewProviderCustomBaseUrl("");
+  }
+
+  function toggleNewModel(model: string) {
+    setNewSelectedModels(p => p.includes(model) ? p.filter(m => m !== model) : [...p, model]);
+  }
+
+  function addNewCustomModel() {
+    const m = newCustomModelInput.trim();
+    if (!m || newSelectedModels.includes(m)) return;
+    setNewSelectedModels(p => [...p, m]); setNewCustomModelInput("");
+  }
+
+  function toggleEditModel(model: string) {
+    setEditSelectedModels(p => p.includes(model) ? p.filter(m => m !== model) : [...p, model]);
+  }
+
+  function addEditCustomModel() {
+    const m = editCustomModelInput.trim();
+    if (!m || editSelectedModels.includes(m)) return;
+    setEditSelectedModels(p => [...p, m]); setEditCustomModelInput("");
+  }
+
+  // ── Provider handlers ──
+
+  async function handleTestNewProvider() {
+    const baseUrl = getEffectiveBaseUrl();
+    const model = newSelectedModels[0];
+    const isBedrock = selectedPreset === "bedrock";
+    if (!baseUrl || !newProviderApiKey || !model) {
+      setProviderTestResult({ success: false, message: "Select a model and enter credentials first." });
+      return;
+    }
+    if (isBedrock && !newProviderSecretKey) {
+      setProviderTestResult({ success: false, message: "Secret Access Key is required for Bedrock." });
+      return;
+    }
+    setProviderTestLoading(true); setProviderTestResult(null);
+    try {
+      const res = await fetch("/api/ai-providers/test", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: getEffectiveProviderType(), baseUrl, apiKey: newProviderApiKey, ...(isBedrock && { secretKey: newProviderSecretKey }), model }),
+      });
+      const data = await res.json();
+      setProviderTestResult({ success: data.success, message: data.error || "Connection successful!" });
+    } catch (err: any) {
+      setProviderTestResult({ success: false, message: err.message });
+    } finally { setProviderTestLoading(false); }
+  }
+
+  async function handleAddProvider(e: React.FormEvent) {
+    e.preventDefault();
+    if (newSelectedModels.length === 0 || !newProviderApiKey || !newProviderName) return;
+    const baseUrl = getEffectiveBaseUrl();
+    if (!baseUrl) { setProviderFormError("Base URL is required"); return; }
+    setProviderSubmitting(true); setProviderFormError(null);
+    try {
+      const res = await fetch("/api/ai-providers", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newProviderName, provider: getEffectiveProviderType(), baseUrl, apiKey: newProviderApiKey,
+          ...(newProviderSecretKey && { secretKey: newProviderSecretKey }),
+          models: newSelectedModels, isDefault: aiProviders.length === 0,
+        }),
+      });
+      if (!res.ok) { const d = await res.json(); setProviderFormError(d.error || "Failed"); return; }
+      setSelectedPreset("openai"); setNewProviderName("OpenAI"); setNewProviderApiKey(""); setNewProviderSecretKey("");
+      setNewProviderCustomBaseUrl(""); setNewSelectedModels([]); setNewCustomModelInput("");
+      setShowAddProvider(false); setProviderTestResult(null);
+      fetchProviders();
+    } catch { setProviderFormError("Network error"); } finally { setProviderSubmitting(false); }
+  }
+
+  function startEditProvider(provider: AiProvider) {
+    setEditingProviderId(provider.id); setEditProviderName(provider.name);
+    setEditProviderApiKey(`••••${provider.apiKey.slice(-4)}`);
+    setEditProviderSecretKey(provider.secretKey ? "••••" : "");
+    setEditSelectedModels(provider.models || []); setEditCustomModelInput(""); setEditTestResult(null);
+  }
+
+  async function handleSaveEditProvider(id: string) {
+    if (editSelectedModels.length === 0 || !editProviderName) return;
+    setEditSubmitting(true);
+    try {
+      const update: any = { id, name: editProviderName, models: editSelectedModels };
+      if (editProviderApiKey && !editProviderApiKey.startsWith("••••")) update.apiKey = editProviderApiKey;
+      if (editProviderSecretKey && editProviderSecretKey !== "••••") update.secretKey = editProviderSecretKey;
+      const res = await fetch("/api/ai-providers", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(update),
+      });
+      if (res.ok) { setEditingProviderId(null); fetchProviders(); }
+    } catch { alert("Failed to update"); } finally { setEditSubmitting(false); }
+  }
+
+  async function handleTestEditProvider(provider: AiProvider) {
+    const model = editSelectedModels[0] || provider.models?.[0];
+    if (!model) { setEditTestResult({ success: false, message: "Add at least one model first." }); return; }
+    setEditTestLoading(true); setEditTestResult(null);
+    try {
+      const res = await fetch("/api/ai-providers/test", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerId: provider.id, model }),
+      });
+      const data = await res.json();
+      setEditTestResult({ success: data.success, message: data.error || "Connection successful!" });
+    } catch (err: any) {
+      setEditTestResult({ success: false, message: err.message });
+    } finally { setEditTestLoading(false); }
+  }
+
+  async function handleQuickTest(provider: AiProvider) {
+    const model = provider.models?.[0];
+    if (!model) return;
+    setQuickTestId(provider.id);
+    try {
+      const res = await fetch("/api/ai-providers/test", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerId: provider.id, model }),
+      });
+      const data = await res.json();
+      setQuickTestResults(p => ({ ...p, [provider.id]: { success: data.success, message: data.error || "Connection OK" } }));
+    } catch {
+      setQuickTestResults(p => ({ ...p, [provider.id]: { success: false, message: "Network error" } }));
+    } finally { setQuickTestId(null); }
+  }
+
+  async function handleDeleteProvider(id: string) {
+    const provider = aiProviders.find(p => p.id === id);
+    if (!provider) return;
+    const msg = provider.isDefault
+      ? "This is your default provider. Removing it will fall back to the OPENAI_API_KEY env variable. Continue?"
+      : "Remove this AI provider?";
+    if (!confirm(msg)) return;
+    try {
+      const res = await fetch(`/api/ai-providers?id=${id}`, { method: "DELETE" });
+      if (res.ok) fetchProviders();
+    } catch { alert("Network error"); }
+  }
+
+  async function handleSetDefault(id: string) {
+    try {
+      await fetch("/api/ai-providers", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, isDefault: true }),
+      });
+      fetchProviders();
+    } catch { alert("Failed"); }
+  }
+
+  const activeCount = accounts.filter(a => a.status === "ACTIVE" || a.status === "BUSY").length;
+  const currentPreset = PROVIDER_PRESETS[selectedPreset];
+
+  // ── Render ─────────────────────────────────────────────────────────
+
+  return (
+    <div className="p-8 space-y-6">
+      {/* Header */}
+      <div>
+        <Link href="/" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors mb-3">
+          <ChevronLeft className="h-3.5 w-3.5" />
+          Jobs
+        </Link>
+        <h1 className="text-2xl font-bold text-foreground">Settings</h1>
+        <p className="text-sm text-muted-foreground mt-0.5">Configure LinkedIn scraping accounts and AI model providers.</p>
+      </div>
+
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "accounts" | "models")}>
+        <TabsList>
+          <TabsTrigger value="accounts" className="gap-2">
+            <Users className="h-4 w-4" />
+            Unipile Accounts
+          </TabsTrigger>
+          <TabsTrigger value="models" className="gap-2">
+            <Cpu className="h-4 w-4" />
+            AI Models
+          </TabsTrigger>
+        </TabsList>
+
+        {/* ═══════════════ ACCOUNTS ═══════════════ */}
+        <TabsContent value="accounts" className="mt-5 space-y-5">
+          {/* Stats */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <StatCard label="Total Accounts" value={accounts.length} />
+            <StatCard label="Active Workers" value={activeCount} color="text-emerald-600 dark:text-emerald-400" />
+            <StatCard label="Processing" value={accounts.filter(a => a.status === "BUSY").length} color="text-amber-600 dark:text-amber-400" />
+            <StatCard label="In Cooldown" value={accounts.filter(a => a.status === "COOLDOWN").length} color="text-orange-600 dark:text-orange-400" />
+          </div>
+
+          {/* Accounts card */}
+          <Card>
+            {/* Card header */}
+            <div className="flex items-center justify-between px-6 py-4">
+              <div className="flex items-center gap-2">
+                <Users className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-semibold text-foreground">Accounts</span>
+                {accounts.length > 0 && (
+                  <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">{accounts.length}</span>
+                )}
+              </div>
+              <Button
+                size="sm"
+                variant={showAddForm ? "secondary" : "default"}
+                onClick={() => setShowAddForm(!showAddForm)}
+                className="gap-1.5 h-8 text-xs"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add Account
+              </Button>
+            </div>
+
+            {/* Add form */}
+            {showAddForm && (
+              <>
+                <Separator />
+                <div className="px-6 py-5 bg-muted/30">
+                  <p className="text-sm font-medium text-foreground mb-4">New Unipile Account</p>
+                  <form onSubmit={handleAddAccount} className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Friendly Name</Label>
+                        <Input value={formName} onChange={e => setFormName(e.target.value)} placeholder="LinkedIn Account 1" className="h-9 text-sm" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Account ID <span className="text-destructive">*</span></Label>
+                        <Input value={formAccountId} onChange={e => setFormAccountId(e.target.value)} placeholder="abc123def456" required className="h-9 text-sm" />
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">DSN Endpoint <span className="text-destructive">*</span></Label>
+                      <Input type="url" value={formDsn} onChange={e => setFormDsn(e.target.value)} placeholder="https://api36.unipile.com:16688" required className="h-9 text-sm" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">API Key <span className="text-destructive">*</span></Label>
+                      <Input type="password" value={formApiKey} onChange={e => setFormApiKey(e.target.value)} placeholder="Your Unipile API key" required className="h-9 text-sm font-mono" />
+                    </div>
+
+                    {testResult && (
+                      <AlertBanner success={!!testResult.success} message={testResult.message || testResult.error || ""} />
+                    )}
+                    {formError && <p className="text-sm text-destructive">{formError}</p>}
+
+                    <div className="flex items-center justify-between pt-1">
+                      <Button type="button" variant="outline" size="sm" onClick={handleTestConnection}
+                        disabled={testing || !formDsn || !formApiKey || !formAccountId} className="gap-1.5 h-8 text-xs">
+                        {testing ? <><Spinner className="h-3 w-3" /> Testing...</> : <><Zap className="h-3 w-3" /> Test Connection</>}
+                      </Button>
+                      <div className="flex gap-2">
+                        <Button type="button" variant="ghost" size="sm" className="h-8 text-xs"
+                          onClick={() => { setShowAddForm(false); setTestResult(null); setFormError(null); }}>
+                          Cancel
+                        </Button>
+                        <Button type="submit" size="sm" className="h-8 text-xs"
+                          disabled={formSubmitting || !formAccountId || !formDsn || !formApiKey}>
+                          {formSubmitting ? "Saving..." : "Save Account"}
+                        </Button>
+                      </div>
+                    </div>
+                  </form>
+                </div>
+              </>
+            )}
+
+            <Separator />
+
+            {/* Account list */}
+            <div className="p-4 space-y-2">
+              {accountsLoading ? (
+                <div className="space-y-2 animate-pulse">
+                  {[...Array(2)].map((_, i) => <div key={i} className="h-20 rounded-lg bg-muted" />)}
+                </div>
+              ) : accountsError ? (
+                <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive text-center">
+                  {accountsError}
+                </div>
+              ) : accounts.length === 0 ? (
+                <div className="py-10 text-center">
+                  <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center mx-auto mb-3">
+                    <Users className="h-5 w-5 text-muted-foreground" />
+                  </div>
+                  <p className="text-sm font-medium text-foreground mb-1">No accounts yet</p>
+                  <p className="text-xs text-muted-foreground">Add a Unipile account to start scraping LinkedIn profiles.</p>
+                </div>
+              ) : (
+                accounts.map((account) => {
+                  const sc = STATUS_CONFIG[account.status] || STATUS_CONFIG.DISABLED;
+                  const isEditing = editingId === account.id;
+                  const cooldownRemaining = account.cooldownUntil
+                    ? Math.max(0, Math.ceil((new Date(account.cooldownUntil).getTime() - Date.now()) / 60000))
+                    : 0;
+
+                  return (
+                    <div key={account.id} className={cn("rounded-lg border p-4 transition-colors", sc.card)}>
+                      {isEditing ? (
+                        <div className="space-y-3">
+                          <p className="text-xs font-semibold text-foreground mb-3">Edit Account</p>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <Input value={editName} onChange={e => setEditName(e.target.value)} placeholder="Friendly name" className="h-8 text-xs" />
+                            <Input value={editAccountId} onChange={e => setEditAccountId(e.target.value)} placeholder="Account ID" className="h-8 text-xs" />
+                          </div>
+                          <Input type="url" value={editDsn} onChange={e => setEditDsn(e.target.value)} placeholder="DSN Endpoint" className="h-8 text-xs" />
+                          <Input value={editApiKey} onChange={e => setEditApiKey(e.target.value)} placeholder="API Key (leave masked to keep)" className="h-8 text-xs font-mono" />
+                          <div className="flex justify-end gap-2">
+                            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setEditingId(null)}>Cancel</Button>
+                            <Button size="sm" className="h-7 text-xs bg-emerald-600 hover:bg-emerald-500" onClick={() => handleSaveEdit(account.id)}>Save</Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-start gap-3">
+                          <div className={cn("h-2 w-2 rounded-full mt-2 shrink-0", sc.dot)} />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <span className="text-sm font-medium text-foreground">{account.name || account.accountId}</span>
+                              <Badge variant="outline" className={cn("text-[10px] h-4 px-1.5", sc.badge)}>{sc.label}</Badge>
+                            </div>
+                            <p className="text-[11px] text-muted-foreground font-mono mb-1.5 truncate">
+                              ID: {account.accountId}
+                            </p>
+                            <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-muted-foreground">
+                              <span>DSN: <span className="text-foreground/70">{account.dsn}</span></span>
+                              <span>Key: <span className="font-mono text-foreground/70">••••{account.apiKey.slice(-4)}</span></span>
+                            </div>
+                            <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-muted-foreground mt-1">
+                              <span>Requests: <span className="font-mono font-medium text-foreground/80">{account.requestCount}</span></span>
+                              <span>Today: <span className="font-mono font-medium text-foreground/80">{account.dailyCount}</span></span>
+                              {account.lastUsedAt && (
+                                <span>Last used: {new Date(account.lastUsedAt).toLocaleTimeString()}</span>
+                              )}
+                              {cooldownRemaining > 0 && (
+                                <span className="text-orange-600 dark:text-orange-400 font-medium">Cooldown: {cooldownRemaining}m</span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            <Button variant="ghost" size="icon" className="h-8 w-8"
+                              title={account.status === "DISABLED" ? "Enable" : "Disable"}
+                              onClick={() => handleToggleStatus(account.id, account.status)}>
+                              {account.status === "DISABLED"
+                                ? <Power className="h-3.5 w-3.5 text-emerald-600" />
+                                : <PowerOff className="h-3.5 w-3.5 text-muted-foreground" />}
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit"
+                              onClick={() => startEditing(account)}>
+                              <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive" title="Delete"
+                              disabled={account.status === "BUSY"}
+                              onClick={() => handleDeleteAccount(account.id)}>
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </Card>
+
+          {/* Info note */}
+          <div className="flex gap-3 p-4 rounded-lg border border-dashed text-sm text-muted-foreground">
+            <Info className="h-4 w-4 shrink-0 mt-0.5" />
+            <p>
+              The evaluator connects to <strong className="text-foreground font-medium">Unipile</strong> to retrieve
+              LinkedIn profile data. Enter your account credentials above to enable candidate syncing.
+            </p>
+          </div>
+        </TabsContent>
+
+        {/* ═══════════════ MODELS ═══════════════ */}
+        <TabsContent value="models" className="mt-5 space-y-5">
+          {/* Stats */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <StatCard label="Providers" value={aiProviders.length} />
+            <StatCard label="Total Models" value={aiProviders.reduce((s, p) => s + (p.models?.length || 0), 0)} color="text-primary" />
+            <StatCard label="Default Provider" value={aiProviders.find(p => p.isDefault)?.name || "Env Key"} color="text-emerald-600 dark:text-emerald-400" />
+          </div>
+
+          {/* Providers card */}
+          <Card>
+            {/* Card header */}
+            <div className="flex items-center justify-between px-6 py-4">
+              <div className="flex items-center gap-2">
+                <Server className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-semibold text-foreground">AI Providers</span>
+                {aiProviders.length > 0 && (
+                  <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">{aiProviders.length}</span>
+                )}
+              </div>
+              <Button
+                size="sm"
+                variant={showAddProvider ? "secondary" : "default"}
+                onClick={() => { setShowAddProvider(!showAddProvider); setEditingProviderId(null); }}
+                className="gap-1.5 h-8 text-xs"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add Provider
+              </Button>
+            </div>
+
+            {/* Add provider form */}
+            {showAddProvider && (
+              <>
+                <Separator />
+                <div className="px-6 py-5 bg-muted/30">
+                  <p className="text-sm font-medium text-foreground mb-4">New AI Provider</p>
+                  <form onSubmit={handleAddProvider} className="space-y-4">
+                    {/* Provider type + name */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Provider <span className="text-destructive">*</span></Label>
+                        <select
+                          value={selectedPreset}
+                          onChange={e => handlePresetChange(e.target.value)}
+                          className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
+                        >
+                          {Object.entries(PROVIDER_PRESETS).map(([k, p]) => (
+                            <option key={k} value={k}>{p.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Display Name <span className="text-destructive">*</span></Label>
+                        <Input value={newProviderName} onChange={e => setNewProviderName(e.target.value)} placeholder="My OpenAI" className="h-9 text-sm" />
+                      </div>
+                    </div>
+
+                    {/* Base URL / Region */}
+                    {selectedPreset === "bedrock" ? (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">AWS Region <span className="text-destructive">*</span></Label>
+                        <select
+                          value={newProviderCustomBaseUrl}
+                          onChange={e => setNewProviderCustomBaseUrl(e.target.value)}
+                          className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        >
+                          {BEDROCK_REGIONS.map(r => (
+                            <option key={r.value} value={r.value}>{r.label} ({r.value})</option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : selectedPreset === "custom" ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Base URL <span className="text-destructive">*</span></Label>
+                          <Input type="url" value={newProviderCustomBaseUrl} onChange={e => setNewProviderCustomBaseUrl(e.target.value)} placeholder="https://your-api.com/v1" className="h-9 text-sm" />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">API Format <span className="text-destructive">*</span></Label>
+                          <select
+                            value={newProviderCustomType}
+                            onChange={e => setNewProviderCustomType(e.target.value)}
+                            className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          >
+                            <option value="openai-compatible">OpenAI-Compatible</option>
+                            <option value="anthropic">Anthropic (Claude)</option>
+                          </select>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Base URL <span className="text-muted-foreground">(auto-configured)</span></Label>
+                        <div className="h-9 flex items-center px-3 rounded-md border border-input bg-muted text-sm text-muted-foreground font-mono truncate">
+                          {currentPreset.baseUrl}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Credentials */}
+                    {selectedPreset === "bedrock" ? (
+                      <>
+                        <div className="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950/30 dark:border-amber-800 dark:text-amber-400">
+                          IAM credentials need <code className="font-mono">bedrock:InvokeModel</code> and <code className="font-mono">bedrock:Converse</code> permissions.
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">Access Key ID <span className="text-destructive">*</span></Label>
+                            <Input value={newProviderApiKey} onChange={e => setNewProviderApiKey(e.target.value)} placeholder="AKIAIOSFODNN7EXAMPLE" className="h-9 text-sm font-mono" />
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">Secret Access Key <span className="text-destructive">*</span></Label>
+                            <Input type="password" value={newProviderSecretKey} onChange={e => setNewProviderSecretKey(e.target.value)} placeholder="wJalrXUtnFEMI/K7MDENG/..." className="h-9 text-sm font-mono" />
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">API Key <span className="text-destructive">*</span></Label>
+                        <Input type="password" value={newProviderApiKey} onChange={e => setNewProviderApiKey(e.target.value)} placeholder="Your API key" className="h-9 text-sm font-mono" />
+                      </div>
+                    )}
+
+                    {/* Model selection */}
+                    <div className="space-y-2">
+                      <Label className="text-xs">Models <span className="text-destructive">*</span></Label>
+
+                      {currentPreset.suggestedModels.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {currentPreset.suggestedModels.map(model => (
+                            <button
+                              key={model} type="button" onClick={() => toggleNewModel(model)}
+                              className={cn(
+                                "px-2.5 py-1 rounded-md text-xs font-mono border transition-all",
+                                newSelectedModels.includes(model)
+                                  ? "bg-primary/10 border-primary/40 text-primary"
+                                  : "bg-background border-border text-muted-foreground hover:border-primary/30 hover:text-foreground"
+                              )}
+                            >
+                              {newSelectedModels.includes(model) && "✓ "}{model}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="flex gap-2">
+                        <Input
+                          value={newCustomModelInput}
+                          onChange={e => setNewCustomModelInput(e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addNewCustomModel(); } }}
+                          placeholder={currentPreset.suggestedModels.length > 0 ? "Add another model ID..." : "Enter model ID (e.g. gpt-4o)"}
+                          className="h-8 text-xs font-mono"
+                        />
+                        <Button type="button" variant="outline" size="sm" className="h-8 text-xs shrink-0"
+                          onClick={addNewCustomModel} disabled={!newCustomModelInput.trim()}>Add</Button>
+                      </div>
+
+                      {newSelectedModels.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          <span className="text-[10px] text-muted-foreground self-center">Selected:</span>
+                          {newSelectedModels.map(m => (
+                            <span key={m} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 border border-primary/30 text-[11px] text-primary font-mono">
+                              {m}
+                              <button type="button" onClick={() => setNewSelectedModels(p => p.filter(x => x !== m))}
+                                className="hover:text-destructive transition-colors">×</button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {providerTestResult && (
+                      <AlertBanner success={providerTestResult.success} message={providerTestResult.message} />
+                    )}
+                    {providerFormError && <p className="text-sm text-destructive">{providerFormError}</p>}
+
+                    <div className="flex items-center justify-between pt-1">
+                      <Button type="button" variant="outline" size="sm" className="gap-1.5 h-8 text-xs"
+                        onClick={handleTestNewProvider}
+                        disabled={providerTestLoading || !newProviderApiKey || newSelectedModels.length === 0}>
+                        {providerTestLoading ? <><Spinner className="h-3 w-3" /> Testing...</> : <><Zap className="h-3 w-3" /> Test Connection</>}
+                      </Button>
+                      <div className="flex gap-2">
+                        <Button type="button" variant="ghost" size="sm" className="h-8 text-xs"
+                          onClick={() => { setShowAddProvider(false); setProviderTestResult(null); setProviderFormError(null); }}>
+                          Cancel
+                        </Button>
+                        <Button type="submit" size="sm" className="h-8 text-xs"
+                          disabled={providerSubmitting || !newProviderName || newSelectedModels.length === 0 || !newProviderApiKey || (selectedPreset === "custom" && !newProviderCustomBaseUrl)}>
+                          {providerSubmitting ? "Saving..." : "Save Provider"}
+                        </Button>
+                      </div>
+                    </div>
+                  </form>
+                </div>
+              </>
+            )}
+
+            <Separator />
+
+            {/* Provider list */}
+            <div className="p-4 space-y-2">
+              {providersLoading ? (
+                <div className="space-y-2 animate-pulse">
+                  {[...Array(2)].map((_, i) => <div key={i} className="h-20 rounded-lg bg-muted" />)}
+                </div>
+              ) : aiProviders.length === 0 ? (
+                <div className="py-10 text-center">
+                  <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center mx-auto mb-3">
+                    <Cpu className="h-5 w-5 text-muted-foreground" />
+                  </div>
+                  <p className="text-sm font-medium text-foreground mb-1">No providers configured</p>
+                  <p className="text-xs text-muted-foreground">
+                    Using <code className="px-1 rounded bg-muted font-mono">OPENAI_API_KEY</code> env var by default.
+                    Add providers for Gemini, Claude, Groq, and more.
+                  </p>
+                </div>
+              ) : (
+                aiProviders.map((provider) => {
+                  const isEditing = editingProviderId === provider.id;
+                  const quickResult = quickTestResults[provider.id];
+
+                  return (
+                    <div
+                      key={provider.id}
+                      onClick={!provider.isDefault && !isEditing ? () => handleSetDefault(provider.id) : undefined}
+                      className={cn(
+                        "rounded-lg border p-4 transition-colors",
+                        provider.isDefault
+                          ? "border-primary/30 bg-primary/5"
+                          : `border-border ${!isEditing ? "cursor-pointer hover:border-primary/20 hover:bg-accent/30" : ""}`
+                      )}
+                    >
+                      {isEditing ? (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs font-semibold text-foreground">Edit Provider</span>
+                            <Button variant="ghost" size="sm" className="h-6 text-xs px-2"
+                              onClick={() => { setEditingProviderId(null); setEditTestResult(null); }}>Cancel</Button>
+                          </div>
+
+                          <div className={cn("grid grid-cols-1 gap-3", provider.provider === "bedrock" ? "sm:grid-cols-3" : "sm:grid-cols-2")}>
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Name</Label>
+                              <Input value={editProviderName} onChange={e => setEditProviderName(e.target.value)} className="h-8 text-xs" />
+                            </div>
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">{provider.provider === "bedrock" ? "Access Key ID" : "API Key"} <span className="text-muted-foreground">(masked = keep)</span></Label>
+                              <Input value={editProviderApiKey} onChange={e => setEditProviderApiKey(e.target.value)} className="h-8 text-xs font-mono" />
+                            </div>
+                            {provider.provider === "bedrock" && (
+                              <div className="space-y-1.5">
+                                <Label className="text-xs">Secret Access Key</Label>
+                                <Input type="password" value={editProviderSecretKey} onChange={e => setEditProviderSecretKey(e.target.value)} className="h-8 text-xs font-mono" />
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label className="text-xs">Models</Label>
+                            <div className="flex flex-wrap gap-1.5">
+                              {editSelectedModels.map(m => (
+                                <span key={m} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 border border-primary/30 text-[11px] text-primary font-mono">
+                                  {m}
+                                  <button type="button" onClick={() => toggleEditModel(m)} className="hover:text-destructive transition-colors">×</button>
+                                </span>
+                              ))}
+                            </div>
+                            <div className="flex gap-2">
+                              <Input value={editCustomModelInput} onChange={e => setEditCustomModelInput(e.target.value)}
+                                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addEditCustomModel(); } }}
+                                placeholder="Add model ID..." className="h-8 text-xs font-mono" />
+                              <Button type="button" variant="outline" size="sm" className="h-8 text-xs shrink-0"
+                                onClick={addEditCustomModel} disabled={!editCustomModelInput.trim()}>Add</Button>
+                            </div>
+                          </div>
+
+                          {editTestResult && (
+                            <AlertBanner success={editTestResult.success} message={editTestResult.message} />
+                          )}
+
+                          <div className="flex items-center justify-between pt-1">
+                            <Button type="button" variant="outline" size="sm" className="gap-1.5 h-7 text-xs"
+                              onClick={() => handleTestEditProvider(provider)} disabled={editTestLoading}>
+                              {editTestLoading ? <><Spinner className="h-3 w-3" /> Testing...</> : <><Zap className="h-3 w-3" /> Test</>}
+                            </Button>
+                            <Button size="sm" className="h-7 text-xs bg-emerald-600 hover:bg-emerald-500"
+                              onClick={() => handleSaveEditProvider(provider.id)}
+                              disabled={editSubmitting || editSelectedModels.length === 0 || !editProviderName}>
+                              {editSubmitting ? "Saving..." : "Save Changes"}
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-start gap-3">
+                          <div className={cn("h-2 w-2 rounded-full mt-2 shrink-0", provider.isDefault ? "bg-primary" : "bg-muted-foreground/30")} />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-2 flex-wrap">
+                              <span className="text-sm font-medium text-foreground">{provider.name}</span>
+                              {provider.isDefault && (
+                                <Badge variant="outline" className="text-[10px] h-4 px-1.5 bg-primary/10 text-primary border-primary/30">
+                                  <Star className="h-2.5 w-2.5 mr-0.5" />
+                                  Default
+                                </Badge>
+                              )}
+                              <Badge variant="secondary" className="text-[10px] h-4 px-1.5">
+                                {PROVIDER_TYPE_LABELS[provider.provider] || provider.provider}
+                              </Badge>
+                              {!provider.isDefault && (
+                                <span className="text-[10px] text-muted-foreground">(click to set as default)</span>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              {(provider.models || []).map(m => (
+                                <span key={m} className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-mono border border-border/60">
+                                  {m}
+                                </span>
+                              ))}
+                            </div>
+                            {quickResult && (
+                              <div className={cn("flex items-center gap-1 text-xs mt-2", quickResult.success ? "text-emerald-600 dark:text-emerald-400" : "text-destructive")}>
+                                {quickResult.success ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+                                {quickResult.message}
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            <Button variant="ghost" size="icon" className="h-8 w-8" title="Test connection"
+                              disabled={quickTestId === provider.id}
+                              onClick={e => { e.stopPropagation(); handleQuickTest(provider); }}>
+                              {quickTestId === provider.id ? <Spinner className="h-3.5 w-3.5" /> : <Zap className="h-3.5 w-3.5 text-muted-foreground" />}
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit"
+                              onClick={e => { e.stopPropagation(); startEditProvider(provider); setShowAddProvider(false); }}>
+                              <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive" title="Delete"
+                              onClick={e => { e.stopPropagation(); handleDeleteProvider(provider.id); }}>
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </Card>
+
+          {/* Info note */}
+          <div className="flex gap-3 p-4 rounded-lg border border-dashed text-sm text-muted-foreground">
+            <Info className="h-4 w-4 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p>
+                Add any provider supporting <strong className="text-foreground font-medium">OpenAI-compatible</strong> API
+                (Gemini, Groq, Mistral, DeepSeek, Ollama) or <strong className="text-foreground font-medium">Anthropic</strong>&apos;s Messages API.
+              </p>
+              <p>
+                The <strong className="text-foreground font-medium">default</strong> provider is used when no specific provider is chosen.
+                Falls back to <code className="px-1 rounded bg-muted font-mono text-xs">OPENAI_API_KEY</code> if none configured.
+              </p>
+            </div>
+          </div>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

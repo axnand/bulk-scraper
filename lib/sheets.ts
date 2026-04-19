@@ -6,6 +6,9 @@
  * objects so the script can create per-JD tabs with grouped headers.
  */
 
+import { getEffectiveRules } from "@/lib/analyzer";
+import type { ScoringRules, CustomScoringRule, RuleDefinition } from "@/lib/analyzer";
+
 export interface SheetColumn {
   key: string;
   label: string;
@@ -26,6 +29,7 @@ export interface ScoringRulesConfig {
   mba?: boolean;
   skillMatch?: boolean;
   location?: boolean;
+  [key: string]: boolean | undefined;
 }
 
 export async function exportToSheet(
@@ -86,14 +90,21 @@ export function buildSheetPayload(
   candidateUrl: string,
   analysisResult: any,
   jdTitle: string,
-  scoringRules?: ScoringRulesConfig
+  scoringRules?: ScoringRulesConfig,
+  jobConfig?: any
 ): SheetExportPayload {
   const info = analysisResult.candidateInfo || {};
   const sc = analysisResult.scoring || {};
-  const rules = scoringRules || {};
-  const customRules = analysisResult.customScoringRules || [];
 
-  // ── Build dynamic columns schema (only enabled rules get columns) ──
+  const effectiveRules = getEffectiveRules({
+    scoringRules: scoringRules as ScoringRules,
+    customScoringRules: (analysisResult.customScoringRules || []) as CustomScoringRule[],
+    builtInRuleDescriptions: jobConfig?.builtInRuleDescriptions,
+    ruleDefinitions: jobConfig?.ruleDefinitions,
+  });
+  const enabledRules = effectiveRules.filter((r) => r.enabled);
+
+  // ── Build dynamic columns schema ──
   const columns: SheetColumn[] = [
     { key: "date", label: "Date" },
     { key: "name", label: "Name" },
@@ -106,47 +117,16 @@ export function buildSheetPayload(
     { key: "currentLocation", label: "Current Location" },
   ];
 
-  // Scoring columns — only for enabled rules
-  if (rules.stability !== false) {
-    columns.push({ key: "stability", label: "Stability (10)" });
-  }
-  if (rules.location !== false) {
-    columns.push({ key: "locationMatch", label: "Location (5)" });
-  }
-  if (rules.growth !== false) {
-    columns.push(
-      { key: "promotionSameCompany", label: "Same Company (15)", group: "Growth" },
-      { key: "promotionWithChange", label: "With Change (10)", group: "Growth" },
-    );
-  }
-  if (rules.graduation !== false) {
-    columns.push(
-      { key: "gradTier1", label: "Tier 1 (15)", group: "Graduation" },
-      { key: "gradTier2", label: "Tier 2 (10)", group: "Graduation" },
-    );
-  }
-  if (rules.companyType !== false) {
-    columns.push(
-      { key: "salesCRM", label: "Sales/CRM (15)", group: "Company Type" },
-      { key: "otherB2B", label: "Other B2B (10)", group: "Company Type" },
-    );
-  }
-  if (rules.mba !== false) {
-    columns.push(
-      { key: "mbaA", label: "MBA A (15)", group: "MBA" },
-      { key: "mbaOthers", label: "MBA Others (10)", group: "MBA" },
-    );
-  }
-  if (rules.skillMatch !== false) {
-    columns.push({ key: "skillsetMatch", label: "Skill Match (10)" });
+  for (const rule of enabledRules) {
+    for (const param of rule.scoreParameters) {
+      columns.push({
+        key: param.key,
+        label: `${param.label} (${param.maxPoints})`,
+        group: rule.scoreParameters.length > 1 ? rule.label : undefined,
+      });
+    }
   }
 
-  // Custom scoring rules (dynamic)
-  for (const r of customRules) {
-    columns.push({ key: `custom_${r.id}`, label: `${r.name} (${r.maxPoints})` });
-  }
-
-  // Manual entry + summary columns (always present)
   columns.push(
     { key: "currentCTC", label: "Current CTC" },
     { key: "joiningCTCCurrentOrg", label: "Joining CTC in Current Org" },
@@ -158,7 +138,7 @@ export function buildSheetPayload(
     { key: "source", label: "Source" },
   );
 
-  // ── Build row data (all keys — Apps Script maps by column key) ──
+  // ── Build row data ──
   const rowData: Record<string, any> = {
     date: new Date().toLocaleDateString(),
     name: info.name || "",
@@ -169,17 +149,6 @@ export function buildSheetPayload(
     totalExperienceYears: sv(info.totalExperienceYears),
     companiesSwitched: sv(info.companiesSwitched),
     currentLocation: info.currentLocation || "",
-    stability: sv(sc.stability),
-    locationMatch: sv(sc.locationMatch),
-    promotionSameCompany: sv(sc.promotionSameCompany),
-    promotionWithChange: sv(sc.promotionWithChange),
-    gradTier1: sv(sc.gradTier1),
-    gradTier2: sv(sc.gradTier2),
-    salesCRM: sv(sc.salesCRM),
-    otherB2B: sv(sc.otherB2B),
-    mbaA: sv(sc.mbaA),
-    mbaOthers: sv(sc.mbaOthers),
-    skillsetMatch: sv(sc.skillsetMatch),
     currentCTC: "",
     joiningCTCCurrentOrg: "",
     expectedCTC: "",
@@ -190,12 +159,13 @@ export function buildSheetPayload(
         ? `${analysisResult.totalScore}/${analysisResult.maxScore}`
         : sv(analysisResult.totalScore),
     scorePercent: sv(analysisResult.scorePercent),
-    source: "Bulk Scraper",
+    source: "Salescode Hirro",
   };
 
-  // Add custom rule scores
-  for (const r of customRules) {
-    rowData[`custom_${r.id}`] = sv(sc[`custom_${r.id}`]);
+  for (const rule of enabledRules) {
+    for (const param of rule.scoreParameters) {
+      rowData[param.key] = sv(sc[param.key]);
+    }
   }
 
   return { jdTitle, columns, rowData };
@@ -209,13 +179,14 @@ export function buildSheetPayload(
 export function buildBulkExportData(
   tasks: { url: string; analysisResult: any }[],
   jdTitle: string,
-  scoringRules?: ScoringRulesConfig
+  scoringRules?: ScoringRulesConfig,
+  jobConfig?: any
 ): { columns: SheetColumn[]; rows: Record<string, any>[] } {
   let columns: SheetColumn[] = [];
   const rows: Record<string, any>[] = [];
 
   for (const task of tasks) {
-    const payload = buildSheetPayload(task.url, task.analysisResult, jdTitle, scoringRules);
+    const payload = buildSheetPayload(task.url, task.analysisResult, jdTitle, scoringRules, jobConfig);
     if (columns.length === 0) columns = payload.columns;
     rows.push(payload.rowData);
   }

@@ -1,6 +1,52 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+export async function PUT(
+    req: NextRequest,
+    { params }: { params: Promise<{ jobId: string }> }
+) {
+    try {
+        const { jobId } = await params;
+        const body = await req.json();
+
+        const jobUpdate: Record<string, any> = {};
+        if (body.title !== undefined) jobUpdate.title = body.title;
+        if (body.department !== undefined) jobUpdate.department = body.department;
+
+        const configFields = [
+            "jobDescription", "scoringRules", "customScoringRules",
+            "aiModel", "aiProviderId", "sheetWebAppUrl", "minScoreThreshold",
+            "promptRole", "promptGuidelines", "criticalInstructions",
+            "builtInRuleDescriptions", "jdTitle",
+        ];
+        const hasConfigUpdate = configFields.some(f => body[f] !== undefined);
+
+        if (hasConfigUpdate) {
+            const existing = await prisma.job.findUnique({
+                where: { id: jobId },
+                select: { config: true },
+            });
+            const existingConfig = existing?.config ? JSON.parse(existing.config) : {};
+            const newConfig = { ...existingConfig };
+            configFields.forEach(f => {
+                if (body[f] !== undefined) newConfig[f] = body[f];
+            });
+            if (body.title) newConfig.jdTitle = body.title;
+            jobUpdate.config = JSON.stringify(newConfig);
+        }
+
+        const updated = await prisma.job.update({
+            where: { id: jobId },
+            data: jobUpdate,
+        });
+
+        return NextResponse.json(updated);
+    } catch (error) {
+        console.error("Error updating job:", error);
+        return NextResponse.json({ error: "Failed to update job" }, { status: 500 });
+    }
+}
+
 export async function GET(
     req: NextRequest,
     { params }: { params: Promise<{ jobId: string }> }

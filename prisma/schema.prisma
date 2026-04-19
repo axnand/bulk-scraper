@@ -26,16 +26,36 @@ model Account {
   tasks         Task[]
 }
 
+model Requisition {
+  id         String   @id @default(cuid())
+  title      String   @default("Untitled Role")
+  department String   @default("")
+  config     String?  @db.Text // JSON: JD, scoring rules, AI model, sheet target — the long-lived role config
+  archived   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  jobs       Job[]
+
+  @@index([archived])
+}
+
 model Job {
   id             String   @id @default(cuid())
+  requisitionId  String?  // FK to the role this run belongs to (nullable for legacy rows)
   status         String   @default("PENDING") // PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED
   totalTasks     Int
   processedCount Int      @default(0)
   successCount   Int      @default(0)
   failedCount    Int      @default(0)
-  config         String?  @db.Text // JSON: { jobDescription, customPrompt, scoringRules, customScoringRules, sheetWebAppUrl, aiModel }
+  config         String?  @db.Text // JSON snapshot of the requisition config at run time
   createdAt      DateTime @default(now())
   tasks          Task[]
+  title          String   @default("Untitled Requisition")
+  department     String   @default("")
+
+  requisition    Requisition? @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+
+  @@index([requisitionId])
 }
 
 model Task {
@@ -133,6 +153,8 @@ model EvaluationConfig {
   builtInRuleDescriptions String?  @db.Text  // JSON: {"growth":"...","mba":"...",...}
   scoringRules            String?  @db.Text  // JSON: {"stability":true,"growth":false,...}
   customScoringRules      String?  @db.Text  // JSON: [{id,name,maxPoints,criteria,enabled}]
+  ruleDefinitions         String?  @db.Text  // JSON: Record<ruleKey, Partial<RuleDefinition>> — per-rule overrides for scoreParameters + logFormat
+  promptEnvelope          String?  @db.Text  // JSON: Partial<PromptEnvelope> — overrides for identity, section headers, JSON schema wrapper, footer
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
 }
