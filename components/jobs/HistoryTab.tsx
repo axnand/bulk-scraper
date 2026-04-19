@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle,
 } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Pause, Play, XCircle, Eye, AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 
 interface RunSummary {
@@ -74,7 +75,10 @@ function relativeTime(iso: string): string {
 }
 
 export function HistoryTab({ runs, onRunAction, actionLoading }: Props) {
+  const [sheetOpen, setSheetOpen] = useState(false);
   const [drawerRunId, setDrawerRunId] = useState<string | null>(null);
+  // Keep last selected run alive during the close animation
+  const lastRunRef = useRef<{ run: RunSummary; number: number } | null>(null);
 
   if (runs.length === 0) {
     return (
@@ -95,9 +99,18 @@ export function HistoryTab({ runs, onRunAction, actionLoading }: Props) {
     await onRunAction(runId, "cancel");
   }
 
-  const drawerRun = drawerRunId ? runs.find(r => r.id === drawerRunId) ?? null : null;
-  const drawerRunIndex = drawerRunId ? runs.findIndex(r => r.id === drawerRunId) : -1;
-  const drawerRunNumber = drawerRunIndex >= 0 ? runs.length - drawerRunIndex : 0;
+  function openDrawer(run: RunSummary, runNumber: number) {
+    lastRunRef.current = { run, number: runNumber };
+    setDrawerRunId(run.id);
+    setSheetOpen(true);
+  }
+
+  const activeRunEntry = drawerRunId ? runs.find(r => r.id === drawerRunId) : null;
+  if (activeRunEntry) {
+    const idx = runs.findIndex(r => r.id === drawerRunId);
+    lastRunRef.current = { run: activeRunEntry, number: runs.length - idx };
+  }
+  const drawerContent = lastRunRef.current;
 
   return (
     <div className="max-w-5xl">
@@ -121,7 +134,8 @@ export function HistoryTab({ runs, onRunAction, actionLoading }: Props) {
           return (
             <div
               key={run.id}
-              className="bg-card border border-border rounded-xl p-4 space-y-3 hover:border-muted-foreground/30 transition-colors"
+              onClick={() => openDrawer(run, runNumber)}
+              className="bg-card border border-border rounded-xl p-4 space-y-3 hover:border-primary/40 hover:shadow-sm transition-all cursor-pointer"
             >
               <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div className="flex items-center gap-3 flex-wrap">
@@ -140,7 +154,7 @@ export function HistoryTab({ runs, onRunAction, actionLoading }: Props) {
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
                   {isActive && (
                     <>
                       {run.status === "PAUSED" ? (
@@ -178,15 +192,7 @@ export function HistoryTab({ runs, onRunAction, actionLoading }: Props) {
                       </Button>
                     </>
                   )}
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setDrawerRunId(run.id)}
-                    className="gap-1.5 h-8"
-                  >
-                    <Eye className="h-3.5 w-3.5" />
-                    View
-                  </Button>
+                  <Eye className="h-4 w-4 text-muted-foreground" />
                 </div>
               </div>
 
@@ -222,13 +228,13 @@ export function HistoryTab({ runs, onRunAction, actionLoading }: Props) {
         })}
       </div>
 
-      <Sheet open={drawerRun !== null} onOpenChange={o => !o && setDrawerRunId(null)}>
+      <Sheet open={sheetOpen} onOpenChange={o => { if (!o) setSheetOpen(false); }}>
         <SheetContent
           side="right"
           className="w-[min(720px,90vw)] sm:max-w-none overflow-y-auto p-0"
         >
-          {drawerRun && (
-            <RunDetailDrawer run={drawerRun} runNumber={drawerRunNumber} />
+          {drawerContent && (
+            <RunDetailDrawer run={drawerContent.run} runNumber={drawerContent.number} />
           )}
         </SheetContent>
       </Sheet>

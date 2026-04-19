@@ -280,12 +280,10 @@ export function JdDescriptionTab({ requisitionId, initialConfig, initialTitle, o
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          scoringRules: cfg.scoringRules,
-          customScoringRules: cfg.customScoringRules,
+          requisitionId,
           promptRole,
           promptGuidelines,
           criticalInstructions,
-          builtInRuleDescriptions: cfg.builtInRuleDescriptions,
           jobDescription,
         }),
       });

@@ -47,6 +47,8 @@ export async function GET(req: NextRequest) {
         id: r.id,
         title: r.title,
         department: r.department,
+        recruiterName: r.recruiterName,
+        startDate: r.startDate,
         archived: r.archived,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
@@ -76,6 +78,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const title = (body?.title || "").trim();
     const department = (body?.department || "").trim();
+    const recruiterName = (body?.recruiterName || "").trim();
+    const startDate = body?.startDate ? new Date(body.startDate) : null;
 
     if (!title) {
       return NextResponse.json({ error: "Title is required" }, { status: 400 });
@@ -84,7 +88,7 @@ export async function POST(req: NextRequest) {
     const config = body?.config ? JSON.stringify(body.config) : null;
 
     const requisition = await prisma.requisition.create({
-      data: { title, department, config },
+      data: { title, department, recruiterName, ...(startDate ? { startDate } : {}), config },
     });
 
     return NextResponse.json(requisition);

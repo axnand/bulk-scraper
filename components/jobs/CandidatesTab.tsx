@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { estimateCost, formatCost } from "@/lib/model-pricing";
 import { getEffectiveRules } from "@/lib/analyzer";
+import { FilterBar, FilterDivider, FilterPills, FilterText, FilterNumber, SortSelect } from "@/components/ui/filter-bar";
 
 interface TaskResult {
   id: string;
@@ -45,6 +46,10 @@ interface Props {
 export function CandidatesTab({ data, requisitionId, onRefresh }: Props) {
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [filterFit, setFilterFit] = useState("All");
+  const [filterLocation, setFilterLocation] = useState("");
+  const [filterMinExp, setFilterMinExp] = useState("");
+  const [sort, setSort] = useState("score-desc");
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [exportLoading, setExportLoading] = useState(false);
@@ -130,46 +135,95 @@ export function CandidatesTab({ data, requisitionId, onRefresh }: Props) {
       {/* Completed Profiles */}
       {completedTasks.length > 0 && (
         <section className="space-y-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h2 className="text-lg font-semibold text-foreground shrink-0">
-              Scraped Profiles ({completedTasks.length})
-            </h2>
-            {analysedTasks.length > 0 && !selectMode && (
-              <button
-                onClick={() => setSelectMode(true)}
-                className="ml-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/15 text-primary border border-primary/25 hover:bg-primary/25 transition-colors"
-              >
-                Select to export
-              </button>
-            )}
-            {selectMode && (
-              <button
-                onClick={() => setSelectedIds(allSelected ? new Set() : new Set(allAnalysedIds))}
-                className="ml-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-muted text-muted-foreground hover:bg-accent transition-colors"
-              >
-                {allSelected ? "Deselect all" : "Select all"}
-              </button>
-            )}
-            <div className="flex-1" />
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-lg font-semibold text-foreground shrink-0">
+                Scraped Profiles ({completedTasks.length})
+              </h2>
+              {analysedTasks.length > 0 && !selectMode && (
+                <button
+                  onClick={() => setSelectMode(true)}
+                  className="ml-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/15 text-primary border border-primary/25 hover:bg-primary/25 transition-colors"
+                >
+                  Select to export
+                </button>
+              )}
+              {selectMode && (
+                <button
+                  onClick={() => setSelectedIds(allSelected ? new Set() : new Set(allAnalysedIds))}
+                  className="ml-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-muted text-muted-foreground hover:bg-accent transition-colors"
+                >
+                  {allSelected ? "Deselect all" : "Select all"}
+                </button>
+              )}
+            </div>
+
             {completedTasks.length > 1 && (
-              <input
-                type="text"
-                placeholder="Search by name..."
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                className="bg-input border border-border rounded-lg px-3 py-1.5 text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary w-full max-w-xs"
-              />
+              <FilterBar>
+                <FilterPills
+                  value={filterFit}
+                  onChange={setFilterFit}
+                  options={[
+                    { label: "All", value: "All", color: "default" },
+                    { label: "Strong Fit", value: "Strong Fit", color: "emerald" },
+                    { label: "Moderate Fit", value: "Moderate Fit", color: "amber" },
+                    { label: "Not a Fit", value: "Not a Fit", color: "rose" },
+                  ]}
+                />
+                <FilterDivider />
+                <FilterText value={filterLocation} onChange={setFilterLocation} placeholder="Location…" icon="location" />
+                <FilterNumber value={filterMinExp} onChange={setFilterMinExp} placeholder="Min exp (yrs)" />
+                <FilterText value={search} onChange={setSearch} placeholder="Name…" icon="search" />
+                <FilterDivider />
+                <SortSelect
+                  value={sort}
+                  onChange={setSort}
+                  options={[
+                    { label: "Score: High → Low", value: "score-desc" },
+                    { label: "Score: Low → High", value: "score-asc" },
+                    { label: "Experience: High → Low", value: "exp-desc" },
+                    { label: "Experience: Low → High", value: "exp-asc" },
+                    { label: "Name: A → Z", value: "name-asc" },
+                  ]}
+                />
+              </FilterBar>
             )}
           </div>
 
           <div className="space-y-3">
             {completedTasks
               .filter(task => {
-                if (!search.trim()) return true;
                 const profile = task.result;
+                const analysis = task.analysisResult;
                 if (!profile) return false;
-                const fullName = `${profile.first_name || ""} ${profile.last_name || ""}`.toLowerCase();
-                return fullName.includes(search.toLowerCase().trim());
+                if (search.trim()) {
+                  const fullName = `${profile.first_name || ""} ${profile.last_name || ""}`.toLowerCase();
+                  if (!fullName.includes(search.toLowerCase().trim())) return false;
+                }
+                if (filterFit !== "All" && analysis?.recommendation !== filterFit) return false;
+                if (filterLocation.trim()) {
+                  const loc = (analysis?.candidateInfo?.currentLocation || profile.location || "").toLowerCase();
+                  if (!loc.includes(filterLocation.toLowerCase().trim())) return false;
+                }
+                if (filterMinExp.trim()) {
+                  const exp = analysis?.candidateInfo?.totalExperienceYears ?? -1;
+                  if (exp < parseFloat(filterMinExp)) return false;
+                }
+                return true;
+              })
+              .sort((a, b) => {
+                const aA = a.analysisResult;
+                const bA = b.analysisResult;
+                if (sort === "score-desc") return (bA?.scorePercent ?? -1) - (aA?.scorePercent ?? -1);
+                if (sort === "score-asc") return (aA?.scorePercent ?? -1) - (bA?.scorePercent ?? -1);
+                if (sort === "exp-desc") return (bA?.candidateInfo?.totalExperienceYears ?? -1) - (aA?.candidateInfo?.totalExperienceYears ?? -1);
+                if (sort === "exp-asc") return (aA?.candidateInfo?.totalExperienceYears ?? -1) - (bA?.candidateInfo?.totalExperienceYears ?? -1);
+                if (sort === "name-asc") {
+                  const aName = `${a.result?.first_name || ""} ${a.result?.last_name || ""}`.trim();
+                  const bName = `${b.result?.first_name || ""} ${b.result?.last_name || ""}`.trim();
+                  return aName.localeCompare(bName);
+                }
+                return 0;
               })
               .map(task => {
                 const isSelected = selectedIds.has(task.id);
@@ -372,14 +426,9 @@ function ProfileCard({ task, jobConfig, expanded, onToggle }: { task: TaskResult
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-foreground font-medium truncate">{name}</p>
-            {task.runIndex !== undefined && (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-muted text-[10px] font-mono text-muted-foreground border border-border shrink-0">
-                Run #{task.runIndex}
-              </span>
-            )}
             {task.addedAt && (
-              <span className="text-[10px] text-muted-foreground/70 shrink-0">
-                added {new Date(task.addedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+              <span className="text-[10px] text-muted-foreground/60 shrink-0">
+                {new Date(task.addedAt).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}
               </span>
             )}
           </div>
@@ -388,19 +437,19 @@ function ProfileCard({ task, jobConfig, expanded, onToggle }: { task: TaskResult
         </div>
 
         {analysis && (
-          <div className="text-center shrink-0">
-            <div className={`inline-flex items-center justify-center w-12 h-12 rounded-full border-2 ${
-              analysis.scorePercent >= 70 ? "border-emerald-500 text-emerald-400"
-              : analysis.scorePercent >= 40 ? "border-amber-500 text-amber-400"
-              : "border-rose-500 text-rose-400"
-            }`}>
-              <span className="text-sm font-bold">{analysis.scorePercent}%</span>
-            </div>
-            <p className={`text-[10px] mt-0.5 font-medium ${
-              analysis.recommendation === "Strong Fit" ? "text-emerald-400"
-              : analysis.recommendation === "Moderate Fit" ? "text-amber-400"
-              : "text-rose-400"
-            }`}>{analysis.recommendation}</p>
+          <div className="flex flex-col items-end gap-1 shrink-0 min-w-[72px]">
+            <span className={`text-xl font-bold tabular-nums leading-none ${
+              analysis.scorePercent >= 70 ? "text-emerald-500"
+              : analysis.scorePercent >= 40 ? "text-amber-500"
+              : "text-rose-500"
+            }`}>{analysis.scorePercent}%</span>
+            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+              analysis.recommendation === "Strong Fit"
+                ? "bg-emerald-500/10 text-emerald-500"
+                : analysis.recommendation === "Moderate Fit"
+                ? "bg-amber-500/10 text-amber-500"
+                : "bg-rose-500/10 text-rose-500"
+            }`}>{analysis.recommendation}</span>
           </div>
         )}
 

@@ -19,10 +19,10 @@ export function Sidebar() {
       {/* Logo */}
       <div className="flex items-center gap-2.5 px-5 py-5 border-b border-border">
         <div className="h-8 w-8 rounded-md bg-primary flex items-center justify-center shrink-0">
-          <span className="text-primary-foreground text-xs font-bold">SH</span>
+          <span className="text-primary-foreground text-xs font-bold">H</span>
         </div>
         <div>
-          <p className="text-sm font-semibold text-foreground">Salescode Hirro</p>
+          <p className="text-sm font-semibold text-foreground">Hirro</p>
           <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Recruitment Engine</p>
         </div>
       </div>

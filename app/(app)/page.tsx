@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Label } from "@/components/ui/label";
 import { LayoutGrid, List, Plus, Search } from "lucide-react";
 import { JobCard, RequisitionSummary } from "@/components/jobs/JobCard";
+import { CreatableCombobox } from "@/components/ui/creatable-combobox";
 
 export default function JobsPage() {
   const router = useRouter();
@@ -18,7 +19,18 @@ export default function JobsPage() {
   const [showNewModal, setShowNewModal] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newDepartment, setNewDepartment] = useState("");
+  const [newRecruiter, setNewRecruiter] = useState("");
+  const [newStartDate, setNewStartDate] = useState("");
   const [creating, setCreating] = useState(false);
+
+  const [editingReq, setEditingReq] = useState<RequisitionSummary | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDepartment, setEditDepartment] = useState("");
+  const [editRecruiter, setEditRecruiter] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
   async function fetchReqs() {
@@ -52,7 +64,12 @@ export default function JobsPage() {
       const res = await fetch("/api/requisitions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: newTitle.trim(), department: newDepartment.trim() }),
+        body: JSON.stringify({
+          title: newTitle.trim(),
+          department: newDepartment.trim(),
+          recruiterName: newRecruiter.trim(),
+          startDate: newStartDate || null,
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "Failed to create" }));
@@ -63,6 +80,8 @@ export default function JobsPage() {
       setShowNewModal(false);
       setNewTitle("");
       setNewDepartment("");
+      setNewRecruiter("");
+      setNewStartDate("");
       router.push(`/jobs/JD-${data.id.slice(0, 8).toUpperCase()}`);
     } catch (err: any) {
       setCreateError(err?.message || "Failed to create");
@@ -70,6 +89,63 @@ export default function JobsPage() {
       setCreating(false);
     }
   }
+
+  function openEdit(r: RequisitionSummary) {
+    setEditingReq(r);
+    setEditTitle(r.title);
+    setEditDepartment(r.department);
+    setEditRecruiter(r.recruiterName);
+    setSaveError(null);
+    setConfirmDelete(false);
+  }
+
+  async function handleDelete() {
+    if (!editingReq) return;
+    setDeleting(true);
+    try {
+      await fetch(`/api/requisitions/${editingReq.id}`, { method: "DELETE" });
+      setReqs(prev => prev.filter(r => r.id !== editingReq.id));
+      setEditingReq(null);
+    } finally {
+      setDeleting(false);
+      setConfirmDelete(false);
+    }
+  }
+
+  async function handleSaveEdit() {
+    if (!editingReq || !editTitle.trim()) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const res = await fetch(`/api/requisitions/${editingReq.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: editTitle.trim(),
+          department: editDepartment.trim(),
+          recruiterName: editRecruiter.trim(),
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Failed to save" }));
+        setSaveError(err.error || "Failed to save");
+        return;
+      }
+      setReqs(prev => prev.map(r =>
+        r.id === editingReq.id
+          ? { ...r, title: editTitle.trim(), department: editDepartment.trim(), recruiterName: editRecruiter.trim() }
+          : r
+      ));
+      setEditingReq(null);
+    } catch (err: any) {
+      setSaveError(err?.message || "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const existingDepartments = Array.from(new Set(reqs.map(r => r.department).filter(Boolean)));
+  const existingRecruiters = Array.from(new Set(reqs.map(r => r.recruiterName).filter(Boolean)));
 
   const filtered = reqs.filter(r => {
     if (!search.trim()) return true;
@@ -149,6 +225,7 @@ export default function JobsPage() {
               requisition={r}
               viewMode={viewMode}
               onClick={() => router.push(`/jobs/JD-${r.id.slice(0, 8).toUpperCase()}`)}
+              onEdit={openEdit}
             />
           ))}
 
@@ -197,12 +274,31 @@ export default function JobsPage() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="req-dept">Department</Label>
-              <Input
+              <CreatableCombobox
                 id="req-dept"
-                placeholder="e.g. Engineering"
+                options={existingDepartments}
                 value={newDepartment}
-                onChange={e => setNewDepartment(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && handleCreate()}
+                onChange={setNewDepartment}
+                placeholder="e.g. Engineering"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="req-recruiter">Primary Recruiter</Label>
+              <CreatableCombobox
+                id="req-recruiter"
+                options={existingRecruiters}
+                value={newRecruiter}
+                onChange={setNewRecruiter}
+                placeholder="e.g. Priya Sharma"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="req-start">Start Date</Label>
+              <Input
+                id="req-start"
+                type="date"
+                value={newStartDate}
+                onChange={e => setNewStartDate(e.target.value)}
               />
             </div>
             {createError && (
@@ -213,6 +309,67 @@ export default function JobsPage() {
             <Button variant="ghost" onClick={() => setShowNewModal(false)}>Cancel</Button>
             <Button onClick={handleCreate} disabled={creating || !newTitle.trim()}>
               {creating ? "Creating..." : "Create Role"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Quick Edit Modal */}
+      <Dialog open={!!editingReq} onOpenChange={open => !open && setEditingReq(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Role</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-title">Job Title <span className="text-destructive">*</span></Label>
+              <Input
+                id="edit-title"
+                value={editTitle}
+                onChange={e => setEditTitle(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleSaveEdit()}
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-dept">Department</Label>
+              <CreatableCombobox
+                id="edit-dept"
+                options={existingDepartments}
+                value={editDepartment}
+                onChange={setEditDepartment}
+                placeholder="e.g. Engineering"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-recruiter">Primary Recruiter</Label>
+              <CreatableCombobox
+                id="edit-recruiter"
+                options={existingRecruiters}
+                value={editRecruiter}
+                onChange={setEditRecruiter}
+                placeholder="e.g. Priya Sharma"
+              />
+            </div>
+            {saveError && <p className="text-xs text-destructive">{saveError}</p>}
+          </div>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            {confirmDelete ? (
+              <div className="flex items-center gap-2 w-full sm:w-auto mr-auto">
+                <span className="text-xs text-destructive">Delete this role?</span>
+                <Button size="sm" variant="destructive" onClick={handleDelete} disabled={deleting}>
+                  {deleting ? "Deleting..." : "Yes, delete"}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setConfirmDelete(false)} disabled={deleting}>No</Button>
+              </div>
+            ) : (
+              <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive hover:bg-destructive/10 mr-auto" onClick={() => setConfirmDelete(true)}>
+                Delete
+              </Button>
+            )}
+            <Button variant="ghost" onClick={() => setEditingReq(null)}>Cancel</Button>
+            <Button onClick={handleSaveEdit} disabled={saving || !editTitle.trim()}>
+              {saving ? "Saving..." : "Save"}
             </Button>
           </DialogFooter>
         </DialogContent>

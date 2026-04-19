@@ -27,14 +27,16 @@ model Account {
 }
 
 model Requisition {
-  id         String   @id @default(cuid())
-  title      String   @default("Untitled Role")
-  department String   @default("")
-  config     String?  @db.Text // JSON: JD, scoring rules, AI model, sheet target — the long-lived role config
-  archived   Boolean  @default(false)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  jobs       Job[]
+  id            String    @id @default(cuid())
+  title         String    @default("Untitled Role")
+  department    String    @default("")
+  recruiterName String    @default("")
+  startDate     DateTime?
+  config        String?   @db.Text // JSON: JD, scoring rules, AI model, sheet target — the long-lived role config
+  archived      Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  jobs          Job[]
 
   @@index([archived])
 }

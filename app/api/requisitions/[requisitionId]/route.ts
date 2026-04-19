@@ -69,6 +69,8 @@ export async function PUT(
     const patch: Record<string, any> = {};
     if (typeof body.title === "string") patch.title = body.title;
     if (typeof body.department === "string") patch.department = body.department;
+    if (typeof body.recruiterName === "string") patch.recruiterName = body.recruiterName;
+    if ("startDate" in body) patch.startDate = body.startDate ? new Date(body.startDate) : null;
     if (typeof body.archived === "boolean") patch.archived = body.archived;
 
     // Config merge — only specified keys overwrite

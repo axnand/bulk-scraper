@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -108,13 +108,24 @@ const VALID_TABS = new Set(["candidates", "history", "dashboard", "rules", "jd"]
 export default function RequisitionDetailPage() {
   const { jobId: requisitionId } = useParams<{ jobId: string }>();
   const searchParams = useSearchParams();
+  const pathname = usePathname();
+  const router = useRouter();
   const tabParam = searchParams.get("tab");
   const initialTab = tabParam && VALID_TABS.has(tabParam) ? tabParam : "candidates";
+  const [activeTab, setActiveTab] = useState<string>(initialTab);
   const [data, setData] = useState<CombinedView | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [showManualAdd, setShowManualAdd] = useState(false);
+
+  useEffect(() => {
+    if (tabParam && VALID_TABS.has(tabParam)) {
+      setActiveTab(tabParam);
+      router.replace(pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabParam]);
 
   async function fetchAll() {
     try {
@@ -298,7 +309,7 @@ export default function RequisitionDetailPage() {
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue={initialTab} className="flex-1 flex flex-col overflow-hidden">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
         <div className="border-b border-border px-8 shrink-0 bg-background">
           <TabsList className="bg-transparent h-auto p-0 gap-0">
             <TabsTrigger
@@ -358,7 +369,7 @@ export default function RequisitionDetailPage() {
         </TabsContent>
 
         <TabsContent value="rules" forceMount className="flex-1 overflow-y-auto m-0 p-8 data-[state=inactive]:hidden">
-          <ScoringRulesTab requisitionId={requisitionId} initialConfig={data.config} />
+          <ScoringRulesTab requisitionId={requisitionId} initialConfig={data.config} onSaved={fetchAll} />
         </TabsContent>
 
         <TabsContent value="jd" forceMount className="flex-1 overflow-y-auto m-0 p-8 data-[state=inactive]:hidden">

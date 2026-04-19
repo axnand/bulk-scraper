@@ -78,6 +78,7 @@ interface CustomRule {
 interface Props {
   requisitionId: string;
   initialConfig: any;
+  onSaved?: () => void;
 }
 
 const ENVELOPE_FIELDS: { key: keyof PromptEnvelope; label: string; tokens?: string; rows: number }[] = [
@@ -89,7 +90,7 @@ const ENVELOPE_FIELDS: { key: keyof PromptEnvelope; label: string; tokens?: stri
   { key: "responseSchemaTemplate", label: "JSON response schema + footer", tokens: "Tokens: {scoringFields}, {scoringLogsFields}", rows: 14 },
 ];
 
-export function ScoringRulesTab({ requisitionId, initialConfig }: Props) {
+export function ScoringRulesTab({ requisitionId, initialConfig, onSaved }: Props) {
   const cfg = initialConfig || {};
 
   const [scoringRules, setScoringRules] = useState<Record<string, boolean>>({
@@ -139,6 +140,7 @@ export function ScoringRulesTab({ requisitionId, initialConfig }: Props) {
         setTimeout(() => setSaveError(null), 4000);
         return false;
       }
+      onSaved?.();
       return true;
     } catch {
       setSaveError("Network error — changes not saved");
@@ -253,12 +255,12 @@ export function ScoringRulesTab({ requisitionId, initialConfig }: Props) {
 
   function deleteCustom(id: string) {
     const next = customScoringRules.filter(r => r.id !== id);
-    setCustomScoringRules(next);
-    saveConfig({ customScoringRules: next });
-    if (editingRuleId === id) setEditingRuleId(null);
     const nextDefs = { ...ruleDefinitions };
     delete nextDefs[id];
+    setCustomScoringRules(next);
     setRuleDefinitions(nextDefs);
+    saveConfig({ customScoringRules: next, ruleDefinitions: nextDefs });
+    if (editingRuleId === id) setEditingRuleId(null);
   }
 
   function startEditRule(rule: CustomRule) {

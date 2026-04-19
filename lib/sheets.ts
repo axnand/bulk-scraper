@@ -159,7 +159,7 @@ export function buildSheetPayload(
         ? `${analysisResult.totalScore}/${analysisResult.maxScore}`
         : sv(analysisResult.totalScore),
     scorePercent: sv(analysisResult.scorePercent),
-    source: "Salescode Hirro",
+    source: "Hirro",
   };
 
   for (const rule of enabledRules) {

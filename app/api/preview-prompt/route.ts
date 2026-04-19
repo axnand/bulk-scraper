@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { resolveRequisitionId } from "@/lib/resolve-requisition";
 import { buildSystemPrompt, buildUserPrompt } from "@/lib/analyzer";
 import type { ScoringRules, CustomScoringRule, CandidateInfo } from "@/lib/analyzer";
 
@@ -32,18 +34,39 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    const scoringRules: ScoringRules = body.scoringRules || {};
-    const customScoringRules: CustomScoringRule[] =
-      body.customScoringRules || [];
+    let scoringRules: ScoringRules = body.scoringRules || {};
+    let customScoringRules: CustomScoringRule[] = body.customScoringRules || [];
+    let builtInRuleDescriptions = body.builtInRuleDescriptions;
+    let ruleDefinitions = body.ruleDefinitions;
+    let promptEnvelope = body.promptEnvelope;
+
+    // When a requisitionId is provided, always pull scoring config straight from the DB
+    // so the preview reflects the latest saved state regardless of client staleness.
+    if (body.requisitionId) {
+      try {
+        const reqId = await resolveRequisitionId(body.requisitionId);
+        const requisition = await prisma.requisition.findUnique({ where: { id: reqId } });
+        if (requisition?.config) {
+          const dbCfg = JSON.parse(requisition.config);
+          scoringRules = dbCfg.scoringRules ?? scoringRules;
+          customScoringRules = dbCfg.customScoringRules ?? customScoringRules;
+          builtInRuleDescriptions = dbCfg.builtInRuleDescriptions ?? builtInRuleDescriptions;
+          ruleDefinitions = dbCfg.ruleDefinitions ?? ruleDefinitions;
+          promptEnvelope = dbCfg.promptEnvelope ?? promptEnvelope;
+        }
+      } catch (e) {
+        console.warn("[preview-prompt] Failed to load requisition config, falling back to body:", e);
+      }
+    }
 
     const systemPrompt = buildSystemPrompt(scoringRules, customScoringRules, {
       customPrompt: body.customPrompt || undefined,
       promptRole: body.promptRole || undefined,
       promptGuidelines: body.promptGuidelines || undefined,
       criticalInstructions: body.criticalInstructions || undefined,
-      builtInRuleDescriptions: body.builtInRuleDescriptions || undefined,
-      ruleDefinitions: body.ruleDefinitions || undefined,
-      promptEnvelope: body.promptEnvelope || undefined,
+      builtInRuleDescriptions: builtInRuleDescriptions || undefined,
+      ruleDefinitions: ruleDefinitions || undefined,
+      promptEnvelope: promptEnvelope || undefined,
     });
 
     let userPrompt: string | null = null;

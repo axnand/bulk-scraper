@@ -1,11 +1,13 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { Users, Clock, PlayCircle } from "lucide-react";
+import { Users, Clock, PlayCircle, User, CalendarDays, Pencil } from "lucide-react";
 
 export interface RequisitionSummary {
   id: string;
   title: string;
   department: string;
+  recruiterName: string;
+  startDate: string | null;
   runCount: number;
   totalCandidates: number;
   analyzedCount: number;
@@ -32,11 +34,12 @@ function timeAgo(iso: string | null | undefined): string {
 }
 
 export function JobCard({
-  requisition, viewMode, onClick,
+  requisition, viewMode, onClick, onEdit,
 }: {
   requisition: RequisitionSummary;
   viewMode: "grid" | "list";
   onClick: () => void;
+  onEdit?: (r: RequisitionSummary) => void;
 }) {
   const r = requisition;
   const activeRun = r.activeRunStatus;
@@ -55,6 +58,18 @@ export function JobCard({
             <p className="font-semibold text-foreground truncate">{r.title}</p>
             {r.department && <p className="text-xs text-muted-foreground truncate mt-0.5">{r.department}</p>}
           </div>
+          {r.recruiterName && (
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
+              <User className="h-3.5 w-3.5" />
+              <span>{r.recruiterName}</span>
+            </div>
+          )}
+          {r.startDate && (
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
+              <CalendarDays className="h-3.5 w-3.5" />
+              <span>{new Date(r.startDate).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</span>
+            </div>
+          )}
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
             <Users className="h-3.5 w-3.5" />
             <span className="font-medium text-foreground">{r.totalCandidates}</span>
@@ -74,6 +89,14 @@ export function JobCard({
               {activeRun === "PROCESSING" ? "Running…" : "Queued"}
             </span>
           )}
+          {onEdit && (
+            <button
+              onClick={e => { e.stopPropagation(); onEdit(r); }}
+              className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          )}
         </CardContent>
       </Card>
     );
@@ -89,6 +112,14 @@ export function JobCard({
           <p className="font-semibold text-base text-foreground leading-snug line-clamp-2 flex-1 group-hover:text-primary transition-colors">
             {r.title}
           </p>
+          {onEdit && (
+            <button
+              onClick={e => { e.stopPropagation(); onEdit(r); }}
+              className="shrink-0 p-1.5 rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent transition-all"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
 
         {r.department && (
@@ -122,19 +153,37 @@ export function JobCard({
           </div>
         )}
 
-        <div className="mt-auto pt-3 border-t border-border flex items-center justify-between gap-2">
-          <div className="flex items-center gap-3 text-[10px] uppercase tracking-wider font-semibold">
-            <span className="text-emerald-600 dark:text-emerald-400">
-              {r.analyzedCount} <span className="font-medium opacity-70">analyzed</span>
+        <div className="mt-auto pt-3 border-t border-border space-y-2">
+          {(r.recruiterName || r.startDate) && (
+            <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+              {r.recruiterName && (
+                <span className="flex items-center gap-1">
+                  <User className="h-3 w-3" />
+                  {r.recruiterName}
+                </span>
+              )}
+              {r.startDate && (
+                <span className="flex items-center gap-1">
+                  <CalendarDays className="h-3 w-3" />
+                  {new Date(r.startDate).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                </span>
+              )}
+            </div>
+          )}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-3 text-[10px] uppercase tracking-wider font-semibold">
+              <span className="text-emerald-600 dark:text-emerald-400">
+                {r.analyzedCount} <span className="font-medium opacity-70">analyzed</span>
+              </span>
+            </div>
+            <span className={cn(
+              "flex items-center gap-1 text-[10px] uppercase tracking-wide font-semibold",
+              "text-muted-foreground"
+            )}>
+              <Clock className="h-3 w-3" />
+              Updated {timeAgo(r.updatedAt)}
             </span>
           </div>
-          <span className={cn(
-            "flex items-center gap-1 text-[10px] uppercase tracking-wide font-semibold",
-            "text-muted-foreground"
-          )}>
-            <Clock className="h-3 w-3" />
-            Updated {timeAgo(r.updatedAt)}
-          </span>
         </div>
       </CardContent>
     </Card>
