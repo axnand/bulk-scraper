@@ -137,3 +137,136 @@ export async function fetchProfile(
     throw new NetworkError(`Unexpected error fetching ${identifier}: ${error.message}`);
   }
 }
+
+function resolveDsnAndKey(accountDsn?: string, accountApiKey?: string) {
+  const rawDsn = accountDsn || process.env.UNIPILE_DSN;
+  const dsn = rawDsn && !rawDsn.startsWith("http") ? `https://${rawDsn}` : rawDsn;
+  const apiKey = accountApiKey || process.env.UNIPILE_API_KEY;
+  if (!dsn || !apiKey) {
+    throw new Error("Unipile DSN and API key must be provided (via account or environment)");
+  }
+  return { dsn, apiKey };
+}
+
+async function postJson<T>(
+  url: string,
+  apiKey: string,
+  body: Record<string, unknown>,
+): Promise<T> {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "X-API-KEY": apiKey,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (response.status === 429) {
+      const retryAfter = response.headers.get("Retry-After");
+      const retryMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 60000;
+      throw new RateLimitError("Rate limited by Unipile", retryMs);
+    }
+
+    if (response.status >= 500) {
+      const text = await response.text().catch(() => "Unknown server error");
+      throw new ServerError(`Unipile server error: ${response.status} - ${text}`, response.status);
+    }
+
+    if (response.status >= 400) {
+      const text = await response.text().catch(() => "Unknown client error");
+      throw new ClientError(`Unipile client error: ${response.status} - ${text}`, response.status);
+    }
+
+    return (await response.json()) as T;
+  } catch (error: any) {
+    if (
+      error instanceof RateLimitError ||
+      error instanceof ServerError ||
+      error instanceof ClientError
+    ) {
+      throw error;
+    }
+    if (error.name === "AbortError" || error.name === "TimeoutError") {
+      throw new NetworkError("Request to Unipile timed out");
+    }
+    throw new NetworkError(`Network error calling Unipile: ${error.message}`);
+  }
+}
+
+/**
+ * Send a LinkedIn connection invitation.
+ * Unipile: POST /api/v1/users/invite
+ */
+export async function sendInvitation(params: {
+  accountId: string;
+  providerUserId: string;
+  message?: string;
+  accountDsn?: string;
+  accountApiKey?: string;
+}): Promise<{ invitationId: string }> {
+  const { dsn, apiKey } = resolveDsnAndKey(params.accountDsn, params.accountApiKey);
+  const res = await postJson<{ invitation_id?: string; id?: string }>(
+    `${dsn}/api/v1/users/invite`,
+    apiKey,
+    {
+      account_id: params.accountId,
+      provider_id: params.providerUserId,
+      ...(params.message ? { message: params.message } : {}),
+    },
+  );
+  return { invitationId: res.invitation_id || res.id || "" };
+}
+
+/**
+ * Start a new chat with the first message.
+ * Unipile: POST /api/v1/chats
+ */
+export async function startChat(params: {
+  accountId: string;
+  providerUserId: string;
+  text: string;
+  accountDsn?: string;
+  accountApiKey?: string;
+}): Promise<{ chatId: string; messageId: string }> {
+  const { dsn, apiKey } = resolveDsnAndKey(params.accountDsn, params.accountApiKey);
+  const res = await postJson<{
+    chat_id?: string;
+    id?: string;
+    message_id?: string;
+  }>(`${dsn}/api/v1/chats`, apiKey, {
+    account_id: params.accountId,
+    attendees_ids: [params.providerUserId],
+    text: params.text,
+  });
+  return {
+    chatId: res.chat_id || res.id || "",
+    messageId: res.message_id || "",
+  };
+}
+
+/**
+ * Send a follow-up message in an existing chat.
+ * Unipile: POST /api/v1/chats/{chatId}/messages
+ */
+export async function sendChatMessage(params: {
+  accountId: string;
+  chatId: string;
+  text: string;
+  accountDsn?: string;
+  accountApiKey?: string;
+}): Promise<{ messageId: string }> {
+  const { dsn, apiKey } = resolveDsnAndKey(params.accountDsn, params.accountApiKey);
+  const res = await postJson<{ id?: string; message_id?: string }>(
+    `${dsn}/api/v1/chats/${encodeURIComponent(params.chatId)}/messages`,
+    apiKey,
+    {
+      account_id: params.accountId,
+      text: params.text,
+    },
+  );
+  return { messageId: res.message_id || res.id || "" };
+}

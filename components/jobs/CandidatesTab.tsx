@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import Link from "next/link";
 import { estimateCost, formatCost } from "@/lib/model-pricing";
 import { getEffectiveRules } from "@/lib/analyzer";
 import { FilterBar, FilterDivider, FilterPills, FilterText, FilterNumber, SortSelect, FilterSelect } from "@/components/ui/filter-bar";
@@ -534,7 +535,13 @@ function ProfileCard({ task, jobConfig, expanded, onToggle }: { task: TaskResult
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-foreground font-medium truncate text-base">{name}</p>
+            <Link
+              href={`/candidates/${task.id}`}
+              onClick={e => e.stopPropagation()}
+              className="text-foreground font-medium text-base hover:text-primary hover:underline transition-colors"
+            >
+              {name}
+            </Link>
             {task.addedAt && (
               <span className="text-[10px] text-muted-foreground/60 shrink-0">
                 {new Date(task.addedAt).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}

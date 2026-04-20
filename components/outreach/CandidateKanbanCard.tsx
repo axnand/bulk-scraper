@@ -1,10 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { Briefcase, Building2, ExternalLink, MoreHorizontal } from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
+import { Briefcase, Building2, ExternalLink, MoreHorizontal, Send, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -36,8 +39,12 @@ export interface PipelineTask {
 
 interface Props {
   task: PipelineTask;
+  requisitionId: string;
   onStageChange: (taskId: string, newStage: CandidateStage) => void;
   isDragging?: boolean;
+  isSelected?: boolean;
+  onSelect?: (taskId: string, selected: boolean) => void;
+  showCheckbox?: boolean;
 }
 
 function getInitials(name: string) {
@@ -71,7 +78,16 @@ function pickGradient(name: string) {
   return AVATAR_GRADIENTS[Math.abs(h) % AVATAR_GRADIENTS.length];
 }
 
-export function CandidateKanbanCard({ task, onStageChange, isDragging }: Props) {
+export function CandidateKanbanCard({
+  task,
+  requisitionId,
+  onStageChange,
+  isDragging,
+  isSelected = false,
+  onSelect,
+  showCheckbox = false,
+}: Props) {
+  const [sendingInvite, setSendingInvite] = useState(false);
   const name = task.name || "Unknown";
   const gradient = pickGradient(name);
   const moveTargets = PIPELINE_STAGES.filter(s => s !== task.stage);
@@ -83,6 +99,27 @@ export function CandidateKanbanCard({ task, onStageChange, isDragging }: Props) 
       ? "border-amber-500/40 bg-amber-500/10 text-amber-500"
       : "border-rose-500/40 bg-rose-500/10 text-rose-500";
 
+  async function handleSendInvite(e: React.MouseEvent) {
+    e.stopPropagation();
+    setSendingInvite(true);
+    try {
+      const res = await fetch(
+        `/api/requisitions/${requisitionId}/candidates/${task.id}/send-invite`,
+        { method: "POST" },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to send invite");
+      onStageChange(task.id, "CONTACT_REQUESTED");
+      toast.success("LinkedIn request sent");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to send LinkedIn request");
+    } finally {
+      setSendingInvite(false);
+    }
+  }
+
+  const checkboxVisible = showCheckbox || isSelected;
+
   return (
     <div
       draggable
@@ -92,13 +129,36 @@ export function CandidateKanbanCard({ task, onStageChange, isDragging }: Props) 
         e.dataTransfer.effectAllowed = "move";
       }}
       className={cn(
-        "group relative w-full overflow-hidden bg-background rounded-xl border border-border/60",
-        "hover:border-border hover:shadow-sm transition-all duration-150",
-        "cursor-grab active:cursor-grabbing select-none",
+        "group relative w-full overflow-hidden bg-background rounded-xl border transition-all duration-150",
+        "hover:border-border hover:shadow-sm cursor-grab active:cursor-grabbing select-none",
+        isSelected
+          ? "border-primary/50 ring-2 ring-primary/20 shadow-sm"
+          : "border-border/60",
         isDragging && "opacity-40 scale-[0.97] shadow-none"
       )}
     >
-      <div className="p-3">
+      {/* Selection checkbox */}
+      {onSelect && (
+        <div
+          className={cn(
+            "absolute top-2.5 left-2.5 z-10 transition-opacity",
+            checkboxVisible ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={e => {
+              e.stopPropagation();
+              onSelect(task.id, e.target.checked);
+            }}
+            onClick={e => e.stopPropagation()}
+            className="h-3.5 w-3.5 cursor-pointer accent-primary rounded"
+          />
+        </div>
+      )}
+
+      <div className={cn("p-3", onSelect && "pl-7")}>
         {/* Top: Avatar + Name + Menu */}
         <div className="flex items-center gap-2.5 min-w-0">
           <Avatar className="h-9 w-9 shrink-0">
@@ -192,6 +252,23 @@ export function CandidateKanbanCard({ task, onStageChange, isDragging }: Props) 
             </Badge>
           )}
         </div>
+
+        {/* Shortlisted CTA */}
+        {task.stage === "SHORTLISTED" && (
+          <Button
+            size="sm"
+            className="mt-2.5 w-full h-7 text-xs gap-1.5"
+            disabled={sendingInvite}
+            onClick={handleSendInvite}
+          >
+            {sendingInvite ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Send className="h-3 w-3" />
+            )}
+            {sendingInvite ? "Sending…" : "Send LinkedIn request"}
+          </Button>
+        )}
       </div>
     </div>
   );

@@ -98,6 +98,7 @@ model Task {
   account          Account?          @relation(fields: [accountId], references: [id])
   outreachMessages OutreachMessage[]
   stageEvents      StageEvent[]
+  notes            Note[]
   contact          CandidateContact?
 
   @@index([jobId])
@@ -139,6 +140,8 @@ model OutreachMessage {
   sentAt            DateTime?
   providerMessageId String?
   providerChatId    String?
+  direction         String    @default("OUT") // OUT | IN
+  inboundBody       String?   @db.Text        // populated for direction=IN
   errorMessage      String?   @db.Text
   retryCount        Int       @default(0)
   createdAt         DateTime  @default(now())
@@ -161,6 +164,18 @@ model StageEvent {
   createdAt DateTime       @default(now())
 
   task      Task           @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+}
+
+model Note {
+  id          String   @id @default(cuid())
+  taskId      String
+  authorEmail String   @default("")
+  body        String   @db.Text
+  createdAt   DateTime @default(now())
+
+  task        Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   @@index([taskId, createdAt])
 }

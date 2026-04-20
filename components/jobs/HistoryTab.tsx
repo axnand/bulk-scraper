@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle,
 } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Pause, Play, XCircle, Eye, AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
-
+import { getEffectiveRules } from "@/lib/analyzer";
 import { cn } from "@/lib/utils";
 
 interface RunSummary {
@@ -28,6 +29,7 @@ interface RunTask {
   analysisResult: any;
   errorMessage: string | null;
   retryCount: number;
+  hasResume?: boolean;
 }
 
 interface RunDetail {
@@ -38,6 +40,7 @@ interface RunDetail {
   successCount: number;
   failedCount: number;
   createdAt: string;
+  config?: any;
   tasks: RunTask[];
 }
 
@@ -77,7 +80,6 @@ function relativeTime(iso: string): string {
 export function HistoryTab({ runs, onRunAction, actionLoading }: Props) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [drawerRunId, setDrawerRunId] = useState<string | null>(null);
-  // Keep last selected run alive during the close animation
   const lastRunRef = useRef<{ run: RunSummary; number: number } | null>(null);
 
   if (runs.length === 0) {
@@ -113,7 +115,7 @@ export function HistoryTab({ runs, onRunAction, actionLoading }: Props) {
   const drawerContent = lastRunRef.current;
 
   return (
-    <div className="max-w-5xl">
+    <div className="w-full">
       <div className="mb-4 flex items-baseline justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-foreground">Run History</h2>
@@ -245,6 +247,7 @@ export function HistoryTab({ runs, onRunAction, actionLoading }: Props) {
 function RunDetailDrawer({ run, runNumber }: { run: RunSummary; runNumber: number }) {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [expandedTask, setExpandedTask] = useState<string | null>(null);
 
   async function fetchDetail() {
     try {
@@ -259,6 +262,7 @@ function RunDetailDrawer({ run, runNumber }: { run: RunSummary; runNumber: numbe
 
   useEffect(() => {
     setLoading(true);
+    setExpandedTask(null);
     fetchDetail();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.id]);
@@ -302,7 +306,7 @@ function RunDetailDrawer({ run, runNumber }: { run: RunSummary; runNumber: numbe
         {loading && !detail ? (
           <div className="space-y-3">
             {[...Array(3)].map((_, i) => (
-              <div key={i} className="h-14 rounded-lg bg-card border border-border animate-pulse" />
+              <div key={i} className="h-20 rounded-xl bg-card border border-border animate-pulse" />
             ))}
           </div>
         ) : (
@@ -356,8 +360,23 @@ function RunDetailDrawer({ run, runNumber }: { run: RunSummary; runNumber: numbe
                   <CheckCircle2 className="h-4 w-4" />
                   Successful ({successful.length})
                 </h3>
-                <div className="space-y-2">
-                  {successful.map(t => <SuccessRow key={t.id} task={t} />)}
+                {/* Table header */}
+                <div className="rounded-xl border border-border overflow-hidden">
+                  <div className="grid grid-cols-[1fr_auto] items-center px-3 py-1.5 bg-muted/40 border-b border-border/60">
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Candidate</span>
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground text-right">Score</span>
+                  </div>
+                  <div className="divide-y divide-border/50">
+                    {successful.map(t => (
+                      <HistoryProfileRow
+                        key={t.id}
+                        task={t}
+                        jobConfig={detail?.config}
+                        expanded={expandedTask === t.id}
+                        onToggle={() => setExpandedTask(expandedTask === t.id ? null : t.id)}
+                      />
+                    ))}
+                  </div>
                 </div>
               </section>
             )}
@@ -374,43 +393,202 @@ function RunDetailDrawer({ run, runNumber }: { run: RunSummary; runNumber: numbe
   );
 }
 
-function SuccessRow({ task }: { task: RunTask }) {
+function HistoryProfileRow({
+  task,
+  jobConfig,
+  expanded,
+  onToggle,
+}: {
+  task: RunTask;
+  jobConfig?: any;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
   const profile = task.result;
   const analysis = task.analysisResult;
-  const name = profile
-    ? [profile.first_name, profile.last_name].filter(Boolean).join(" ") || "Unknown"
-    : task.url;
-  const headline = profile?.headline || profile?.occupation || "";
+  if (!profile) return null;
+
+  const extracted = profile.extractedInfo || {};
+  const scrapedName = [profile.first_name, profile.last_name].filter(Boolean).join(" ");
+  const name = scrapedName || extracted.name || analysis?.candidateInfo?.name || "Unknown";
+  const info = analysis?.candidateInfo;
+  const location = info?.currentLocation || profile.location || extracted.currentLocation || "";
+  const headline = profile.headline || profile.occupation || extracted.currentDesignation || "";
+  const designation = info?.currentDesignation || headline;
+  const org = info?.currentOrg || "";
+  const exp = info?.totalExperienceYears;
+  const scorePercent = analysis?.scorePercent;
 
   return (
-    <div className="bg-card border border-border rounded-lg p-3 flex items-center gap-3">
-      <div className="h-9 w-9 rounded-full bg-gradient-to-br from-primary to-cyan-400 flex items-center justify-center text-primary-foreground font-bold text-xs shrink-0 overflow-hidden">
-        {profile?.profile_picture_url ? (
-          <img
-            src={`/api/proxy-image?url=${encodeURIComponent(profile.profile_picture_url)}`}
-            alt={name}
-            className="h-full w-full object-cover"
-            onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
-          />
-        ) : (
-          `${(profile?.first_name || "?")[0] || "?"}${(profile?.last_name || "")[0] || ""}`
+    <>
+      {/* Slim row */}
+      <button
+        onClick={onToggle}
+        className="w-full text-left flex items-center gap-3 px-3 py-2.5 hover:bg-muted/30 transition-colors"
+      >
+        {/* Name + meta */}
+        <div className="flex-1 min-w-0 flex items-center gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Link
+                href={`/candidates/${task.id}`}
+                onClick={e => e.stopPropagation()}
+                className="text-sm font-medium text-foreground hover:text-primary hover:underline transition-colors truncate"
+              >
+                {name}
+              </Link>
+            </div>
+            <p className="text-xs text-muted-foreground truncate">
+              {[designation, org].filter(Boolean).join(" · ")}
+              {location ? ` · ${location}` : ""}
+              {exp ? ` · ${exp} yrs` : ""}
+            </p>
+          </div>
+        </div>
+
+        {/* Score */}
+        {analysis && (
+          <div className="flex items-center gap-2 shrink-0">
+            <span className={cn(
+              "text-sm font-bold tabular-nums",
+              scorePercent >= 70 ? "text-emerald-500" : scorePercent >= 40 ? "text-amber-500" : "text-rose-500"
+            )}>
+              {scorePercent}%
+            </span>
+            <span className={cn(
+              "text-[10px] font-semibold px-1.5 py-0.5 rounded-full",
+              analysis.recommendation === "Strong Fit"
+                ? "bg-emerald-500/10 text-emerald-500"
+                : analysis.recommendation === "Moderate Fit"
+                ? "bg-amber-500/10 text-amber-500"
+                : "bg-rose-500/10 text-rose-500"
+            )}>
+              {analysis.recommendation}
+            </span>
+          </div>
         )}
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm text-foreground truncate">{name}</p>
-        {headline && <p className="text-[11px] text-muted-foreground truncate">{headline}</p>}
-      </div>
-      {analysis && (
-        <div className={cn(
-          "inline-flex items-center justify-center h-9 w-9 rounded-full border-2 text-xs font-bold shrink-0",
-          analysis.scorePercent >= 70 ? "border-emerald-500 text-emerald-400"
-            : analysis.scorePercent >= 40 ? "border-amber-500 text-amber-400"
-            : "border-rose-500 text-rose-400"
-        )}>
-          {analysis.scorePercent}%
+
+        <svg
+          className={cn("w-4 h-4 text-muted-foreground transition-transform shrink-0", expanded && "rotate-180")}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {/* Expanded detail panel */}
+      {expanded && (
+        <div className="border-t border-border/60 bg-muted/20 px-4 py-4 space-y-4">
+          {analysis && (
+            <>
+              {/* Scoring breakdown */}
+              {(() => {
+                const effectiveRules = getEffectiveRules({
+                  scoringRules: analysis.enabledRules || jobConfig?.scoringRules,
+                  customScoringRules: analysis.customScoringRules || jobConfig?.customScoringRules || [],
+                  builtInRuleDescriptions: jobConfig?.builtInRuleDescriptions,
+                  ruleDefinitions: jobConfig?.ruleDefinitions,
+                }).filter((r: any) => r.enabled);
+
+                return (
+                  <div className="rounded-lg border border-border overflow-hidden bg-background">
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground px-3 py-2 border-b border-border/60">Scoring</p>
+                    <div className="divide-y divide-border/40">
+                      {effectiveRules.map((rule: any) => {
+                        const ruleMax = Math.max(0, ...rule.scoreParameters.map((p: any) => p.maxPoints));
+                        const val = (rule.scoreParameters as any[]).reduce<number>((best: number, p: any) => {
+                          const s = analysis.scoring?.[p.key];
+                          return typeof s === "number" && s > best ? s : best;
+                        }, 0);
+                        const logText = analysis.scoringLogs?.[rule.key];
+                        return (
+                          <div key={rule.key} className="px-3 py-2 space-y-1">
+                            <div className="flex items-center gap-3">
+                              <span className="text-xs text-muted-foreground w-28 shrink-0">{rule.label}</span>
+                              <div className="flex-1 h-1 bg-muted rounded-full overflow-hidden">
+                                <div
+                                  className={cn("h-full rounded-full", val >= ruleMax * 0.7 ? "bg-emerald-500" : val > 0 ? "bg-amber-500" : "bg-muted-foreground/30")}
+                                  style={{ width: `${ruleMax > 0 ? (val / ruleMax) * 100 : 0}%` }}
+                                />
+                              </div>
+                              <span className="text-xs font-mono text-foreground w-10 text-right shrink-0">{val}/{ruleMax}</span>
+                            </div>
+                            {logText && <p className="text-[11px] text-muted-foreground pl-30 leading-relaxed">{logText}</p>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Strengths / Gaps inline */}
+              {(analysis.strengths?.length > 0 || analysis.gaps?.length > 0) && (
+                <div className="grid grid-cols-2 gap-3">
+                  {analysis.strengths?.length > 0 && (
+                    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2.5">
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-emerald-500 mb-1.5">Strengths</p>
+                      <ul className="space-y-1">
+                        {analysis.strengths.map((s: string, i: number) => (
+                          <li key={i} className="text-xs text-foreground leading-snug">• {s}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {analysis.gaps?.length > 0 && (
+                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5">
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-amber-500 mb-1.5">Gaps</p>
+                      <ul className="space-y-1">
+                        {analysis.gaps.map((g: string, i: number) => (
+                          <li key={i} className="text-xs text-foreground leading-snug">• {g}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* AI Summary */}
+              {analysis.experienceSummary && (
+                <p className="text-xs text-muted-foreground leading-relaxed border-l-2 border-primary/30 pl-3">{analysis.experienceSummary}</p>
+              )}
+            </>
+          )}
+
+          {/* Footer links */}
+          <div className="flex items-center gap-4 pt-1">
+            <Link
+              href={`/candidates/${task.id}`}
+              onClick={e => e.stopPropagation()}
+              className="text-xs font-medium text-primary hover:underline"
+            >
+              View full profile ↗
+            </Link>
+            {task.hasResume && (
+              <a
+                href={`/api/tasks/${task.id}/resume`}
+                target="_blank"
+                rel="noreferrer"
+                onClick={e => e.stopPropagation()}
+                className="text-xs text-muted-foreground hover:text-primary"
+              >
+                View Resume ↗
+              </a>
+            )}
+            {task.url && (
+              <a
+                href={task.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-muted-foreground hover:text-primary"
+              >
+                LinkedIn ↗
+              </a>
+            )}
+          </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
 

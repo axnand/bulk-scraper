@@ -16,6 +16,22 @@ export async function GET(
         job: {
           include: { requisition: true },
         },
+        stageEvents: {
+          orderBy: { createdAt: "asc" },
+        },
+        outreachMessages: {
+          orderBy: { createdAt: "asc" },
+          select: {
+            id: true,
+            channel: true,
+            status: true,
+            direction: true,
+            renderedBody: true,
+            inboundBody: true,
+            sentAt: true,
+            createdAt: true,
+          },
+        },
       },
     });
 
@@ -42,6 +58,8 @@ export async function GET(
         requisitionTitle: task.job.requisition?.title ?? task.job.title,
         config: task.job.config ? JSON.parse(task.job.config) : null,
       },
+      stageEvents: task.stageEvents,
+      outreachMessages: task.outreachMessages,
     });
   } catch (error) {
     console.error("[Task] GET failed:", error);

@@ -45,6 +45,8 @@ export async function GET(
     for (const t of tasks) {
       const analysis = t.analysisResult ? JSON.parse(t.analysisResult) : null;
       const profile = t.result ? JSON.parse(t.result) : null;
+      // Legacy MESSAGED rows roll up into CONNECTED in the new stage model
+      const stage = t.stage === "MESSAGED" ? "CONNECTED" : t.stage;
 
       const scrapedName = profile
         ? [profile.first_name, profile.last_name].filter(Boolean).join(" ")
@@ -54,7 +56,7 @@ export async function GET(
       const shaped = {
         id: t.id,
         url: t.url,
-        stage: t.stage,
+        stage,
         stageUpdatedAt: t.stageUpdatedAt,
         source: t.source,
         sourceFileName: t.sourceFileName,
@@ -91,8 +93,8 @@ export async function GET(
         publicId: profile?.public_identifier || null,
       };
 
-      if (!grouped[t.stage]) grouped[t.stage] = [];
-      grouped[t.stage].push(shaped);
+      if (!grouped[stage]) grouped[stage] = [];
+      grouped[stage].push(shaped);
     }
 
     return NextResponse.json({

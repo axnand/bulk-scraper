@@ -28,6 +28,7 @@ export default function JobsPage() {
   const [editTitle, setEditTitle] = useState("");
   const [editDepartment, setEditDepartment] = useState("");
   const [editRecruiter, setEditRecruiter] = useState("");
+  const [editStartDate, setEditStartDate] = useState("");
   const [editIsActive, setEditIsActive] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -97,6 +98,7 @@ export default function JobsPage() {
     setEditTitle(r.title);
     setEditDepartment(r.department);
     setEditRecruiter(r.recruiterName);
+    setEditStartDate(r.startDate ? new Date(r.startDate).toISOString().split("T")[0] : "");
     setEditIsActive(r.isActive ?? true);
     setSaveError(null);
     setConfirmDelete(false);
@@ -127,6 +129,7 @@ export default function JobsPage() {
           title: editTitle.trim(),
           department: editDepartment.trim(),
           recruiterName: editRecruiter.trim(),
+          startDate: editStartDate || null,
           isActive: editIsActive,
         }),
       });
@@ -137,7 +140,7 @@ export default function JobsPage() {
       }
       setReqs(prev => prev.map(r =>
         r.id === editingReq.id
-          ? { ...r, title: editTitle.trim(), department: editDepartment.trim(), recruiterName: editRecruiter.trim(), isActive: editIsActive }
+          ? { ...r, title: editTitle.trim(), department: editDepartment.trim(), recruiterName: editRecruiter.trim(), startDate: editStartDate || null, isActive: editIsActive }
           : r
       ));
       setEditingReq(null);
@@ -156,6 +159,9 @@ export default function JobsPage() {
     const q = search.toLowerCase();
     return r.title.toLowerCase().includes(q) || r.department.toLowerCase().includes(q);
   });
+
+  const activeRoles = filtered.filter(r => r.isActive ?? true);
+  const inactiveRoles = filtered.filter(r => !(r.isActive ?? true));
 
   return (
     <div className="p-8 space-y-6 max-w-7xl mx-auto">
@@ -219,41 +225,77 @@ export default function JobsPage() {
           ))}
         </div>
       ) : (
-        <div className={viewMode === "grid"
-          ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
-          : "space-y-3"
-        }>
-          {filtered.map(r => (
-            <JobCard
-              key={r.id}
-              requisition={r}
-              viewMode={viewMode}
-              onClick={() => router.push(`/jobs/JD-${r.id.slice(0, 8).toUpperCase()}`)}
-              onEdit={openEdit}
-            />
-          ))}
+        <div className="space-y-8">
+          {/* Active roles */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-foreground uppercase tracking-wider">Active</h2>
+              <span className="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-semibold">
+                {activeRoles.length}
+              </span>
+            </div>
+            <div className={viewMode === "grid"
+              ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
+              : "space-y-3"
+            }>
+              {activeRoles.map(r => (
+                <JobCard
+                  key={r.id}
+                  requisition={r}
+                  viewMode={viewMode}
+                  onClick={() => router.push(`/jobs/JD-${r.id.slice(0, 8).toUpperCase()}`)}
+                  onEdit={openEdit}
+                />
+              ))}
+              {viewMode === "grid" ? (
+                <button
+                  onClick={() => setShowNewModal(true)}
+                  className="min-h-44 border-2 border-dashed border-border rounded-xl flex flex-col items-center justify-center gap-2 hover:border-primary/50 hover:bg-primary/5 transition-colors group"
+                >
+                  <div className="h-9 w-9 rounded-full border-2 border-border group-hover:border-primary/50 flex items-center justify-center transition-colors">
+                    <Plus className="h-5 w-5 text-muted-foreground group-hover:text-primary transition-colors" />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm font-medium text-muted-foreground group-hover:text-primary transition-colors">Open New Role</p>
+                    <p className="text-xs text-muted-foreground/60">Configure JD and scoring rules</p>
+                  </div>
+                </button>
+              ) : (
+                <button
+                  onClick={() => setShowNewModal(true)}
+                  className="w-full h-14 border-2 border-dashed border-border rounded-xl flex items-center justify-center gap-2 hover:border-primary/50 hover:bg-primary/5 transition-colors group px-4"
+                >
+                  <Plus className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                  <span className="text-sm font-medium text-muted-foreground group-hover:text-primary transition-colors">Open New Role</span>
+                </button>
+              )}
+            </div>
+          </div>
 
-          {viewMode === "grid" ? (
-            <button
-              onClick={() => setShowNewModal(true)}
-              className="min-h-44 border-2 border-dashed border-border rounded-xl flex flex-col items-center justify-center gap-2 hover:border-primary/50 hover:bg-primary/5 transition-colors group"
-            >
-              <div className="h-9 w-9 rounded-full border-2 border-border group-hover:border-primary/50 flex items-center justify-center transition-colors">
-                <Plus className="h-5 w-5 text-muted-foreground group-hover:text-primary transition-colors" />
+          {/* Inactive roles */}
+          {inactiveRoles.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Inactive</h2>
+                <span className="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-muted text-muted-foreground text-xs font-semibold">
+                  {inactiveRoles.length}
+                </span>
               </div>
-              <div className="text-center">
-                <p className="text-sm font-medium text-muted-foreground group-hover:text-primary transition-colors">Open New Role</p>
-                <p className="text-xs text-muted-foreground/60">Configure JD and scoring rules</p>
+              <div className={viewMode === "grid"
+                ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 opacity-70"
+                : "space-y-3 opacity-70"
+              }>
+                {inactiveRoles.map(r => (
+                  <JobCard
+                    key={r.id}
+                    requisition={r}
+                    viewMode={viewMode}
+                    onClick={() => router.push(`/jobs/JD-${r.id.slice(0, 8).toUpperCase()}`)}
+                    onEdit={openEdit}
+                  />
+                ))}
               </div>
-            </button>
-          ) : (
-            <button
-              onClick={() => setShowNewModal(true)}
-              className="w-full h-14 border-2 border-dashed border-border rounded-xl flex items-center justify-center gap-2 hover:border-primary/50 hover:bg-primary/5 transition-colors group px-4"
-            >
-              <Plus className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
-              <span className="text-sm font-medium text-muted-foreground group-hover:text-primary transition-colors">Open New Role</span>
-            </button>
+            </div>
           )}
         </div>
       )}
@@ -353,6 +395,16 @@ export default function JobsPage() {
                 value={editRecruiter}
                 onChange={setEditRecruiter}
                 placeholder="e.g. Priya Sharma"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-start">Start Date</Label>
+              <Input
+                id="edit-start"
+                type="date"
+                value={editStartDate}
+                onChange={e => setEditStartDate(e.target.value)}
               />
             </div>
 

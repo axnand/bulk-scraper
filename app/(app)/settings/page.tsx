@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import {
   Users, Cpu, Plus, Pencil, Trash2, Zap, CheckCircle2, XCircle,
-  ChevronLeft, Info, Power, PowerOff, Server, Star,
+  ChevronLeft, Info, Power, PowerOff, Server, Star, Webhook, RefreshCw, Trash,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -127,7 +127,69 @@ const PROVIDER_TYPE_LABELS: Record<string, string> = {
 // ─── Page ───────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<"accounts" | "models">("accounts");
+  const [activeTab, setActiveTab] = useState<"accounts" | "models" | "webhooks">("accounts");
+
+  // ── Webhooks state ──
+  const [webhooks, setWebhooks] = useState<any[]>([]);
+  const [webhooksLoading, setWebhooksLoading] = useState(false);
+  const [webhookSelectedIds, setWebhookSelectedIds] = useState<Set<string>>(new Set());
+  const [webhookRegistering, setWebhookRegistering] = useState(false);
+  const [webhookMsg, setWebhookMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [appUrl, setAppUrl] = useState(
+    typeof window !== "undefined" ? window.location.origin : "",
+  );
+
+  const fetchWebhooks = useCallback(async () => {
+    setWebhooksLoading(true);
+    try {
+      const res = await fetch("/api/webhooks/unipile/register");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load webhooks");
+      setWebhooks(data.webhooks ?? []);
+    } catch (err: any) {
+      setWebhooks([]);
+    } finally {
+      setWebhooksLoading(false);
+    }
+  }, []);
+
+  async function handleRegisterWebhooks() {
+    setWebhookRegistering(true);
+    setWebhookMsg(null);
+    try {
+      const res = await fetch("/api/webhooks/unipile/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accountIds: [...webhookSelectedIds],
+          appUrl,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Registration failed");
+      setWebhookMsg({ ok: true, text: "Both webhooks registered successfully." });
+      await fetchWebhooks();
+    } catch (err: any) {
+      setWebhookMsg({ ok: false, text: err.message });
+    } finally {
+      setWebhookRegistering(false);
+    }
+  }
+
+  async function handleDeleteWebhook(webhookId: string) {
+    try {
+      const res = await fetch("/api/webhooks/unipile/register", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ webhookId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setWebhooks(prev => prev.filter(w => w.id !== webhookId && w.webhook_id !== webhookId));
+    } catch (err: any) {
+      setWebhookMsg({ ok: false, text: err.message });
+    }
+  }
 
   // ── Accounts state ──
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -468,7 +530,11 @@ export default function SettingsPage() {
         <p className="text-sm text-muted-foreground mt-0.5">Configure LinkedIn scraping accounts and AI model providers.</p>
       </div>
 
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "accounts" | "models")}>
+      <Tabs value={activeTab} onValueChange={(v) => {
+        const tab = v as "accounts" | "models" | "webhooks";
+        setActiveTab(tab);
+        if (tab === "webhooks") fetchWebhooks();
+      }}>
         <TabsList>
           <TabsTrigger value="accounts" className="gap-2">
             <Users className="h-4 w-4" />
@@ -477,6 +543,10 @@ export default function SettingsPage() {
           <TabsTrigger value="models" className="gap-2">
             <Cpu className="h-4 w-4" />
             AI Models
+          </TabsTrigger>
+          <TabsTrigger value="webhooks" className="gap-2">
+            <Webhook className="h-4 w-4" />
+            Webhooks
           </TabsTrigger>
         </TabsList>
 
@@ -1035,6 +1105,162 @@ export default function SettingsPage() {
               </p>
             </div>
           </div>
+        </TabsContent>
+
+        {/* ═══════════════ WEBHOOKS ═══════════════ */}
+        <TabsContent value="webhooks" className="mt-5 space-y-5">
+          <Card>
+            <div className="px-6 py-4 border-b border-border flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Webhook className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-semibold">Register Unipile Webhooks</span>
+              </div>
+              <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-xs" onClick={fetchWebhooks} disabled={webhooksLoading}>
+                <RefreshCw className={cn("h-3.5 w-3.5", webhooksLoading && "animate-spin")} />
+                Refresh
+              </Button>
+            </div>
+            <CardContent className="p-6 space-y-5">
+              <p className="text-sm text-muted-foreground">
+                Select which LinkedIn accounts should trigger the outreach webhooks (invite accepted &amp; message received). Leave all unchecked to apply to <strong className="text-foreground">all</strong> current and future accounts.
+              </p>
+
+              {/* App URL */}
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium">App URL</Label>
+                <Input
+                  value={appUrl}
+                  onChange={e => setAppUrl(e.target.value)}
+                  placeholder="https://your-app.vercel.app"
+                  className="h-8 text-sm font-mono"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Webhook endpoint: <code className="px-1 rounded bg-muted">{appUrl}/api/webhooks/unipile</code>
+                </p>
+              </div>
+
+              {/* Account selector */}
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium">Target Accounts (optional)</Label>
+                {accountsLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading accounts…</p>
+                ) : accounts.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No Unipile accounts found. Add one in the Unipile Accounts tab first.</p>
+                ) : (
+                  <div className="rounded-lg border border-border divide-y divide-border">
+                    {accounts.map(acc => {
+                      const checked = webhookSelectedIds.has(acc.accountId);
+                      return (
+                        <label key={acc.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/40 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={e => {
+                              setWebhookSelectedIds(prev => {
+                                const next = new Set(prev);
+                                if (e.target.checked) next.add(acc.accountId);
+                                else next.delete(acc.accountId);
+                                return next;
+                              });
+                            }}
+                            className="h-3.5 w-3.5 accent-primary"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-foreground truncate">{acc.name || acc.accountId}</p>
+                            <p className="text-xs text-muted-foreground font-mono truncate">{acc.accountId}</p>
+                          </div>
+                          <span className={cn(
+                            "text-xs px-2 py-0.5 rounded-full border font-medium",
+                            STATUS_CONFIG[acc.status]?.badge ?? "bg-muted text-muted-foreground border-border",
+                          )}>
+                            {STATUS_CONFIG[acc.status]?.label ?? acc.status}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+                {webhookSelectedIds.size === 0 && accounts.length > 0 && (
+                  <p className="text-[11px] text-amber-600 dark:text-amber-400">No accounts selected — webhooks will apply to ALL accounts.</p>
+                )}
+              </div>
+
+              {webhookMsg && <AlertBanner success={webhookMsg.ok} message={webhookMsg.text} />}
+
+              <Button
+                onClick={handleRegisterWebhooks}
+                disabled={webhookRegistering || !appUrl.trim()}
+                className="gap-2"
+              >
+                {webhookRegistering ? <Spinner className="h-4 w-4" /> : <Zap className="h-4 w-4" />}
+                {webhookRegistering ? "Registering…" : "Register Webhooks"}
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Existing webhooks */}
+          <Card>
+            <div className="px-6 py-4 border-b border-border">
+              <div className="flex items-center gap-2">
+                <Webhook className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-semibold">Registered Webhooks</span>
+                {webhooks.length > 0 && (
+                  <span className="text-xs px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground font-semibold">{webhooks.length}</span>
+                )}
+              </div>
+            </div>
+            <CardContent className="p-0">
+              {webhooksLoading ? (
+                <div className="p-6 text-sm text-muted-foreground">Loading…</div>
+              ) : webhooks.length === 0 ? (
+                <div className="p-6 text-sm text-muted-foreground">No webhooks registered yet. Click &quot;Register Webhooks&quot; above.</div>
+              ) : (
+                <ul className="divide-y divide-border">
+                  {webhooks.map((w, i) => {
+                    const wid = w.id ?? w.webhook_id ?? String(i);
+                    const isOurs = (w.request_url ?? w.url ?? "").includes("/api/webhooks/unipile");
+                    return (
+                      <li key={wid} className="flex items-center gap-3 px-5 py-3">
+                        <div className="flex-1 min-w-0 space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-medium text-foreground">{w.name || w.source || "Webhook"}</p>
+                            <span className={cn(
+                              "text-[10px] px-1.5 py-0.5 rounded-full font-semibold border",
+                              w.enabled !== false
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800"
+                                : "bg-muted text-muted-foreground border-border",
+                            )}>
+                              {w.enabled !== false ? "Active" : "Disabled"}
+                            </span>
+                            {isOurs && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold border bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-800">
+                                This app
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground font-mono truncate">{w.request_url ?? w.url ?? "—"}</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            Source: {w.source ?? "—"}
+                            {w.account_ids?.length > 0 && ` · ${w.account_ids.length} account${w.account_ids.length !== 1 ? "s" : ""}`}
+                            {(!w.account_ids || w.account_ids.length === 0) && " · All accounts"}
+                          </p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive shrink-0"
+                          onClick={() => handleDeleteWebhook(wid)}
+                          title="Delete webhook"
+                        >
+                          <Trash className="h-3.5 w-3.5" />
+                        </Button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>

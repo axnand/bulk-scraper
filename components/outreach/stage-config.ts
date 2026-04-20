@@ -34,7 +34,7 @@ export const STAGE_CONFIG: Record<CandidateStage, StageConfig> = {
     border: "border-emerald-500/20",
   },
   CONTACT_REQUESTED: {
-    label: "Contacted",
+    label: "Invite Sent",
     dot: "bg-amber-400",
     headerBg: "bg-amber-500/10",
     headerText: "text-amber-400",
@@ -48,7 +48,7 @@ export const STAGE_CONFIG: Record<CandidateStage, StageConfig> = {
     border: "border-blue-500/20",
   },
   MESSAGED: {
-    label: "Messaged",
+    label: "Contacted",
     dot: "bg-indigo-400",
     headerBg: "bg-indigo-500/10",
     headerText: "text-indigo-400",
@@ -62,7 +62,7 @@ export const STAGE_CONFIG: Record<CandidateStage, StageConfig> = {
     border: "border-purple-500/20",
   },
   INTERVIEW: {
-    label: "Interview",
+    label: "Interviewed",
     dot: "bg-violet-400",
     headerBg: "bg-violet-500/10",
     headerText: "text-violet-400",
@@ -91,7 +91,7 @@ export const STAGE_CONFIG: Record<CandidateStage, StageConfig> = {
   },
 };
 
-// Ordered stages shown as columns (HIRED/REJECTED/ARCHIVED shown as overflow)
+// All stages including archive
 export const PIPELINE_STAGES: CandidateStage[] = [
   "SOURCED",
   "SHORTLISTED",
@@ -105,7 +105,8 @@ export const PIPELINE_STAGES: CandidateStage[] = [
   "ARCHIVED",
 ];
 
-export const PRIMARY_STAGES: CandidateStage[] = [
+// Kanban board columns — correct funnel order
+export const ACTIVE_STAGES: CandidateStage[] = [
   "SOURCED",
   "SHORTLISTED",
   "CONTACT_REQUESTED",
@@ -114,3 +115,13 @@ export const PRIMARY_STAGES: CandidateStage[] = [
   "REPLIED",
   "INTERVIEW",
 ];
+
+// Archive tab stages (terminal)
+export const ARCHIVE_STAGES: CandidateStage[] = [
+  "HIRED",
+  "REJECTED",
+  "ARCHIVED",
+];
+
+// Alias to keep existing imports working
+export const PRIMARY_STAGES = ACTIVE_STAGES;

@@ -12,7 +12,7 @@ import {
 import {
   ChevronRight, UserPlus, Users, LayoutDashboard, SlidersHorizontal, Settings2,
   Plus, Upload, Pause, Play, XCircle, Building2, Calendar, History, UploadCloud,
-  Kanban,
+  Kanban, Zap,
 } from "lucide-react";
 import { CandidatesTab } from "@/components/jobs/CandidatesTab";
 import { DashboardTab } from "@/components/jobs/DashboardTab";
@@ -23,6 +23,7 @@ import { BulkAddModal } from "@/components/jobs/BulkAddModal";
 import { AddManuallyModal } from "@/components/jobs/AddManuallyModal";
 import { UploadResumesModal } from "@/components/jobs/UploadResumesModal";
 import { PipelineTab } from "@/components/jobs/PipelineTab";
+import { CampaignTab } from "@/components/jobs/CampaignTab";
 
 interface RunSummary {
   id: string;
@@ -112,7 +113,7 @@ function combine(
   };
 }
 
-const VALID_TABS = new Set(["candidates", "pipeline", "history", "dashboard", "rules", "jd"]);
+const VALID_TABS = new Set(["candidates", "pipeline", "campaign", "history", "dashboard", "rules", "jd"]);
 
 export default function RequisitionDetailPage() {
   const { jobId: requisitionId } = useParams<{ jobId: string }>();
@@ -342,6 +343,13 @@ export default function RequisitionDetailPage() {
               Pipeline
             </TabsTrigger>
             <TabsTrigger
+              value="campaign"
+              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-[13px] font-medium text-muted-foreground gap-2 h-11"
+            >
+              <Zap className="h-4 w-4" />
+              Campaigns
+            </TabsTrigger>
+            <TabsTrigger
               value="history"
               className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-[13px] font-medium text-muted-foreground gap-2 h-11"
             >
@@ -379,6 +387,10 @@ export default function RequisitionDetailPage() {
 
         <TabsContent value="pipeline" className="flex-1 overflow-hidden m-0 p-8">
           <PipelineTab requisitionId={requisitionId} />
+        </TabsContent>
+
+        <TabsContent value="campaign" className="flex-1 overflow-y-auto m-0 p-8">
+          <CampaignTab requisitionId={requisitionId} />
         </TabsContent>
 
         <TabsContent value="history" className="flex-1 overflow-y-auto m-0 p-8">

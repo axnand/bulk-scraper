@@ -19,6 +19,7 @@ import {
 import { analyzeProfile, type AnalysisConfig } from "@/lib/analyzer";
 import { exportToSheet, buildSheetPayload } from "@/lib/sheets";
 import { triggerProcessing } from "@/lib/trigger";
+import { buildVars, renderTemplate } from "@/lib/outreach/render-template";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -65,6 +66,96 @@ async function markTaskFailed(
       where: { id: jobId },
       data: { status: finalStatus },
     });
+  }
+}
+
+/**
+ * After a task is scored, check if an active Campaign threshold is met and
+ * auto-advance to SHORTLISTED + create an OutreachMessage for review.
+ */
+async function maybeAutoShortlist(
+  taskId: string,
+  jobId: string,
+  profileData: any,
+  analysisResult: any,
+) {
+  try {
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+      select: { requisitionId: true },
+    });
+    if (!job?.requisitionId) return;
+
+    const campaign = await prisma.campaign.findFirst({
+      where: {
+        requisitionId: job.requisitionId,
+        status: "ACTIVE",
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    if (!campaign) return;
+
+    let threshold = 70;
+    try {
+      const t = JSON.parse(campaign.threshold);
+      if (typeof t?.minScorePercent === "number") threshold = t.minScorePercent;
+    } catch { /* keep default */ }
+
+    if (analysisResult?.scorePercent == null || analysisResult.scorePercent < threshold) return;
+
+    // Already shortlisted or beyond — don't regress
+    const current = await prisma.task.findUnique({
+      where: { id: taskId },
+      select: { stage: true, outreachMessages: { select: { id: true, campaignId: true } } },
+    });
+    if (!current) return;
+    const skipStages = new Set(["SHORTLISTED","CONTACT_REQUESTED","CONNECTED","REPLIED","INTERVIEW","HIRED","REJECTED","ARCHIVED"]);
+    if (skipStages.has(current.stage)) return;
+
+    // Deduplicate — don't create a second OutreachMessage for the same campaign
+    const alreadyHasMsg = current.outreachMessages.some(m => m.campaignId === campaign.id);
+    if (alreadyHasMsg) return;
+
+    let tpl: { subject?: string; body?: string } = {};
+    try { tpl = JSON.parse(campaign.template); } catch { /* ignore */ }
+
+    const vars = buildVars(profileData, analysisResult);
+    const renderedBody = renderTemplate(tpl.body ?? "", vars);
+    const renderedSubject = tpl.subject ? renderTemplate(tpl.subject, vars) : undefined;
+
+    const now = new Date();
+    const msgStatus = campaign.approvalMode === "AUTO" ? "APPROVED" : "AWAITING_REVIEW";
+
+    await prisma.$transaction([
+      prisma.task.update({
+        where: { id: taskId },
+        data: { stage: "SHORTLISTED", stageUpdatedAt: now },
+      }),
+      prisma.outreachMessage.create({
+        data: {
+          campaignId: campaign.id,
+          taskId,
+          channel: campaign.channel,
+          status: msgStatus,
+          renderedBody,
+          renderedSubject,
+          approvedAt: msgStatus === "APPROVED" ? now : undefined,
+        },
+      }),
+      prisma.stageEvent.create({
+        data: {
+          taskId,
+          fromStage: "SOURCED",
+          toStage: "SHORTLISTED",
+          actor: "SYSTEM",
+          reason: `score ${Math.round(analysisResult.scorePercent)}% ≥ threshold ${threshold}%`,
+        },
+      }),
+    ]);
+
+    console.log(`[AutoShortlist] Task ${taskId.slice(-6)} shortlisted (score=${Math.round(analysisResult.scorePercent)}% threshold=${threshold}%)`);
+  } catch (err: any) {
+    console.warn(`[AutoShortlist] Task ${taskId.slice(-6)} hook failed: ${err.message}`);
   }
 }
 
@@ -252,6 +343,11 @@ async function processOneTask(
       },
     });
 
+    // Auto-shortlist if an active campaign threshold is met
+    if (analysisResultJson) {
+      await maybeAutoShortlist(task.id, task.jobId, profileData, JSON.parse(analysisResultJson));
+    }
+
     const updatedJob = await prisma.job.update({
       where: { id: task.jobId },
       data: {
@@ -419,6 +515,9 @@ async function processResumeTask(
     });
 
     await updateJobProgress(task.jobId, true);
+
+    // Auto-shortlist if an active campaign threshold is met
+    await maybeAutoShortlist(task.id, task.jobId, preloaded, analysisResult);
 
     // Sheet export (if configured)
     const sheetUrl = (jobConfig as any).sheetWebAppUrl;
