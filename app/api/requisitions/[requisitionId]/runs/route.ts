@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseAndValidateUrls } from "@/lib/validators";
 import { triggerProcessing } from "@/lib/trigger";
@@ -75,12 +75,7 @@ export async function POST(
       data: { updatedAt: new Date() },
     });
 
-    // Fire trigger without after() — after() silently fails in some environments.
-    // Fire-and-forget so the HTTP response is not delayed.
-    console.log(`[Runs] 🚀 Firing triggerProcessing for runId=${run.id.slice(-6)} totalTasks=${valid.length}`);
-    triggerProcessing().catch((err) =>
-      console.error(`[Runs] ❌ triggerProcessing failed: ${err.message}`)
-    );
+    after(async () => { await triggerProcessing(); });
 
     return NextResponse.json({
       runId: run.id,

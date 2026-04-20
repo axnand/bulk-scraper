@@ -77,23 +77,10 @@ export async function POST(
       );
     }
 
-    // Mark all pending/processing tasks as FAILED immediately so they don't
-    // get stuck in PENDING forever (the processor skips CANCELLED jobs).
-    const cancelled = await prisma.task.updateMany({
-      where: { jobId, status: { in: ["PENDING", "PROCESSING"] } },
-      data: { status: "FAILED", errorMessage: "Job was cancelled" },
-    });
-
     await prisma.job.update({
       where: { id: jobId },
-      data: {
-        status: "CANCELLED",
-        failedCount: { increment: cancelled.count },
-        processedCount: { increment: cancelled.count },
-      },
+      data: { status: "CANCELLED" },
     });
-
-    console.log(`[Cancel] Job ${jobId.slice(-6)} cancelled — ${cancelled.count} pending tasks marked FAILED`);
 
     return NextResponse.json({
       message: "Job cancelled successfully",

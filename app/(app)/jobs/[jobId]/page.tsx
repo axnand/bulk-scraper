@@ -139,69 +139,43 @@ export default function RequisitionDetailPage() {
   }, [tabParam]);
 
   async function fetchAll() {
-    const t = Date.now();
     try {
       const [reqRes, candRes] = await Promise.all([
         fetch(`/api/requisitions/${requisitionId}`),
         fetch(`/api/requisitions/${requisitionId}/candidates`),
       ]);
       if (!reqRes.ok) {
-        console.error(`[Page] fetchAll FAILED — requisition ${requisitionId} returned ${reqRes.status}`);
         setData(null);
         return;
       }
       const requisition: RequisitionDetail = await reqRes.json();
       const candPayload = candRes.ok ? await candRes.json() : { tasks: [] };
-      const combined = combine(requisition, candPayload.tasks || []);
-
-      const activeRun = combined.activeRun;
-      if (activeRun) {
-        console.log(
-          `[Page] 🔄 fetchAll OK (${Date.now() - t}ms) — activeRun #${requisition.runs.findIndex(r => r.id === activeRun.id) + 1} ` +
-          `status=${activeRun.status} processed=${activeRun.processedCount}/${activeRun.totalTasks} ` +
-          `success=${activeRun.successCount} failed=${activeRun.failedCount}`
-        );
-      } else {
-        console.log(`[Page] fetchAll OK (${Date.now() - t}ms) — no active run. Last run: ${requisition.runs[0]?.status ?? "none"}`);
-      }
-
-      setData(combined);
+      setData(combine(requisition, candPayload.tasks || []));
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    console.log(`[Page] 🚀 Mounting — requisitionId=${requisitionId}`);
     fetchAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requisitionId]);
 
   useEffect(() => {
     if (!data?.activeRun) return;
-    console.log(`[Page] ⏱️ Starting poll (every 3s) — activeRun=${data.activeRun.id.slice(-6)} status=${data.activeRun.status}`);
-    const interval = setInterval(() => {
-      console.log(`[Page] 🔁 Poll tick — activeRun=${data.activeRun!.id.slice(-6)} status=${data.activeRun!.status} processed=${data.activeRun!.processedCount}/${data.activeRun!.totalTasks}`);
-      fetchAll();
-    }, 3000);
-    return () => {
-      console.log(`[Page] ⏹️ Stopping poll — activeRun=${data.activeRun!.id.slice(-6)}`);
-      clearInterval(interval);
-    };
+    const interval = setInterval(fetchAll, 3000);
+    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.activeRun?.id, data?.activeRun?.status, requisitionId]);
 
   async function handleRunActionById(runId: string, action: "pause" | "resume" | "cancel") {
-    console.log(`[Page] 🎬 Run action — runId=${runId.slice(-6)} action=${action}`);
     setActionLoading(true);
     try {
-      const res = await fetch(`/api/jobs/${runId}/cancel`, {
+      await fetch(`/api/jobs/${runId}/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action }),
       });
-      const body = await res.json().catch(() => ({}));
-      console.log(`[Page] Run action response — status=${res.status}`, body);
       await fetchAll();
     } finally {
       setActionLoading(false);
