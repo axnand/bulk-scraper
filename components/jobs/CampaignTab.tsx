@@ -155,17 +155,19 @@ export function CampaignTab({ requisitionId }: Props) {
     );
   }
 
+  const isFormOpen = showForm || !!editing;
+
   return (
-    <div className="h-full flex flex-col gap-6">
+    <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between shrink-0">
+      <div className="flex items-center justify-between">
         <div>
           <h2 className="text-base font-semibold">Outreach Campaigns</h2>
           <p className="text-sm text-muted-foreground mt-0.5">
             Configure auto-shortlisting and LinkedIn outreach for this role.
           </p>
         </div>
-        {!showForm && !editing && (
+        {!isFormOpen && (
           <Button size="sm" className="gap-1.5" onClick={() => setShowForm(true)}>
             <Plus className="h-3.5 w-3.5" />
             New campaign
@@ -173,9 +175,9 @@ export function CampaignTab({ requisitionId }: Props) {
         )}
       </div>
 
-      {/* Inline form */}
-      {(showForm || editing) && (
-        <div className="border border-border rounded-xl overflow-hidden">
+      {/* Inline form — shown instead of the table */}
+      {isFormOpen && (
+        <div className="rounded-xl border border-border bg-background">
           <div className="bg-muted/40 px-4 py-3 border-b border-border flex items-center justify-between">
             <span className="text-sm font-medium">
               {editing ? "Edit campaign" : "New campaign"}
@@ -200,7 +202,7 @@ export function CampaignTab({ requisitionId }: Props) {
         </div>
       )}
 
-      {campaigns.length === 0 && !showForm ? (
+      {!isFormOpen && campaigns.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center text-center border border-dashed border-border rounded-xl">
           <Zap className="h-10 w-10 text-muted-foreground/30 mb-3" />
           <p className="text-sm font-semibold text-muted-foreground">No campaigns yet</p>
