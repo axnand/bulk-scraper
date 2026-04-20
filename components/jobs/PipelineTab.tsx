@@ -545,7 +545,7 @@ function ArchiveRow({
   return (
     <li className="flex items-center gap-3 px-4 py-3 hover:bg-muted/40 transition-colors">
       <Avatar className="h-9 w-9 shrink-0">
-        <AvatarImage src={task.profilePictureUrl ?? undefined} alt={name} />
+        <AvatarImage src={task.profilePictureUrl ? `/api/proxy-image?url=${encodeURIComponent(task.profilePictureUrl)}` : undefined} alt={name} />
         <AvatarFallback className={cn("text-white font-bold text-xs bg-linear-to-br", pickGradient(name))}>
           {getInitials(name)}
         </AvatarFallback>

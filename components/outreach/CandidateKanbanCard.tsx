@@ -162,7 +162,7 @@ export function CandidateKanbanCard({
         {/* Top: Avatar + Name + Menu */}
         <div className="flex items-center gap-2.5 min-w-0">
           <Avatar className="h-9 w-9 shrink-0">
-            <AvatarImage src={task.profilePictureUrl ?? undefined} alt={name} />
+            <AvatarImage src={task.profilePictureUrl ? `/api/proxy-image?url=${encodeURIComponent(task.profilePictureUrl)}` : undefined} alt={name} />
             <AvatarFallback
               className={cn("text-white font-bold text-xs bg-linear-to-br", gradient)}
             >
