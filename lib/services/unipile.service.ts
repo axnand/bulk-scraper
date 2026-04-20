@@ -72,15 +72,10 @@ export async function fetchProfile(
   const apiKey = accountApiKey || process.env.UNIPILE_API_KEY;
 
   if (!dsn || !apiKey) {
-    console.error(`[Unipile] ❌ MISSING CREDENTIALS — dsn=${!!dsn} apiKey=${!!apiKey} (check UNIPILE_DSN / UNIPILE_API_KEY env vars or account config)`);
     throw new Error("Unipile DSN and API key must be provided (via account or environment)");
   }
 
   const url = `${dsn}/api/v1/users/${encodeURIComponent(identifier)}?account_id=${encodeURIComponent(unipileAccountId)}&linkedin_sections=*`;
-  const callStart = Date.now();
-
-  console.log(`[Unipile] 🌐 API CALL START — identifier="${identifier}" account="${unipileAccountId.slice(-6)}" dsn="${dsn}"`);
-  console.log(`[Unipile] 🔗 URL: ${url.replace(apiKey, "***")}`);
 
   try {
     const response = await fetch(url, {
@@ -89,16 +84,12 @@ export async function fetchProfile(
         "X-API-KEY": apiKey,
         "Accept": "application/json",
       },
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(30000), // 30 second timeout
     });
-
-    const elapsed = Date.now() - callStart;
-    console.log(`[Unipile] 📡 RESPONSE — status=${response.status} time=${elapsed}ms identifier="${identifier}"`);
 
     if (response.status === 429) {
       const retryAfter = response.headers.get("Retry-After");
       const retryMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 60000;
-      console.warn(`[Unipile] ⚠️ RATE LIMITED — retryAfter=${retryMs}ms account="${unipileAccountId.slice(-6)}"`);
       throw new RateLimitError(
         `Rate limited for account ${unipileAccountId}`,
         retryMs
@@ -107,7 +98,6 @@ export async function fetchProfile(
 
     if (response.status >= 500) {
       const body = await response.text().catch(() => "Unknown server error");
-      console.error(`[Unipile] 🔴 SERVER ERROR ${response.status} — body="${body.slice(0, 200)}"`);
       throw new ServerError(
         `Unipile server error: ${response.status} - ${body}`,
         response.status
@@ -116,7 +106,6 @@ export async function fetchProfile(
 
     if (response.status >= 400) {
       const body = await response.text().catch(() => "Unknown client error");
-      console.error(`[Unipile] 🔴 CLIENT ERROR ${response.status} — body="${body.slice(0, 200)}" identifier="${identifier}"`);
       throw new ClientError(
         `Unipile client error: ${response.status} - ${body}`,
         response.status
@@ -124,11 +113,9 @@ export async function fetchProfile(
     }
 
     const data = await response.json();
-    const parseElapsed = Date.now() - callStart;
-    console.log(`[Unipile] ✅ PROFILE RECEIVED — name="${data.first_name || ""} ${data.last_name || ""}" totalTime=${parseElapsed}ms`);
     return data;
   } catch (error: any) {
-    const elapsed = Date.now() - callStart;
+    // Re-throw our custom errors
     if (
       error instanceof RateLimitError ||
       error instanceof ServerError ||
@@ -137,17 +124,16 @@ export async function fetchProfile(
       throw error;
     }
 
+    // Network/timeout errors
     if (error.name === "AbortError" || error.name === "TimeoutError") {
-      console.error(`[Unipile] ⏱️ TIMEOUT after ${elapsed}ms — identifier="${identifier}"`);
       throw new NetworkError(`Request timed out for ${identifier}`);
     }
 
     if (error.code === "ECONNREFUSED" || error.code === "ENOTFOUND" || error.cause) {
-      console.error(`[Unipile] 🔌 NETWORK ERROR after ${elapsed}ms — ${error.message} (code=${error.code})`);
       throw new NetworkError(`Network error fetching ${identifier}: ${error.message}`);
     }
 
-    console.error(`[Unipile] ❓ UNKNOWN ERROR after ${elapsed}ms — ${error.name}: ${error.message}`);
+    // Unknown errors
     throw new NetworkError(`Unexpected error fetching ${identifier}: ${error.message}`);
   }
 }

@@ -45,7 +45,6 @@ interface Props {
   isSelected?: boolean;
   onSelect?: (taskId: string, selected: boolean) => void;
   showCheckbox?: boolean;
-  campaignId?: string | null;
 }
 
 function getInitials(name: string) {
@@ -87,7 +86,6 @@ export function CandidateKanbanCard({
   isSelected = false,
   onSelect,
   showCheckbox = false,
-  campaignId,
 }: Props) {
   const [sendingInvite, setSendingInvite] = useState(false);
   const name = task.name || "Unknown";
@@ -107,11 +105,7 @@ export function CandidateKanbanCard({
     try {
       const res = await fetch(
         `/api/requisitions/${requisitionId}/candidates/${task.id}/send-invite`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ campaignId: campaignId ?? undefined }),
-        },
+        { method: "POST" },
       );
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to send invite");

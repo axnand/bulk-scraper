@@ -78,30 +78,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const systemTokens = Math.ceil(systemPrompt.length / 4);
-    const userTokens = userPrompt ? Math.ceil(userPrompt.length / 4) : 0;
-
-    // Pull model from DB config for cost estimation
-    let model: string | null = null;
-    if (body.requisitionId) {
-      try {
-        const reqId = await resolveRequisitionId(body.requisitionId);
-        const requisition = await prisma.requisition.findUnique({ where: { id: reqId } });
-        if (requisition?.config) {
-          const dbCfg = JSON.parse(requisition.config);
-          model = dbCfg.aiModel ?? null;
-        }
-      } catch {}
-    }
-
     return NextResponse.json({
       systemPrompt,
       userPrompt,
       charCount: systemPrompt.length,
-      systemTokens,
-      userTokens,
-      totalTokens: systemTokens + userTokens,
-      model,
     });
   } catch (error) {
     console.error("Error building preview prompt:", error);

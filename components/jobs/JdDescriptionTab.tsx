@@ -14,10 +14,9 @@ import {
   Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, Trash2, Eye, Check, Pencil, X, Coins } from "lucide-react";
+import { Plus, Trash2, Eye, Check, Pencil, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DEFAULT_CRITICAL_INSTRUCTIONS } from "@/lib/analyzer";
-import { MODEL_PRICING, estimateCost, formatCost } from "@/lib/model-pricing";
 
 interface EvalConfig {
   id: string;
@@ -91,14 +90,7 @@ export function JdDescriptionTab({ requisitionId, initialConfig, initialTitle, o
   // Preview modal
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewData, setPreviewData] = useState<{
-    systemPrompt: string;
-    userPrompt: string | null;
-    systemTokens: number;
-    userTokens: number;
-    totalTokens: number;
-    model: string | null;
-  } | null>(null);
+  const [previewData, setPreviewData] = useState<{ systemPrompt: string; userPrompt: string } | null>(null);
 
   // Sheet add form
   const [newSheetName, setNewSheetName] = useState("");
@@ -806,70 +798,22 @@ export function JdDescriptionTab({ requisitionId, initialConfig, initialTitle, o
           {previewLoading || !previewData ? (
             <p className="text-sm text-muted-foreground">Compiling prompt…</p>
           ) : (
-            <div className="space-y-3">
-              {/* Token + cost summary bar */}
-              <div className="rounded-lg border border-border bg-muted/40 px-4 py-3 flex flex-wrap gap-x-6 gap-y-2 text-xs">
-                <div className="flex items-center gap-1.5">
-                  <Coins className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="text-muted-foreground">System</span>
-                  <span className="font-mono font-semibold text-foreground">{previewData.systemTokens.toLocaleString()} tok</span>
-                </div>
-                {previewData.userTokens > 0 && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-muted-foreground">User</span>
-                    <span className="font-mono font-semibold text-foreground">{previewData.userTokens.toLocaleString()} tok</span>
-                  </div>
-                )}
-                <div className="flex items-center gap-1.5">
-                  <span className="text-muted-foreground">Total input</span>
-                  <span className="font-mono font-semibold text-foreground">{previewData.totalTokens.toLocaleString()} tok</span>
-                </div>
-                {previewData.model && (() => {
-                  const pricing = MODEL_PRICING[previewData.model!];
-                  const inputCost = estimateCost(previewData.totalTokens, 0, previewData.model!);
-                  return (
-                    <>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-muted-foreground">Model</span>
-                        <span className="font-mono font-semibold text-foreground">{previewData.model}</span>
-                      </div>
-                      {inputCost ? (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-muted-foreground">Input cost/call</span>
-                          <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">{formatCost(inputCost.inputCost)}</span>
-                          {pricing && (
-                            <span className="text-[10px] text-muted-foreground">(${pricing.input}/1M in · ${pricing.output}/1M out)</span>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground italic">pricing unknown for {previewData.model}</span>
-                      )}
-                    </>
-                  );
-                })()}
-                {!previewData.model && (
-                  <span className="text-muted-foreground italic">No model selected — cost unknown</span>
-                )}
-                <span className="text-[10px] text-muted-foreground self-center">~4 chars/token estimate</span>
-              </div>
-
-              <Tabs defaultValue="system">
-                <TabsList>
-                  <TabsTrigger value="system">System ({previewData.systemTokens.toLocaleString()} tok)</TabsTrigger>
-                  <TabsTrigger value="user">User ({previewData.userTokens.toLocaleString()} tok)</TabsTrigger>
-                </TabsList>
-                <TabsContent value="system">
-                  <pre className="text-xs text-foreground bg-muted rounded p-3 overflow-auto max-h-[55vh] whitespace-pre-wrap font-mono">
-                    {previewData.systemPrompt}
-                  </pre>
-                </TabsContent>
-                <TabsContent value="user">
-                  <pre className="text-xs text-foreground bg-muted rounded p-3 overflow-auto max-h-[55vh] whitespace-pre-wrap font-mono">
-                    {previewData.userPrompt ?? "(no job description — add one to preview the user prompt)"}
-                  </pre>
-                </TabsContent>
-              </Tabs>
-            </div>
+            <Tabs defaultValue="system">
+              <TabsList>
+                <TabsTrigger value="system">System</TabsTrigger>
+                <TabsTrigger value="user">User</TabsTrigger>
+              </TabsList>
+              <TabsContent value="system">
+                <pre className="text-xs text-foreground bg-muted rounded p-3 overflow-auto max-h-[60vh] whitespace-pre-wrap font-mono">
+                  {previewData.systemPrompt}
+                </pre>
+              </TabsContent>
+              <TabsContent value="user">
+                <pre className="text-xs text-foreground bg-muted rounded p-3 overflow-auto max-h-[60vh] whitespace-pre-wrap font-mono">
+                  {previewData.userPrompt}
+                </pre>
+              </TabsContent>
+            </Tabs>
           )}
         </DialogContent>
       </Dialog>

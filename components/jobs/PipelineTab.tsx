@@ -24,13 +24,6 @@ import {
 import { cn } from "@/lib/utils";
 import { KanbanColumn } from "@/components/outreach/KanbanColumn";
 import { PipelineTask } from "@/components/outreach/CandidateKanbanCard";
-
-interface Campaign {
-  id: string;
-  name: string;
-  channel: string;
-  status: string;
-}
 import {
   CandidateStage,
   STAGE_CONFIG,
@@ -64,10 +57,6 @@ export function PipelineTab({ requisitionId }: Props) {
   const [query, setQuery] = useState("");
   const [archiveFilter, setArchiveFilter] = useState<"ALL" | CandidateStage>("ALL");
 
-  // Campaign selector
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
-
   // Bulk selection
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkInviting, setBulkInviting] = useState(false);
@@ -87,24 +76,7 @@ export function PipelineTab({ requisitionId }: Props) {
     }
   }, [requisitionId]);
 
-  const fetchCampaigns = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/requisitions/${requisitionId}/campaigns`);
-      if (!res.ok) return;
-      const data = await res.json();
-      const active: Campaign[] = (data.campaigns ?? []).filter((c: Campaign) => c.status === "ACTIVE");
-      setCampaigns(active);
-      // Auto-select first active campaign
-      if (active.length > 0 && !selectedCampaignId) {
-        setSelectedCampaignId(active[0].id);
-      }
-    } catch { /* non-fatal */ }
-  }, [requisitionId, selectedCampaignId]);
-
-  useEffect(() => {
-    fetchPipeline();
-    fetchCampaigns();
-  }, [fetchPipeline, fetchCampaigns]);
+  useEffect(() => { fetchPipeline(); }, [fetchPipeline]);
 
   useEffect(() => {
     function onDragStart(e: DragEvent) {
@@ -205,7 +177,7 @@ export function PipelineTab({ requisitionId }: Props) {
       const res = await fetch(`/api/requisitions/${requisitionId}/candidates/bulk-invite`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ taskIds, campaignId: selectedCampaignId }),
+        body: JSON.stringify({ taskIds }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Bulk invite failed");
@@ -245,7 +217,7 @@ export function PipelineTab({ requisitionId }: Props) {
       const res = await fetch(`/api/requisitions/${requisitionId}/candidates/bulk-message`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ taskIds, campaignId: selectedCampaignId }),
+        body: JSON.stringify({ taskIds }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Bulk message failed");
@@ -368,40 +340,6 @@ export function PipelineTab({ requisitionId }: Props) {
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Campaign selector */}
-            {campaigns.length > 0 && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5 max-w-[180px]">
-                    <span className="truncate">
-                      {campaigns.find(c => c.id === selectedCampaignId)?.name ?? "Select campaign"}
-                    </span>
-                    <ChevronDown className="h-3 w-3 shrink-0" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-52">
-                  <DropdownMenuLabel className="text-xs text-muted-foreground">Active campaigns</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {campaigns.map(c => (
-                    <DropdownMenuItem
-                      key={c.id}
-                      onClick={() => setSelectedCampaignId(c.id)}
-                      className="text-xs gap-2 cursor-pointer"
-                    >
-                      <span className={cn(
-                        "h-1.5 w-1.5 rounded-full shrink-0",
-                        c.id === selectedCampaignId ? "bg-primary" : "bg-muted-foreground/40",
-                      )} />
-                      <span className="truncate flex-1">{c.name}</span>
-                      {c.id === selectedCampaignId && (
-                        <span className="text-[10px] text-primary font-semibold">active</span>
-                      )}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
@@ -449,7 +387,6 @@ export function PipelineTab({ requisitionId }: Props) {
                 onColumnSelectAll={handleColumnSelectAll}
                 onColumnDeselectAll={handleColumnDeselectAll}
                 showCheckboxes={showCheckboxes}
-                campaignId={selectedCampaignId}
               />
             ))}
           </div>
