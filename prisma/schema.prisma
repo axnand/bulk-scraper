@@ -8,6 +8,19 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+enum CandidateStage {
+  SOURCED
+  SHORTLISTED
+  CONTACT_REQUESTED
+  CONNECTED
+  MESSAGED
+  REPLIED
+  INTERVIEW
+  HIRED
+  REJECTED
+  ARCHIVED
+}
+
 model Account {
   id            String    @id @default(cuid())
   accountId     String    @unique          // Unipile account_id
@@ -24,6 +37,7 @@ model Account {
   cooldownUntil DateTime?                  // null = not in cooldown
   createdAt     DateTime  @default(now())
   tasks         Task[]
+  campaigns     Campaign[]
 }
 
 model Requisition {
@@ -38,6 +52,7 @@ model Requisition {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   jobs          Job[]
+  campaigns     Campaign[]
 
   @@index([archived])
 }
@@ -74,14 +89,92 @@ model Task {
   errorMessage   String?  @db.Text // failure reason
   retryCount     Int      @default(0)
   accountId      String?  // assigned at processing time
+  stage          CandidateStage @default(SOURCED)
+  stageUpdatedAt DateTime @default(now())
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  job     Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  account Account? @relation(fields: [accountId], references: [id])
+  job              Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  account          Account?          @relation(fields: [accountId], references: [id])
+  outreachMessages OutreachMessage[]
+  stageEvents      StageEvent[]
+  contact          CandidateContact?
 
   @@index([jobId])
   @@index([accountId])
+  @@index([stage])
+}
+
+model Campaign {
+  id               String    @id @default(cuid())
+  requisitionId    String
+  name             String
+  channel          String    @default("LINKEDIN_INVITE") // LINKEDIN_INVITE | LINKEDIN_DM | EMAIL
+  template         String    @db.Text // JSON: { subject?, body, variables[] }
+  threshold        String    @db.Text // JSON: { minScorePercent, requireRecommendation?, excludeFlags? }
+  approvalMode     String    @default("REVIEW")  // REVIEW | AUTO
+  dailyCap         Int       @default(20)
+  sendingAccountId String?
+  status           String    @default("ACTIVE")  // ACTIVE | PAUSED | ARCHIVED
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  requisition      Requisition       @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  sendingAccount   Account?          @relation(fields: [sendingAccountId], references: [id])
+  messages         OutreachMessage[]
+
+  @@index([requisitionId, status])
+}
+
+model OutreachMessage {
+  id                String    @id @default(cuid())
+  campaignId        String
+  taskId            String
+  channel           String
+  status            String    @default("AWAITING_REVIEW") // DRAFT | AWAITING_REVIEW | APPROVED | QUEUED | SENT | FAILED | REPLIED | BOUNCED
+  renderedSubject   String?
+  renderedBody      String    @db.Text
+  approvedAt        DateTime?
+  scheduledFor      DateTime?
+  sentAt            DateTime?
+  providerMessageId String?
+  providerChatId    String?
+  errorMessage      String?   @db.Text
+  retryCount        Int       @default(0)
+  createdAt         DateTime  @default(now())
+
+  campaign          Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  task              Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, taskId])
+  @@index([status, scheduledFor])
+  @@index([taskId])
+}
+
+model StageEvent {
+  id        String         @id @default(cuid())
+  taskId    String
+  fromStage CandidateStage?
+  toStage   CandidateStage
+  actor     String         @default("USER") // USER | SYSTEM | RULE | WEBHOOK
+  reason    String?
+  createdAt DateTime       @default(now())
+
+  task      Task           @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+}
+
+model CandidateContact {
+  id         String    @id @default(cuid())
+  taskId     String    @unique
+  email      String?
+  phone      String?
+  source     String?   // UNIPILE | WIZA | APOLLO | MANUAL
+  confidence Float?
+  enrichedAt DateTime?
+
+  task       Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
 }
 
 model CandidateProfile {

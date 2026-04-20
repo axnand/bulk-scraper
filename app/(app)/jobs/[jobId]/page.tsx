@@ -12,6 +12,7 @@ import {
 import {
   ChevronRight, UserPlus, Users, LayoutDashboard, SlidersHorizontal, Settings2,
   Plus, Upload, Pause, Play, XCircle, Building2, Calendar, History, UploadCloud,
+  Kanban,
 } from "lucide-react";
 import { CandidatesTab } from "@/components/jobs/CandidatesTab";
 import { DashboardTab } from "@/components/jobs/DashboardTab";
@@ -21,6 +22,7 @@ import { HistoryTab } from "@/components/jobs/HistoryTab";
 import { BulkAddModal } from "@/components/jobs/BulkAddModal";
 import { AddManuallyModal } from "@/components/jobs/AddManuallyModal";
 import { UploadResumesModal } from "@/components/jobs/UploadResumesModal";
+import { PipelineTab } from "@/components/jobs/PipelineTab";
 
 interface RunSummary {
   id: string;
@@ -110,7 +112,7 @@ function combine(
   };
 }
 
-const VALID_TABS = new Set(["candidates", "history", "dashboard", "rules", "jd"]);
+const VALID_TABS = new Set(["candidates", "pipeline", "history", "dashboard", "rules", "jd"]);
 
 export default function RequisitionDetailPage() {
   const { jobId: requisitionId } = useParams<{ jobId: string }>();
@@ -198,7 +200,7 @@ export default function RequisitionDetailPage() {
   if (!data) {
     return (
       <div className="p-8">
-        <Link href="/" className="text-primary text-sm hover:underline">← Back to roles</Link>
+        <Link href="/" className="text-primary text-[13px] hover:underline">← Back to roles</Link>
         <p className="text-muted-foreground mt-4">Role not found.</p>
       </div>
     );
@@ -321,20 +323,27 @@ export default function RequisitionDetailPage() {
       </div>
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
-        <div className="border-b border-border pr-8 shrink-0 bg-background">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden shadow-none">
+        <div className="border-b border-border px-8 shrink-0 bg-background shadow-none border-l-0 border-r-0">
           <TabsList className="bg-transparent h-auto p-0 gap-0">
             <TabsTrigger
               value="candidates"
-              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-sm font-medium text-muted-foreground gap-2 h-11"
+              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-[13px] font-medium text-muted-foreground gap-2 h-11"
             >
               <Users className="h-4 w-4" />
               Candidates
               <Badge variant="secondary" className="ml-1 text-xs">{data.successCount}</Badge>
             </TabsTrigger>
             <TabsTrigger
+              value="pipeline"
+              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-[13px] font-medium text-muted-foreground gap-2 h-11"
+            >
+              <Kanban className="h-4 w-4" />
+              Pipeline
+            </TabsTrigger>
+            <TabsTrigger
               value="history"
-              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-sm font-medium text-muted-foreground gap-2 h-11"
+              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-[13px] font-medium text-muted-foreground gap-2 h-11"
             >
               <History className="h-4 w-4" />
               History
@@ -342,21 +351,21 @@ export default function RequisitionDetailPage() {
             </TabsTrigger>
             <TabsTrigger
               value="dashboard"
-              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-sm font-medium text-muted-foreground gap-2 h-11"
+              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-[13px] font-medium text-muted-foreground gap-2 h-11"
             >
               <LayoutDashboard className="h-4 w-4" />
               Dashboard
             </TabsTrigger>
             <TabsTrigger
               value="rules"
-              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-sm font-medium text-muted-foreground gap-2 h-11"
+              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-[13px] font-medium text-muted-foreground gap-2 h-11"
             >
               <SlidersHorizontal className="h-4 w-4" />
               Scoring Rules
             </TabsTrigger>
             <TabsTrigger
               value="jd"
-              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-sm font-medium text-muted-foreground gap-2 h-11"
+              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-[13px] font-medium text-muted-foreground gap-2 h-11"
             >
               <Settings2 className="h-4 w-4" />
               Settings
@@ -366,6 +375,10 @@ export default function RequisitionDetailPage() {
 
         <TabsContent value="candidates" className="flex-1 overflow-y-auto m-0 p-8">
           <CandidatesTab data={data} requisitionId={requisitionId} onRefresh={fetchAll} />
+        </TabsContent>
+
+        <TabsContent value="pipeline" className="flex-1 overflow-hidden m-0 p-8">
+          <PipelineTab requisitionId={requisitionId} />
         </TabsContent>
 
         <TabsContent value="history" className="flex-1 overflow-y-auto m-0 p-8">
