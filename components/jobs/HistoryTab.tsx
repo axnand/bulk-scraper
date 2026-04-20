@@ -98,6 +98,7 @@ export function HistoryTab({ runs, onRunAction, actionLoading }: Props) {
 
   async function handleCancel(runId: string) {
     if (!window.confirm("Cancel this run? Running tasks will be marked failed.")) return;
+    console.log(`[HistoryTab] Cancelling run=${runId.slice(-6)}`);
     await onRunAction(runId, "cancel");
   }
 
@@ -250,10 +251,22 @@ function RunDetailDrawer({ run, runNumber }: { run: RunSummary; runNumber: numbe
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
 
   async function fetchDetail() {
+    const t = Date.now();
     try {
       const res = await fetch(`/api/jobs/${run.id}/results`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        console.error(`[HistoryDrawer] fetchDetail FAILED — run=${run.id.slice(-6)} status=${res.status}`);
+        return;
+      }
       const data = await res.json();
+      const pending = data.tasks?.filter((t: any) => t.status === "PENDING").length ?? 0;
+      const processing = data.tasks?.filter((t: any) => t.status === "PROCESSING").length ?? 0;
+      const done = data.tasks?.filter((t: any) => t.status === "DONE").length ?? 0;
+      const failed = data.tasks?.filter((t: any) => t.status === "FAILED").length ?? 0;
+      console.log(
+        `[HistoryDrawer] fetchDetail OK (${Date.now() - t}ms) — run=${run.id.slice(-6)} ` +
+        `jobStatus=${data.status} PENDING=${pending} PROCESSING=${processing} DONE=${done} FAILED=${failed}`
+      );
       setDetail(data);
     } finally {
       setLoading(false);
@@ -261,6 +274,7 @@ function RunDetailDrawer({ run, runNumber }: { run: RunSummary; runNumber: numbe
   }
 
   useEffect(() => {
+    console.log(`[HistoryDrawer] Opened — run=${run.id.slice(-6)} status=${run.status}`);
     setLoading(true);
     setExpandedTask(null);
     fetchDetail();
@@ -270,8 +284,15 @@ function RunDetailDrawer({ run, runNumber }: { run: RunSummary; runNumber: numbe
   useEffect(() => {
     if (!detail) return;
     if (!ACTIVE_STATUSES.has(detail.status)) return;
-    const interval = setInterval(fetchDetail, 3000);
-    return () => clearInterval(interval);
+    console.log(`[HistoryDrawer] ⏱️ Starting drawer poll (every 3s) — run=${run.id.slice(-6)} status=${detail.status}`);
+    const interval = setInterval(() => {
+      console.log(`[HistoryDrawer] 🔁 Drawer poll tick — run=${run.id.slice(-6)} status=${detail.status}`);
+      fetchDetail();
+    }, 3000);
+    return () => {
+      console.log(`[HistoryDrawer] ⏹️ Stopping drawer poll — run=${run.id.slice(-6)}`);
+      clearInterval(interval);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail?.status, run.id]);
 

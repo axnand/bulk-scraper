@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { CONFIG, jitter, getWorkerConcurrency } from "@/lib/config";
 import {
@@ -600,6 +599,19 @@ async function runProcessingCycle(): Promise<{
     console.log(`[Process] 🔧 Recovery: ${recovery.recoveredTasks} stale tasks reset, ${recovery.checkedAccounts} BUSY accounts checked`);
   }
 
+  // Clean up PENDING tasks belonging to CANCELLED jobs (can accumulate if cancel
+  // happened before this fix was deployed).
+  const orphaned = await prisma.task.updateMany({
+    where: {
+      status: { in: ["PENDING", "PROCESSING"] },
+      job: { status: "CANCELLED" },
+    },
+    data: { status: "FAILED", errorMessage: "Job was cancelled" },
+  });
+  if (orphaned.count > 0) {
+    console.log(`[Process] 🧹 Cleaned up ${orphaned.count} orphaned tasks from CANCELLED jobs`);
+  }
+
   // 1. Drain resume/zip tasks — no Unipile accounts needed
   const resumeTasks = await prisma.task.findMany({
     where: {
@@ -796,19 +808,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  console.log("[Process] ✅ Auth OK — scheduling processLoop via after()");
+  console.log("[Process] ✅ Auth OK — starting processLoop directly (no after())");
 
-  after(async () => {
-    console.log("[Process] ⚡ after() callback starting...");
-    const t = Date.now();
-    try {
-      await processLoop();
-    } catch (err: any) {
-      console.error("[Process] 💥 after() callback crashed:", err.message, err.stack);
-    } finally {
-      console.log(`[Process] after() callback finished in ${Date.now() - t}ms`);
-    }
-  });
+  // Run processLoop without after() — after() silently drops in some environments.
+  // Fire-and-forget so the HTTP 200 returns immediately while processing continues.
+  const t = Date.now();
+  processLoop()
+    .then(() => console.log(`[Process] processLoop finished in ${Date.now() - t}ms`))
+    .catch((err: any) => console.error("[Process] 💥 processLoop crashed:", err.message, err.stack));
 
   return NextResponse.json({ message: "Processing started" });
 }
