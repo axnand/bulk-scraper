@@ -6,7 +6,7 @@
  *  - "anthropic"         — Claude's Messages API
  *
  * Provider config is read from the AiProvider DB table.
- * Falls back to OPENAI_API_KEY env var when no provider is specified (backward compat).
+ * Falls back to OPENAI_API_KEY env var when no providewr is specified (backward compat).
  */
 
 import { prisma } from "@/lib/prisma";
