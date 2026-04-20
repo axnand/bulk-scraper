@@ -262,23 +262,12 @@ export default function CandidateDetailPage() {
           {analysis && (
             <div className="shrink-0 flex items-center gap-4 pl-4 border-l border-border">
               <div className="text-right">
-                <p className={cn("text-4xl font-black tabular-nums leading-none", scoreColor)}>
+                <p className={cn("text-2xl font-black tabular-nums leading-none", scoreColor)}>
                   {scorePercent}%
                 </p>
                 <p className="text-xs text-muted-foreground mt-1 font-medium">
                   {analysis.totalScore} / {analysis.maxScore} pts
                 </p>
-              </div>
-              <div className="relative h-14 w-14">
-                <svg className="h-14 w-14 -rotate-90" viewBox="0 0 36 36">
-                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-muted/40" />
-                  <circle
-                    cx="18" cy="18" r="15.9" fill="none" strokeWidth="2.5"
-                    strokeDasharray={`${scorePercent} ${100 - scorePercent}`}
-                    strokeLinecap="round"
-                    className={scorePercent >= 70 ? "stroke-emerald-500" : scorePercent >= 40 ? "stroke-amber-500" : "stroke-rose-500"}
-                  />
-                </svg>
               </div>
             </div>
           )}

@@ -179,7 +179,12 @@ async function processOneTask(
   const taskStart = Date.now();
   const tag = `[Task ${task.id.slice(-6)}]`;
 
+  console.log(`${tag} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  console.log(`${tag} 🚀 TASK START — url="${task.url}" retry=${task.retryCount} jobStatus="${task.job.status}" acct="${account.accountId.slice(-6)}"`);
+  console.log(`${tag}    account.dsn=${!!account.dsn} account.apiKey=${!!account.apiKey}`);
+
   // Optimistic claim — only succeeds if task is still PENDING
+  console.log(`${tag} 🔒 Claiming task (optimistic lock)...`);
   const claimed = await prisma.task
     .update({
       where: { id: task.id, status: "PENDING" },
@@ -188,15 +193,15 @@ async function processOneTask(
     .catch(() => null);
 
   if (!claimed) {
-    console.log(`${tag} Claim failed — already grabbed by another worker. Releasing account.`);
+    console.log(`${tag} ⚠️ Claim failed — already grabbed by another worker. Releasing account.`);
     await releaseAccount(account.id, false);
     return;
   }
 
-  console.log(`${tag} Claimed. url=${task.url} retry=${task.retryCount} acct=${account.accountId.slice(-6)}`);
+  console.log(`${tag} ✅ Claimed. url=${task.url} retry=${task.retryCount} acct=${account.accountId.slice(-6)}`);
 
   if (task.job.status === "CANCELLED") {
-    console.log(`${tag} Job is CANCELLED — marking task failed.`);
+    console.log(`${tag} 🚫 Job is CANCELLED — marking task failed.`);
     await prisma.task.update({
       where: { id: task.id },
       data: { status: "FAILED", errorMessage: "Job was cancelled" },
@@ -206,8 +211,7 @@ async function processOneTask(
   }
 
   if (task.job.status === "PAUSED") {
-    console.log(`${tag} Job is PAUSED — returning task to PENDING.`);
-    // Release task back to PENDING so it can be picked up after resume
+    console.log(`${tag} ⏸️ Job is PAUSED — returning task to PENDING.`);
     await prisma.task.update({
       where: { id: task.id },
       data: { status: "PENDING", accountId: null },
@@ -217,6 +221,7 @@ async function processOneTask(
   }
 
   if (task.job.status === "PENDING") {
+    console.log(`${tag} 📝 Transitioning job ${task.job.id.slice(-6)} PENDING → PROCESSING`);
     await prisma.job
       .update({
         where: { id: task.job.id, status: "PENDING" },
@@ -229,16 +234,19 @@ async function processOneTask(
   try {
     const identifier = extractIdentifier(task.url);
     if (!identifier) {
-      console.error(`${tag} Invalid LinkedIn URL, marking failed.`);
+      console.error(`${tag} ❌ Invalid LinkedIn URL — cannot extract identifier from "${task.url}". Marking failed.`);
       await markTaskFailed(task.id, task.jobId, "Invalid LinkedIn URL format");
       return;
     }
 
+    console.log(`${tag} ⏳ Applying jitter before Unipile call...`);
+    const jitterStart = Date.now();
     await jitter();
+    console.log(`${tag} ⏳ Jitter done — ${Date.now() - jitterStart}ms`);
 
     // ── Stage 1: Fetch profile ──
     const fetchStart = Date.now();
-    console.log(`${tag} [1/3] Fetching LinkedIn profile (identifier: ${identifier})...`);
+    console.log(`${tag} [1/3] 🌐 UNIPILE FETCH START — identifier="${identifier}" @ ${new Date().toISOString()}`);
     let profileData: any;
     try {
       profileData = await fetchProfile(
@@ -247,13 +255,16 @@ async function processOneTask(
         account.dsn || undefined,
         account.apiKey || undefined
       );
-      console.log(`${tag} [1/3] Fetch OK — ${Date.now() - fetchStart}ms. name="${profileData.first_name || ""} ${profileData.last_name || ""}"`);
+      const fetchMs = Date.now() - fetchStart;
+      console.log(`${tag} [1/3] ✅ UNIPILE FETCH OK — ${fetchMs}ms. name="${profileData.first_name || ""} ${profileData.last_name || ""}" headline="${(profileData.headline || "").slice(0, 60)}"`);
     } catch (fetchErr: any) {
-      console.error(`${tag} [1/3] Fetch FAILED after ${Date.now() - fetchStart}ms: ${fetchErr.name}: ${fetchErr.message}`);
+      console.error(`${tag} [1/3] ❌ UNIPILE FETCH FAILED after ${Date.now() - fetchStart}ms — ${fetchErr.name}: ${fetchErr.message}`);
       throw fetchErr;
     }
 
     // ── Stage 2: Persist candidate profile ──
+    console.log(`${tag} [1/3] 💾 Saving candidate profile to DB...`);
+    const dbSaveStart = Date.now();
     const candidateProfile = await prisma.candidateProfile.create({
       data: {
         linkedinUrl: task.url,
@@ -263,19 +274,27 @@ async function processOneTask(
         rawProfile: JSON.stringify(profileData),
       },
     });
+    console.log(`${tag} [1/3] 💾 DB save OK — ${Date.now() - dbSaveStart}ms. candidateId=${candidateProfile.id.slice(-6)}`);
 
     // ── Stage 3: AI analysis (optional) ──
     let analysisResultJson: string | null = null;
     const jobConfig = await getJobConfig(task.jobId);
 
-    if (jobConfig?.jobDescription) {
+    if (!jobConfig) {
+      console.warn(`${tag} [2/3] ⚠️ No job config found for jobId=${task.jobId.slice(-6)} — skipping analysis`);
+    } else if (!jobConfig.jobDescription) {
+      console.log(`${tag} [2/3] ℹ️ Analysis SKIPPED — no jobDescription in config`);
+    } else {
       const analysisStart = Date.now();
-      console.log(`${tag} [2/3] Running AI analysis (model: ${(jobConfig as any).aiModel || "unknown"})...`);
+      const aiModel = (jobConfig as any).aiModel || "unknown";
+      console.log(`${tag} [2/3] 🤖 AI ANALYSIS START — model="${aiModel}" @ ${new Date().toISOString()}`);
       try {
         const analysisResult = await analyzeProfile(profileData, jobConfig);
+        const analysisMs = Date.now() - analysisStart;
         analysisResultJson = JSON.stringify(analysisResult);
-        console.log(`${tag} [2/3] Analysis OK — ${Date.now() - analysisStart}ms. score=${analysisResult.scorePercent}% (${analysisResult.totalScore}/${analysisResult.maxScore}) → ${analysisResult.recommendation}`);
+        console.log(`${tag} [2/3] ✅ AI ANALYSIS OK — ${analysisMs}ms. score=${analysisResult.scorePercent}% (${analysisResult.totalScore}/${analysisResult.maxScore}) → "${analysisResult.recommendation}"`);
 
+        const recordSaveStart = Date.now();
         await prisma.analysisRecord.create({
           data: {
             candidateId: candidateProfile.id,
@@ -296,6 +315,7 @@ async function processOneTask(
             recommendation: analysisResult.recommendation,
           },
         });
+        console.log(`${tag} [2/3] 💾 Analysis record saved — ${Date.now() - recordSaveStart}ms`);
 
         // ── Stage 4: Sheet export (optional) ──
         const sheetUrl = (jobConfig as any).sheetWebAppUrl;
@@ -303,7 +323,7 @@ async function processOneTask(
           const minThreshold = (jobConfig as any).minScoreThreshold ?? 0;
           if (analysisResult.scorePercent >= minThreshold) {
             const sheetStart = Date.now();
-            console.log(`${tag} [3/3] Exporting to sheet (score ${analysisResult.scorePercent}% >= threshold ${minThreshold}%)...`);
+            console.log(`${tag} [3/3] 📊 SHEET EXPORT START — score ${analysisResult.scorePercent}% >= threshold ${minThreshold}%`);
             const jdTitle = (jobConfig as any).jdTitle || "Bulk Analysis";
             const payload = buildSheetPayload(
               task.url,
@@ -314,25 +334,24 @@ async function processOneTask(
             );
             try {
               await exportToSheet(sheetUrl, payload);
-              console.log(`${tag} [3/3] Sheet export OK — ${Date.now() - sheetStart}ms`);
+              console.log(`${tag} [3/3] ✅ Sheet export OK — ${Date.now() - sheetStart}ms`);
             } catch (sheetErr: any) {
-              console.warn(`${tag} [3/3] Sheet export FAILED after ${Date.now() - sheetStart}ms: ${sheetErr.message}`);
+              console.warn(`${tag} [3/3] ⚠️ Sheet export FAILED after ${Date.now() - sheetStart}ms: ${sheetErr.message}`);
             }
           } else {
-            console.log(`${tag} [3/3] Sheet export SKIPPED — score ${analysisResult.scorePercent}% < threshold ${minThreshold}%`);
+            console.log(`${tag} [3/3] ℹ️ Sheet export SKIPPED — score ${analysisResult.scorePercent}% < threshold ${minThreshold}%`);
           }
         } else {
-          console.log(`${tag} [3/3] Sheet export SKIPPED — no sheetWebAppUrl configured`);
+          console.log(`${tag} [3/3] ℹ️ Sheet export SKIPPED — no sheetWebAppUrl configured`);
         }
       } catch (analysisErr: any) {
         console.warn(
-          `${tag} [2/3] Analysis FAILED after ${Date.now() - analysisStart}ms: ${analysisErr.message}`
+          `${tag} [2/3] ❌ AI ANALYSIS FAILED after ${Date.now() - analysisStart}ms: ${analysisErr.message}`
         );
       }
-    } else {
-      console.log(`${tag} [2/3] Analysis SKIPPED — no jobDescription in config`);
     }
 
+    console.log(`${tag} 💾 Marking task DONE in DB...`);
     await prisma.task.update({
       where: { id: task.id },
       data: {
@@ -343,8 +362,8 @@ async function processOneTask(
       },
     });
 
-    // Auto-shortlist if an active campaign threshold is met
     if (analysisResultJson) {
+      console.log(`${tag} 🎯 Checking auto-shortlist...`);
       await maybeAutoShortlist(task.id, task.jobId, profileData, JSON.parse(analysisResultJson));
     }
 
@@ -357,7 +376,7 @@ async function processOneTask(
     });
 
     if (updatedJob.processedCount >= updatedJob.totalTasks) {
-      console.log(`${tag} Job ${task.jobId.slice(-6)} complete! (${updatedJob.processedCount}/${updatedJob.totalTasks})`);
+      console.log(`${tag} 🏁 Job ${task.jobId.slice(-6)} COMPLETE! (${updatedJob.processedCount}/${updatedJob.totalTasks})`);
       await prisma.job.update({
         where: { id: task.jobId },
         data: { status: "COMPLETED" },
@@ -365,36 +384,37 @@ async function processOneTask(
     }
 
     success = true;
-    console.log(`${tag} DONE in ${Date.now() - taskStart}ms. Job progress: ${updatedJob.processedCount}/${updatedJob.totalTasks}`);
+    console.log(`${tag} ✅ TASK DONE in ${Date.now() - taskStart}ms. Job progress: ${updatedJob.processedCount}/${updatedJob.totalTasks}`);
   } catch (error: any) {
     const elapsed = Date.now() - taskStart;
     if (error instanceof RateLimitError) {
-      console.warn(`${tag} RATE LIMITED after ${elapsed}ms — cooling down account. retryAfter=${error.retryAfterMs}ms`);
+      console.warn(`${tag} ⚠️ RATE LIMITED after ${elapsed}ms — cooling down account. retryAfter=${error.retryAfterMs}ms`);
       await cooldownAccount(account.id);
       await prisma.task.update({
         where: { id: task.id },
         data: { status: "PENDING", retryCount: { increment: 1 } },
       });
     } else if (error instanceof ServerError || error instanceof NetworkError) {
-      console.warn(`${tag} RETRYABLE ERROR after ${elapsed}ms (${error.name}): ${error.message}. retry=${task.retryCount + 1}`);
+      console.warn(`${tag} 🔄 RETRYABLE ERROR after ${elapsed}ms (${error.name}): ${error.message}. retry=${task.retryCount + 1}/${CONFIG.MAX_RETRIES}`);
       await prisma.task.update({
         where: { id: task.id },
         data: { status: "PENDING", retryCount: { increment: 1 } },
       });
     } else if (error instanceof ClientError) {
-      console.error(`${tag} CLIENT ERROR after ${elapsed}ms (status=${error.statusCode}): ${error.message}. Marking failed.`);
+      console.error(`${tag} ❌ CLIENT ERROR after ${elapsed}ms (status=${error.statusCode}): ${error.message}. Marking FAILED.`);
       await markTaskFailed(task.id, task.jobId, error.message);
     } else {
-      console.error(`${tag} UNKNOWN ERROR after ${elapsed}ms:`, error);
+      console.error(`${tag} 💥 UNKNOWN ERROR after ${elapsed}ms — ${error.name}: ${error.message}`);
+      console.error(`${tag}    Stack: ${error.stack?.split("\n").slice(0, 3).join(" | ")}`);
       if (task.retryCount >= CONFIG.MAX_RETRIES) {
-        console.error(`${tag} Exhausted retries (${task.retryCount}/${CONFIG.MAX_RETRIES}). Marking failed.`);
+        console.error(`${tag} ❌ Exhausted retries (${task.retryCount}/${CONFIG.MAX_RETRIES}). Marking FAILED.`);
         await markTaskFailed(
           task.id,
           task.jobId,
           `Exhausted retries: ${error.message || "Unknown error"}`
         );
       } else {
-        console.warn(`${tag} Retrying (${task.retryCount + 1}/${CONFIG.MAX_RETRIES})...`);
+        console.warn(`${tag} 🔄 Retrying (${task.retryCount + 1}/${CONFIG.MAX_RETRIES})...`);
         await prisma.task.update({
           where: { id: task.id },
           data: { status: "PENDING", retryCount: { increment: 1 } },
@@ -402,10 +422,11 @@ async function processOneTask(
       }
     }
   } finally {
-    // ALWAYS release the account — prevents accounts stuck in BUSY
+    console.log(`${tag} 🔓 Releasing account ${account.id.slice(-6)} (success=${success})...`);
     await releaseAccount(account.id, success).catch((err) => {
-      console.error(`${tag} CRITICAL: Failed to release account ${account.id} — it will stay BUSY until stale recovery: ${err.message}`);
+      console.error(`${tag} 🚨 CRITICAL: Failed to release account ${account.id} — it will stay BUSY until stale recovery: ${err.message}`);
     });
+    console.log(`${tag} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
   }
 }
 
@@ -576,7 +597,7 @@ async function runProcessingCycle(): Promise<{
 
   const recovery = await recoverStaleState();
   if (recovery.recoveredTasks > 0 || recovery.checkedAccounts > 0) {
-    console.log(`[Process] Recovery: ${recovery.recoveredTasks} stale tasks reset, ${recovery.checkedAccounts} BUSY accounts checked`);
+    console.log(`[Process] 🔧 Recovery: ${recovery.recoveredTasks} stale tasks reset, ${recovery.checkedAccounts} BUSY accounts checked`);
   }
 
   // 1. Drain resume/zip tasks — no Unipile accounts needed
@@ -584,34 +605,50 @@ async function runProcessingCycle(): Promise<{
     where: {
       status: "PENDING",
       source: { in: ["resume", "zip_import"] },
-      job: { 
+      job: {
         status: { notIn: ["PAUSED", "CANCELLED"] },
-        requisition: { isActive: true } 
+        requisition: { isActive: true }
       },
     },
     orderBy: [{ retryCount: "asc" }, { createdAt: "asc" }],
-    take: 20, // process up to 20 resume tasks per cycle concurrently
+    take: 20,
     include: { job: { select: { status: true, id: true } } },
   });
 
   if (resumeTasks.length > 0) {
-    console.log(`[Process] Found ${resumeTasks.length} PENDING resume tasks — processing without accounts...`);
+    console.log(`[Process] 📄 Found ${resumeTasks.length} PENDING resume tasks — processing without accounts...`);
     await Promise.allSettled(resumeTasks.map((task) => processResumeTask(task as any)));
+  } else {
+    console.log(`[Process] 📄 No resume/zip tasks pending`);
   }
 
   // 2. Process LinkedIn tasks
   const concurrency = await getWorkerConcurrency();
-  console.log(`[Process] Worker concurrency: ${concurrency}`);
+  console.log(`[Process] ⚙️ Worker concurrency: ${concurrency}`);
 
   await logAccountPoolState("before-acquire");
+
+  // Debug: count ALL pending tasks regardless of filter, to detect filter mismatches
+  const allPendingCount = await prisma.task.count({ where: { status: "PENDING" } });
+  const linkedinPendingCount = await prisma.task.count({ where: { status: "PENDING", source: "linkedin_url" } });
+  console.log(`[Process] 📊 DB task counts — allPending=${allPendingCount} linkedinPending=${linkedinPendingCount}`);
+
+  if (allPendingCount > linkedinPendingCount) {
+    const otherSources = await prisma.task.groupBy({
+      by: ["source"],
+      where: { status: "PENDING" },
+      _count: true,
+    });
+    console.log(`[Process] 📊 Pending by source: ${JSON.stringify(otherSources)}`);
+  }
 
   const pendingTasks = await prisma.task.findMany({
     where: {
       status: "PENDING",
-      source: "linkedin_url", // only URL-based tasks go through Unipile
-      job: { 
+      source: "linkedin_url",
+      job: {
         status: { notIn: ["PAUSED", "CANCELLED"] },
-        requisition: { isActive: true } 
+        requisition: { isActive: true }
       },
     },
     orderBy: [{ retryCount: "asc" }, { createdAt: "asc" }],
@@ -621,11 +658,25 @@ async function runProcessingCycle(): Promise<{
 
   if (pendingTasks.length === 0) {
     const processingCount = await prisma.task.count({ where: { status: "PROCESSING" } });
-    console.log(`[Process] No PENDING tasks found. PROCESSING in-flight: ${processingCount}`);
+    console.log(`[Process] ℹ️ No PENDING linkedin_url tasks found (filter: notIn[PAUSED,CANCELLED] + isActive=true). PROCESSING in-flight: ${processingCount}`);
+
+    // Extra debug: check if tasks exist but are filtered out by job status or requisition
+    if (linkedinPendingCount > 0) {
+      const filteredOut = await prisma.task.findMany({
+        where: { status: "PENDING", source: "linkedin_url" },
+        select: { id: true, jobId: true, job: { select: { status: true, requisitionId: true, requisition: { select: { isActive: true } } } } },
+        take: 5,
+      });
+      console.warn(`[Process] ⚠️ ${linkedinPendingCount} linkedin tasks are PENDING but filtered out — samples:`);
+      for (const t of filteredOut) {
+        console.warn(`[Process]   taskId=${t.id.slice(-6)} jobStatus="${t.job.status}" requisitionId=${t.job.requisitionId?.slice(-6) ?? "NULL"} isActive=${t.job.requisition?.isActive ?? "NULL"}`);
+      }
+    }
+
     return { processed: resumeTasks.length, succeeded: 0, failed: 0, remaining: 0 };
   }
 
-  console.log(`[Process] Found ${pendingTasks.length} PENDING tasks. Acquiring accounts...`);
+  console.log(`[Process] 🔍 Found ${pendingTasks.length} PENDING linkedin_url tasks. Acquiring accounts...`);
 
   const accounts = await acquireAccounts(pendingTasks.length);
 
@@ -633,7 +684,9 @@ async function runProcessingCycle(): Promise<{
 
   if (accounts.length === 0) {
     const remaining = await prisma.task.count({ where: { status: "PENDING" } });
-    console.warn(`[Process] NO ACCOUNTS AVAILABLE — ${remaining} tasks stuck waiting. Check account pool state above.`);
+    console.warn(`[Process] 🚨 NO ACCOUNTS AVAILABLE — ${remaining} tasks stuck waiting.`);
+    console.warn(`[Process]    → Go to Settings > Accounts and check that at least one Unipile account is configured with status ACTIVE.`);
+    console.warn(`[Process]    → Also verify UNIPILE_DSN and UNIPILE_API_KEY env vars are set if using env-level credentials.`);
     return { processed: resumeTasks.length, succeeded: 0, failed: 0, remaining };
   }
 
@@ -642,11 +695,11 @@ async function runProcessingCycle(): Promise<{
     .map((task, i) => ({ task, account: accounts[i] }));
 
   for (let i = pairs.length; i < accounts.length; i++) {
-    console.log(`[Process] Releasing surplus account ${accounts[i].id.slice(-6)}`);
+    console.log(`[Process] 🔓 Releasing surplus account ${accounts[i].id.slice(-6)}`);
     await releaseAccount(accounts[i].id, false);
   }
 
-  console.log(`[Process] Dispatching ${pairs.length} tasks in parallel (wanted ${pendingTasks.length}, got ${accounts.length} accounts)...`);
+  console.log(`[Process] 🚀 Dispatching ${pairs.length} tasks in parallel (wanted ${pendingTasks.length}, got ${accounts.length} accounts)...`);
 
   const results = await Promise.allSettled(
     pairs.map(({ task, account }) => processOneTask(task, account))
@@ -656,7 +709,7 @@ async function runProcessingCycle(): Promise<{
   const failed = results.filter((r) => r.status === "rejected").length;
   const remaining = await prisma.task.count({ where: { status: "PENDING" } });
 
-  console.log(`[Process] Cycle complete in ${Date.now() - cycleStart}ms — dispatched=${pairs.length} settled_ok=${succeeded} settled_err=${failed} remaining=${remaining}`);
+  console.log(`[Process] ✅ Cycle complete in ${Date.now() - cycleStart}ms — dispatched=${pairs.length} settled_ok=${succeeded} settled_err=${failed} remaining=${remaining}`);
 
   return { processed: resumeTasks.length + pairs.length, succeeded, failed, remaining };
 }
@@ -729,24 +782,29 @@ async function processLoop(): Promise<void> {
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
+  const hasSecret = !!process.env.CRON_SECRET;
+  const isAuthed = authHeader === `Bearer ${process.env.CRON_SECRET}`;
+
+  console.log(`[Process] 📥 POST received — env=${process.env.NODE_ENV} CRON_SECRET=${hasSecret} authMatch=${isAuthed}`);
+
   if (
     process.env.NODE_ENV === "production" &&
     process.env.CRON_SECRET &&
-    authHeader !== `Bearer ${process.env.CRON_SECRET}`
+    !isAuthed
   ) {
+    console.error(`[Process] 🔒 UNAUTHORIZED — Bearer token mismatch. Request will be rejected.`);
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  console.log("[Process] POST received — scheduling processLoop via after()");
+  console.log("[Process] ✅ Auth OK — scheduling processLoop via after()");
 
-  // Run the processing loop in after() so the response returns immediately
   after(async () => {
-    console.log("[Process] after() callback starting...");
+    console.log("[Process] ⚡ after() callback starting...");
     const t = Date.now();
     try {
       await processLoop();
     } catch (err: any) {
-      console.error("[Process] after() callback crashed:", err.message, err.stack);
+      console.error("[Process] 💥 after() callback crashed:", err.message, err.stack);
     } finally {
       console.log(`[Process] after() callback finished in ${Date.now() - t}ms`);
     }

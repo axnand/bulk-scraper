@@ -12,7 +12,7 @@ export async function POST(
   try {
     const { requisitionId: rawReqId } = await params;
     const requisitionId = await resolveRequisitionId(rawReqId);
-    const { taskIds } = (await req.json()) as { taskIds: string[] };
+    const { taskIds, campaignId: requestedCampaignId } = (await req.json()) as { taskIds: string[]; campaignId?: string };
 
     if (!Array.isArray(taskIds) || taskIds.length === 0) {
       return NextResponse.json({ error: "taskIds array required" }, { status: 400 });
@@ -24,6 +24,7 @@ export async function POST(
     // Find active campaign once
     const campaign = await prisma.campaign.findFirst({
       where: {
+        ...(requestedCampaignId ? { id: requestedCampaignId } : {}),
         requisitionId,
         status: "ACTIVE",
         channel: { in: ["LINKEDIN_INVITE", "LINKEDIN_DM"] },

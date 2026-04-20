@@ -125,19 +125,20 @@ export function UploadResumesModal({ isOpen, onClose, requisitionId, onSuccess }
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && !isUploading && onClose()}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="w-full max-w-lg overflow-hidden">
         <DialogHeader>
-          <DialogTitle className="text-xl">Upload Resumes or ZIP</DialogTitle>
+          <DialogTitle className="text-lg">Upload Resumes or ZIP</DialogTitle>
         </DialogHeader>
-        
-        <div className="py-4 space-y-4">
+
+        <div className="py-2 space-y-4">
           <p className="text-sm text-muted-foreground">
-            Upload candidate resumes directly to begin analysis. Supporting <b>PDFs</b> and <b>ZIP files</b> containing multiple PDFs.
+            Upload candidate resumes directly to begin analysis. Supports <strong>PDFs</strong> and <strong>ZIP files</strong> containing multiple PDFs.
           </p>
 
-          <div 
-            className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center transition-colors cursor-pointer text-center ${
-              isDragActive ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-muted/50"
+          {/* Drop zone */}
+          <div
+            className={`border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center gap-2 transition-colors cursor-pointer text-center w-full ${
+              isDragActive ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-muted/30"
             }`}
             onDragEnter={handleDragEnter}
             onDragOver={handleDragEnter}
@@ -145,65 +146,71 @@ export function UploadResumesModal({ isOpen, onClose, requisitionId, onSuccess }
             onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
           >
-            <input 
-              type="file" 
-              multiple 
-              accept=".pdf,.zip,application/pdf,application/zip,application/x-zip-compressed" 
-              className="hidden" 
+            <input
+              type="file"
+              multiple
+              accept=".pdf,.zip,application/pdf,application/zip,application/x-zip-compressed"
+              className="hidden"
               ref={fileInputRef}
               onChange={handleFileInput}
             />
-            
-            <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-              <UploadCloud className="h-6 w-6 text-primary" />
+            <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
+              <UploadCloud className="h-5 w-5 text-primary" />
             </div>
-            <p className="text-sm font-medium text-foreground mb-1">
-              Click to upload or drag and drop
-            </p>
-            <p className="text-xs text-muted-foreground">
-              PDF or ZIP up to 50MB
-            </p>
+            <p className="text-sm font-medium text-foreground">Click to upload or drag and drop</p>
+            <p className="text-xs text-muted-foreground">PDF or ZIP up to 50 MB</p>
           </div>
 
+          {/* Global error */}
           {globalError && (
-            <div className="bg-destructive/10 text-destructive text-sm px-4 py-3 rounded-md flex items-start gap-2">
-              <AlertCircle className="h-5 w-5 shrink-0" />
-              <p>{globalError}</p>
+            <div className="bg-destructive/10 text-destructive text-sm px-3 py-2.5 rounded-lg flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+              <p className="wrap-break-word">{globalError}</p>
             </div>
           )}
 
+          {/* File list */}
           {files.length > 0 && (
-            <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-                Selected Files ({files.length})
+            <div className="space-y-2">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                Selected files ({files.length})
               </p>
-              {files.map(f => (
-                <div key={f.id} className="flex items-center gap-3 bg-muted/30 border border-border p-3 rounded-lg">
-                  {f.file.name.toLowerCase().endsWith(".zip") ? (
-                    <File className="h-5 w-5 text-amber-500 shrink-0" />
-                  ) : (
-                    <FileText className="h-5 w-5 text-primary shrink-0" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{f.file.name}</p>
-                    <p className="text-xs text-muted-foreground">{(f.file.size / 1024 / 1024).toFixed(2)} MB</p>
+              <div className="max-h-44 overflow-y-auto overflow-x-hidden space-y-1.5 pr-0.5">
+                {files.map(f => (
+                  <div
+                    key={f.id}
+                    className="flex items-center gap-2.5 bg-muted/30 border border-border rounded-lg px-3 py-2 min-w-0 overflow-hidden"
+                  >
+                    {f.file.name.toLowerCase().endsWith(".zip") ? (
+                      <File className="h-4 w-4 text-amber-500 shrink-0" />
+                    ) : (
+                      <FileText className="h-4 w-4 text-primary shrink-0" />
+                    )}
+
+                    <div className="flex-1 min-w-0 overflow-hidden">
+                      <p className="text-xs font-medium text-foreground truncate">{f.file.name}</p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {(f.file.size / 1024 / 1024).toFixed(2)} MB
+                      </p>
+                    </div>
+
+                    <div className="shrink-0 flex items-center">
+                      {f.status === "uploading" && <Loader2 className="h-3.5 w-3.5 text-primary animate-spin" />}
+                      {f.status === "success" && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />}
+                      {f.status === "error" && <AlertCircle className="h-3.5 w-3.5 text-destructive" />}
+                      {f.status !== "uploading" && f.status !== "success" && (
+                        <button
+                          onClick={e => { e.stopPropagation(); removeFile(f.id); }}
+                          className="p-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                          disabled={isUploading}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  
-                  {f.status === "uploading" && <Loader2 className="h-4 w-4 text-primary animate-spin" />}
-                  {f.status === "success" && <CheckCircle2 className="h-4 w-4 text-emerald-500" />}
-                  {f.status === "error" && <AlertCircle className="h-4 w-4 text-destructive" />}
-                  
-                  {f.status !== "uploading" && f.status !== "success" && (
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); removeFile(f.id); }}
-                      className="p-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-                      disabled={isUploading}
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  )}
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -212,17 +219,14 @@ export function UploadResumesModal({ isOpen, onClose, requisitionId, onSuccess }
           <Button variant="ghost" onClick={onClose} disabled={isUploading}>
             Cancel
           </Button>
-          <Button 
-            onClick={handleUpload} 
+          <Button
+            onClick={handleUpload}
             disabled={files.length === 0 || isUploading}
-            className="min-w-[120px]"
+            className="gap-2"
           >
-            {isUploading ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Uploading...
-              </>
-            ) : "Upload & Analyze"}
+            {isUploading
+              ? <><Loader2 className="h-4 w-4 animate-spin" /> Uploading…</>
+              : "Upload & Analyze"}
           </Button>
         </DialogFooter>
       </DialogContent>
