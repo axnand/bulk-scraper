@@ -80,7 +80,8 @@ export async function fetchProfile(
   const callStart = Date.now();
 
   console.log(`[Unipile] 🌐 API CALL START — identifier="${identifier}" account="${unipileAccountId.slice(-6)}" dsn="${dsn}"`);
-  console.log(`[Unipile] 🔗 URL: ${url.replace(apiKey, "***")}`);
+  console.log(`[Unipile] 🔗 Full URL: ${url}`);
+  console.log(`[Unipile] 📋 CURL:\ncurl --request GET \\\n  --url "${url}" \\\n  --header "X-API-KEY: ${apiKey}" \\\n  --header "Accept: application/json"`);
 
   try {
     const response = await fetch(url, {

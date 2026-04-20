@@ -182,6 +182,12 @@ async function processOneTask(
   console.log(`${tag} 🚀 TASK START — url="${task.url}" retry=${task.retryCount} jobStatus="${task.job.status}" acct="${account.accountId.slice(-6)}"`);
   console.log(`${tag}    account.dsn=${!!account.dsn} account.apiKey=${!!account.apiKey}`);
 
+  const setStep = (step: string, extra?: Record<string, unknown>) =>
+    prisma.task.update({
+      where: { id: task.id },
+      data: { result: JSON.stringify({ _step: step, _stepAt: new Date().toISOString(), ...extra }) },
+    }).catch(() => {});
+
   // Optimistic claim — only succeeds if task is still PENDING
   console.log(`${tag} 🔒 Claiming task (optimistic lock)...`);
   const claimed = await prisma.task
@@ -239,12 +245,14 @@ async function processOneTask(
     }
 
     console.log(`${tag} ⏳ Applying jitter before Unipile call...`);
+    await setStep("jitter");
     const jitterStart = Date.now();
     await jitter();
     console.log(`${tag} ⏳ Jitter done — ${Date.now() - jitterStart}ms`);
 
     // ── Stage 1: Fetch profile ──
     const fetchStart = Date.now();
+    await setStep("unipile_fetching", { identifier, url: task.url });
     console.log(`${tag} [1/3] 🌐 UNIPILE FETCH START — identifier="${identifier}" @ ${new Date().toISOString()}`);
     let profileData: any;
     try {
@@ -255,13 +263,16 @@ async function processOneTask(
         account.apiKey || undefined
       );
       const fetchMs = Date.now() - fetchStart;
+      await setStep("unipile_done", { identifier, fetchMs, name: `${profileData.first_name || ""} ${profileData.last_name || ""}`.trim() });
       console.log(`${tag} [1/3] ✅ UNIPILE FETCH OK — ${fetchMs}ms. name="${profileData.first_name || ""} ${profileData.last_name || ""}" headline="${(profileData.headline || "").slice(0, 60)}"`);
     } catch (fetchErr: any) {
+      await setStep("unipile_error", { identifier, error: fetchErr.message, elapsedMs: Date.now() - fetchStart });
       console.error(`${tag} [1/3] ❌ UNIPILE FETCH FAILED after ${Date.now() - fetchStart}ms — ${fetchErr.name}: ${fetchErr.message}`);
       throw fetchErr;
     }
 
     // ── Stage 2: Persist candidate profile ──
+    await setStep("saving_profile");
     console.log(`${tag} [1/3] 💾 Saving candidate profile to DB...`);
     const dbSaveStart = Date.now();
     const candidateProfile = await prisma.candidateProfile.create({
@@ -286,6 +297,7 @@ async function processOneTask(
     } else {
       const analysisStart = Date.now();
       const aiModel = (jobConfig as any).aiModel || "unknown";
+      await setStep("ai_analyzing", { aiModel });
       console.log(`${tag} [2/3] 🤖 AI ANALYSIS START — model="${aiModel}" @ ${new Date().toISOString()}`);
       try {
         const analysisResult = await analyzeProfile(profileData, jobConfig);
