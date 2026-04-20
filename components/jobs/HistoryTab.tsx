@@ -267,30 +267,6 @@ function RunDetailDrawer({ run, runNumber }: { run: RunSummary; runNumber: numbe
         `[HistoryDrawer] fetchDetail OK (${Date.now() - t}ms) — run=${run.id.slice(-6)} ` +
         `jobStatus=${data.status} PENDING=${pending} PROCESSING=${processing} DONE=${done} FAILED=${failed}`
       );
-
-      // Log Unipile step info for any tasks currently in PROCESSING
-      const processingTasks = (data.tasks ?? []).filter((t: any) => t.status === "PROCESSING");
-      for (const pt of processingTasks) {
-        let stepInfo: any = null;
-        try { stepInfo = pt.result ? JSON.parse(pt.result) : null; } catch { /* ignore */ }
-        if (stepInfo?._step) {
-          const stepAge = stepInfo._stepAt
-            ? `${Math.round((Date.now() - new Date(stepInfo._stepAt).getTime()) / 1000)}s ago`
-            : "";
-          const stepLabel: Record<string, string> = {
-            jitter:            "⏳ Waiting (jitter delay)...",
-            unipile_fetching:  "🌐 Calling Unipile API...",
-            unipile_done:      `✅ Unipile done (${stepInfo.fetchMs}ms) — name="${stepInfo.name}"`,
-            unipile_error:     `❌ Unipile error — ${stepInfo.error} (${stepInfo.elapsedMs}ms)`,
-            saving_profile:    "💾 Saving profile to DB...",
-            ai_analyzing:      `🤖 AI analysis running (model=${stepInfo.aiModel})...`,
-          };
-          console.log(
-            `[Unipile] task=${pt.id?.slice(-6)} step="${stepInfo._step}" — ${stepLabel[stepInfo._step] ?? stepInfo._step} ${stepAge}`
-          );
-        }
-      }
-
       setDetail(data);
     } finally {
       setLoading(false);
