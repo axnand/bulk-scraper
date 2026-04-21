@@ -70,14 +70,15 @@ async function markTaskFailed(
 }
 
 /**
- * After a task is scored, check if an active Campaign threshold is met and
- * auto-advance to SHORTLISTED + create an OutreachMessage for review.
+ * After a task is scored, auto-advance to SHORTLISTED if the score meets the global job threshold.
+ * Separately, if there's an active campaign and the score meets the campaign threshold, create an OutreachMessage.
  */
 async function maybeAutoShortlist(
   taskId: string,
   jobId: string,
   profileData: any,
   analysisResult: any,
+  jobConfig: any,
 ) {
   try {
     const job = await prisma.job.findUnique({
@@ -86,6 +87,40 @@ async function maybeAutoShortlist(
     });
     if (!job?.requisitionId) return;
 
+    const current = await prisma.task.findUnique({
+      where: { id: taskId },
+      select: { stage: true, outreachMessages: { select: { id: true, campaignId: true } } },
+    });
+    if (!current) return;
+
+    const skipStages = new Set(["SHORTLISTED","CONTACT_REQUESTED","CONNECTED","REPLIED","INTERVIEW","HIRED","REJECTED","ARCHIVED"]);
+    const alreadyShortlisted = skipStages.has(current.stage);
+
+    // 1. Global Shortlisting based on Job Config's minScoreThreshold
+    const globalThreshold = Number(jobConfig?.minScoreThreshold) || 0;
+    const meetsGlobalThreshold = analysisResult?.scorePercent != null && analysisResult.scorePercent >= globalThreshold;
+
+    if (meetsGlobalThreshold && !alreadyShortlisted) {
+      const now = new Date();
+      await prisma.$transaction([
+        prisma.task.update({
+          where: { id: taskId },
+          data: { stage: "SHORTLISTED", stageUpdatedAt: now },
+        }),
+        prisma.stageEvent.create({
+          data: {
+            taskId,
+            fromStage: current.stage,
+            toStage: "SHORTLISTED",
+            actor: "SYSTEM",
+            reason: `score ${Math.round(analysisResult.scorePercent)}% ≥ global threshold ${globalThreshold}%`,
+          },
+        }),
+      ]);
+      console.log(`[AutoShortlist] Task ${taskId.slice(-6)} globally shortlisted (score=${Math.round(analysisResult.scorePercent)}% threshold=${globalThreshold}%)`);
+    }
+
+    // 2. Campaign Outreach Generation (Legacy push approach, to be refactored later)
     const campaign = await prisma.campaign.findFirst({
       where: {
         requisitionId: job.requisitionId,
@@ -103,15 +138,6 @@ async function maybeAutoShortlist(
 
     if (analysisResult?.scorePercent == null || analysisResult.scorePercent < threshold) return;
 
-    // Already shortlisted or beyond — don't regress
-    const current = await prisma.task.findUnique({
-      where: { id: taskId },
-      select: { stage: true, outreachMessages: { select: { id: true, campaignId: true } } },
-    });
-    if (!current) return;
-    const skipStages = new Set(["SHORTLISTED","CONTACT_REQUESTED","CONNECTED","REPLIED","INTERVIEW","HIRED","REJECTED","ARCHIVED"]);
-    if (skipStages.has(current.stage)) return;
-
     // Deduplicate — don't create a second OutreachMessage for the same campaign
     const alreadyHasMsg = current.outreachMessages.some(m => m.campaignId === campaign.id);
     if (alreadyHasMsg) return;
@@ -126,34 +152,38 @@ async function maybeAutoShortlist(
     const now = new Date();
     const msgStatus = campaign.approvalMode === "AUTO" ? "APPROVED" : "AWAITING_REVIEW";
 
-    await prisma.$transaction([
-      prisma.task.update({
+    // If wasn't shortlisted organically, shortlist now due to campaign match
+    const tx = [];
+    if (!meetsGlobalThreshold && !alreadyShortlisted) {
+      tx.push(prisma.task.update({
         where: { id: taskId },
         data: { stage: "SHORTLISTED", stageUpdatedAt: now },
-      }),
-      prisma.outreachMessage.create({
-        data: {
-          campaignId: campaign.id,
-          taskId,
-          channel: campaign.channel,
-          status: msgStatus,
-          renderedBody,
-          renderedSubject,
-          approvedAt: msgStatus === "APPROVED" ? now : undefined,
-        },
-      }),
-      prisma.stageEvent.create({
+      }));
+      tx.push(prisma.stageEvent.create({
         data: {
           taskId,
-          fromStage: "SOURCED",
+          fromStage: current.stage,
           toStage: "SHORTLISTED",
           actor: "SYSTEM",
-          reason: `score ${Math.round(analysisResult.scorePercent)}% ≥ threshold ${threshold}%`,
+          reason: `score ${Math.round(analysisResult.scorePercent)}% ≥ campaign threshold ${threshold}%`,
         },
-      }),
-    ]);
+      }));
+    }
 
-    console.log(`[AutoShortlist] Task ${taskId.slice(-6)} shortlisted (score=${Math.round(analysisResult.scorePercent)}% threshold=${threshold}%)`);
+    tx.push(prisma.outreachMessage.create({
+      data: {
+        campaignId: campaign.id,
+        taskId,
+        channel: campaign.channel,
+        status: msgStatus,
+        renderedBody,
+        renderedSubject,
+        approvedAt: msgStatus === "APPROVED" ? now : undefined,
+      },
+    }));
+
+    await prisma.$transaction(tx);
+    console.log(`[AutoOutreach] Task ${taskId.slice(-6)} added to campaign ${campaign.id} (score=${Math.round(analysisResult.scorePercent)}% threshold=${threshold}%)`);
   } catch (err: any) {
     console.warn(`[AutoShortlist] Task ${taskId.slice(-6)} hook failed: ${err.message}`);
   }
@@ -345,7 +375,7 @@ async function processOneTask(
 
     // Auto-shortlist if an active campaign threshold is met
     if (analysisResultJson) {
-      await maybeAutoShortlist(task.id, task.jobId, profileData, JSON.parse(analysisResultJson));
+      await maybeAutoShortlist(task.id, task.jobId, profileData, JSON.parse(analysisResultJson), jobConfig);
     }
 
     const updatedJob = await prisma.job.update({
@@ -517,7 +547,7 @@ async function processResumeTask(
     await updateJobProgress(task.jobId, true);
 
     // Auto-shortlist if an active campaign threshold is met
-    await maybeAutoShortlist(task.id, task.jobId, preloaded, analysisResult);
+    await maybeAutoShortlist(task.id, task.jobId, preloaded, analysisResult, jobConfig);
 
     // Sheet export (if configured)
     const sheetUrl = (jobConfig as any).sheetWebAppUrl;
