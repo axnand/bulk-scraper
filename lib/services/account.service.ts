@@ -151,6 +151,33 @@ export async function refreshCooldowns() {
   }
 }
 
+export async function recoverStaleState(): Promise<{ recoveredTasks: number; checkedAccounts: number }> {
+  const staleThreshold = new Date(Date.now() - 5 * 60 * 1000);
+
+  const staleTasksResult = await prisma.task.updateMany({
+    where: { status: "PROCESSING", updatedAt: { lt: staleThreshold } },
+    data: { status: "PENDING", accountId: null },
+  });
+
+  const busyAccounts = await prisma.account.findMany({
+    where: { status: "BUSY" },
+    select: { id: true },
+  });
+
+  for (const acct of busyAccounts) {
+    const active = await prisma.task.findFirst({
+      where: { accountId: acct.id, status: "PROCESSING" },
+    });
+    if (!active) {
+      await prisma.account.update({ where: { id: acct.id }, data: { status: "ACTIVE" } });
+    }
+  }
+
+  await refreshCooldowns();
+
+  return { recoveredTasks: staleTasksResult.count, checkedAccounts: busyAccounts.length };
+}
+
 /**
  * Get all accounts with their current stats (for monitoring).
  */
