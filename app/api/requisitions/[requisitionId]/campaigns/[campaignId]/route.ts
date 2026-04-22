@@ -25,8 +25,8 @@ export async function PATCH(
     const data: Record<string, any> = {};
     if (name !== undefined) data.name = name.trim();
     if (channel !== undefined) data.channel = channel;
-    if (template !== undefined) data.template = JSON.stringify(template);
-    if (threshold !== undefined) data.threshold = JSON.stringify(threshold);
+    if (template !== undefined) data.template = template ? JSON.stringify(template) : template;
+    if (threshold !== undefined) data.threshold = threshold ? JSON.stringify(threshold) : threshold;
     if (approvalMode !== undefined) data.approvalMode = approvalMode;
     if (dailyCap !== undefined) data.dailyCap = Number(dailyCap);
     if (sendingAccountId !== undefined) data.sendingAccountId = sendingAccountId ?? null;

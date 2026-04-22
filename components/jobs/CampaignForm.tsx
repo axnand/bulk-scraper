@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 export interface CampaignFormValues {
   name: string;
   channel: string;
-  threshold: { minScorePercent: number };
+  threshold: { minScorePercent: number; maxScorePercent: number };
   approvalMode: string;
   dailyCap: number;
   sendingAccountId: string;
@@ -64,8 +64,9 @@ function VarChips({ onInsert }: { onInsert: (v: string) => void }) {
 export function CampaignForm({ accounts, initialValues, onSubmit, submitLabel = "Save" }: Props) {
   const [name, setName] = useState(initialValues?.name ?? "");
   const [channel] = useState(initialValues?.channel ?? "LINKEDIN_INVITE");
-  const [threshold, setThreshold] = useState(initialValues?.threshold?.minScorePercent ?? 70);
-  const [approvalMode, setApprovalMode] = useState(initialValues?.approvalMode ?? "REVIEW");
+  const [thresholdMin, setThresholdMin] = useState(initialValues?.threshold?.minScorePercent ?? 70);
+  const [thresholdMax, setThresholdMax] = useState(initialValues?.threshold?.maxScorePercent ?? 100);
+  const [approvalMode, setApprovalMode] = useState(initialValues?.approvalMode ?? "AUTO");
   const [dailyCap, setDailyCap] = useState(initialValues?.dailyCap ?? 20);
   const [sendingAccountId, setSendingAccountId] = useState(initialValues?.sendingAccountId ?? "");
   const [status, setStatus] = useState(initialValues?.status ?? "DRAFT");
@@ -78,7 +79,9 @@ export function CampaignForm({ accounts, initialValues, onSubmit, submitLabel = 
   function validate() {
     const errs: Record<string, string> = {};
     if (!name.trim()) errs.name = "Name is required";
-    if (threshold < 0 || threshold > 100) errs.threshold = "Must be 0–100";
+    if (thresholdMin < 0 || thresholdMin > 100) errs.thresholdMin = "Must be 0–100";
+    if (thresholdMax < 0 || thresholdMax > 100) errs.thresholdMax = "Must be 0–100";
+    if (thresholdMin > thresholdMax) errs.thresholdMax = "Max cannot be less than Min";
     if (dailyCap < 1) errs.dailyCap = "Must be at least 1";
     return errs;
   }
@@ -93,7 +96,7 @@ export function CampaignForm({ accounts, initialValues, onSubmit, submitLabel = 
       await onSubmit({
         name,
         channel,
-        threshold: { minScorePercent: threshold },
+        threshold: { minScorePercent: thresholdMin, maxScorePercent: thresholdMax },
         approvalMode,
         dailyCap,
         sendingAccountId: sendingAccountId || "",
@@ -146,17 +149,29 @@ export function CampaignForm({ accounts, initialValues, onSubmit, submitLabel = 
       </div>
 
       {/* Row 1: threshold / cap / approval */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-4 gap-4">
         <div className="space-y-1.5">
-          <Label htmlFor="c-threshold" className="text-xs">Score threshold (%)</Label>
+          <Label htmlFor="c-threshold-min" className="text-xs">Min score (%)</Label>
           <Input
-            id="c-threshold"
+            id="c-threshold-min"
             type="number"
             min={0}
             max={100}
-            value={threshold}
-            onChange={e => setThreshold(Number(e.target.value))}
-            className={cn("h-8 text-sm", errors.threshold && "border-destructive")}
+            value={thresholdMin}
+            onChange={e => setThresholdMin(Number(e.target.value))}
+            className={cn("h-8 text-sm", errors.thresholdMin && "border-destructive")}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="c-threshold-max" className="text-xs">Max score (%)</Label>
+          <Input
+            id="c-threshold-max"
+            type="number"
+            min={0}
+            max={100}
+            value={thresholdMax}
+            onChange={e => setThresholdMax(Number(e.target.value))}
+            className={cn("h-8 text-sm", errors.thresholdMax && "border-destructive")}
           />
         </div>
         <div className="space-y-1.5">

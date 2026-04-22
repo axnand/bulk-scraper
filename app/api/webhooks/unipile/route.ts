@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { CandidateStage } from "@prisma/client";
+import { extractIdentifier } from "@/lib/services/unipile.service";
 
 export const dynamic = "force-dynamic";
 
@@ -106,12 +107,19 @@ async function resolveInviteMsg(data: any) {
   const candidates = await prisma.task.findMany({
     where: {
       stage: "CONTACT_REQUESTED",
-      account: { accountId },
+      outreachMessages: {
+        some: {
+          channel: "LINKEDIN_INVITE",
+          status: "SENT",
+          campaign: { sendingAccount: { accountId } }
+        }
+      }
     },
     select: {
       id: true,
       stage: true,
       result: true,
+      url: true,
       outreachMessages: {
         where: { channel: "LINKEDIN_INVITE", status: "SENT" },
         include: { campaign: { include: { sendingAccount: true } } },
@@ -123,8 +131,15 @@ async function resolveInviteMsg(data: any) {
   for (const task of candidates) {
     try {
       const profile = task.result ? JSON.parse(task.result) : null;
-      const pid = profile?.provider_id || profile?.public_identifier;
-      if (pid && pid === attendeeProviderId && task.outreachMessages.length > 0) {
+      
+      const pids = [
+        profile?.provider_id,
+        profile?.public_identifier,
+        task.url ? extractIdentifier(task.url) : null,
+        task.url ? task.url.match(/linkedin\.com\/in\/([^\/\?]+)/)?.[1] : null
+      ].filter(Boolean);
+
+      if (attendeeProviderId && pids.includes(attendeeProviderId) && task.outreachMessages.length > 0) {
         const omsg = task.outreachMessages[0];
         return {
           ...omsg,

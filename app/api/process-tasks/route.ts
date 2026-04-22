@@ -18,7 +18,7 @@ import {
 } from "@/lib/services/unipile.service";
 import { analyzeProfile, type AnalysisConfig } from "@/lib/analyzer";
 import { exportToSheet, buildSheetPayload } from "@/lib/sheets";
-import { triggerProcessing } from "@/lib/trigger";
+import { triggerProcessing, triggerOutreach } from "@/lib/trigger";
 import { buildVars, renderTemplate } from "@/lib/outreach/render-template";
 
 export const maxDuration = 60;
@@ -120,70 +120,93 @@ async function maybeAutoShortlist(
       console.log(`[AutoShortlist] Task ${taskId.slice(-6)} globally shortlisted (score=${Math.round(analysisResult.scorePercent)}% threshold=${globalThreshold}%)`);
     }
 
-    // 2. Campaign Outreach Generation (Legacy push approach, to be refactored later)
-    const campaign = await prisma.campaign.findFirst({
+    // 2. Campaign Outreach Generation
+    // Find ALL active campaigns for this requisition
+    const activeCampaigns = await prisma.campaign.findMany({
       where: {
         requisitionId: job.requisitionId,
         status: "ACTIVE",
       },
-      orderBy: { createdAt: "desc" },
     });
-    if (!campaign) return;
 
-    let threshold = 70;
-    try {
-      const t = JSON.parse(campaign.threshold);
-      if (typeof t?.minScorePercent === "number") threshold = t.minScorePercent;
-    } catch { /* keep default */ }
+    if (activeCampaigns.length === 0) return;
 
-    if (analysisResult?.scorePercent == null || analysisResult.scorePercent < threshold) return;
+    for (const campaign of activeCampaigns) {
+      let minThreshold = 70;
+      let maxThreshold = 100;
+      try {
+        const t = JSON.parse(campaign.threshold);
+        if (typeof t?.minScorePercent === "number") minThreshold = t.minScorePercent;
+        if (typeof t?.maxScorePercent === "number") maxThreshold = t.maxScorePercent;
+      } catch { /* keep default */ }
 
-    // Deduplicate — don't create a second OutreachMessage for the same campaign
-    const alreadyHasMsg = current.outreachMessages.some(m => m.campaignId === campaign.id);
-    if (alreadyHasMsg) return;
+      // Check if score falls within this campaign's distinct range
+      if (analysisResult?.scorePercent == null || analysisResult.scorePercent < minThreshold || analysisResult.scorePercent > maxThreshold) {
+        continue;
+      }
 
-    let tpl: { subject?: string; body?: string } = {};
-    try { tpl = JSON.parse(campaign.template); } catch { /* ignore */ }
+      // Deduplicate — don't create a second OutreachMessage for the same campaign
+      const alreadyHasMsg = current.outreachMessages.some(m => m.campaignId === campaign.id);
+      if (alreadyHasMsg) continue;
 
-    const vars = buildVars(profileData, analysisResult);
-    const renderedBody = renderTemplate(tpl.body ?? "", vars);
-    const renderedSubject = tpl.subject ? renderTemplate(tpl.subject, vars) : undefined;
+      let tpl: { subject?: string; body?: string; inviteNote?: string } = {};
+      try { tpl = JSON.parse(campaign.template); } catch { /* ignore */ }
 
-    const now = new Date();
-    const msgStatus = campaign.approvalMode === "AUTO" ? "APPROVED" : "AWAITING_REVIEW";
+      const vars = buildVars(profileData, analysisResult);
+      // For LINKEDIN_INVITE campaigns, the initial message is the invite note (max 300 chars)
+      const templateText = campaign.channel === "LINKEDIN_INVITE" ? (tpl.inviteNote ?? "") : (tpl.body ?? "");
+      const renderedBody = renderTemplate(templateText, vars).slice(0, campaign.channel === "LINKEDIN_INVITE" ? 300 : undefined);
+      const renderedSubject = tpl.subject ? renderTemplate(tpl.subject, vars) : undefined;
 
-    // If wasn't shortlisted organically, shortlist now due to campaign match
-    const tx = [];
-    if (!meetsGlobalThreshold && !alreadyShortlisted) {
-      tx.push(prisma.task.update({
-        where: { id: taskId },
-        data: { stage: "SHORTLISTED", stageUpdatedAt: now },
-      }));
-      tx.push(prisma.stageEvent.create({
+      const now = new Date();
+      // Default to APPROVED per user request to avoid silent drafts
+      const msgStatus = "APPROVED";
+
+      const tx = [];
+      // Need to re-fetch or track shortlist status because previous loop iterations might have updated it
+      const taskInDb = await prisma.task.findUnique({ where: { id: taskId }, select: { stage: true, outreachMessages: { select: { campaignId: true } } } });
+      const isShortlistedNow = taskInDb && skipStages.has(taskInDb.stage);
+      
+      // Secondary deduplication after fetch
+      if (taskInDb?.outreachMessages?.some(m => m.campaignId === campaign.id)) continue;
+
+      if (!meetsGlobalThreshold && !alreadyShortlisted && !isShortlistedNow) {
+        tx.push(prisma.task.update({
+          where: { id: taskId },
+          data: { stage: "SHORTLISTED", stageUpdatedAt: now },
+        }));
+        tx.push(prisma.stageEvent.create({
+          data: {
+            taskId,
+            fromStage: current.stage,
+            toStage: "SHORTLISTED",
+            actor: "SYSTEM",
+            reason: `score ${Math.round(analysisResult.scorePercent)}% fits campaign ${campaign.name}`,
+          },
+        }));
+      }
+
+      tx.push(prisma.outreachMessage.create({
         data: {
+          campaignId: campaign.id,
           taskId,
-          fromStage: current.stage,
-          toStage: "SHORTLISTED",
-          actor: "SYSTEM",
-          reason: `score ${Math.round(analysisResult.scorePercent)}% ≥ campaign threshold ${threshold}%`,
+          channel: campaign.channel,
+          status: msgStatus,
+          renderedBody,
+          renderedSubject,
+          approvedAt: now,
         },
       }));
+
+      await prisma.$transaction(tx);
+      console.log(`[AutoOutreach] Task ${taskId.slice(-6)} enrolled in campaign ${campaign.name} (${campaign.id}) — Score: ${Math.round(analysisResult.scorePercent)}%`);
+      
+      // Kick off outreach processor directly instead of waiting for a webhook cycle
+      if (msgStatus === "APPROVED") {
+        setTimeout(triggerOutreach, 100);
+      }
     }
 
-    tx.push(prisma.outreachMessage.create({
-      data: {
-        campaignId: campaign.id,
-        taskId,
-        channel: campaign.channel,
-        status: msgStatus,
-        renderedBody,
-        renderedSubject,
-        approvedAt: msgStatus === "APPROVED" ? now : undefined,
-      },
-    }));
-
-    await prisma.$transaction(tx);
-    console.log(`[AutoOutreach] Task ${taskId.slice(-6)} added to campaign ${campaign.id} (score=${Math.round(analysisResult.scorePercent)}% threshold=${threshold}%)`);
   } catch (err: any) {
     console.warn(`[AutoShortlist] Task ${taskId.slice(-6)} hook failed: ${err.message}`);
   }
