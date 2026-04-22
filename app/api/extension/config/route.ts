@@ -45,9 +45,12 @@ export async function GET(req: NextRequest) {
 
   try {
     // Fetch all data in parallel
-    const [jdTemplatesRaw, settings, providers, evalConfigsRaw, sheetIntegrations] =
+    const [requisitionsRaw, settings, providers, evalConfigsRaw, sheetIntegrations] =
       await Promise.all([
-        prisma.jdTemplate.findMany({ orderBy: { updatedAt: "desc" } }),
+        prisma.requisition.findMany({ 
+          where: { isActive: true, archived: false },
+          orderBy: { updatedAt: "desc" } 
+        }),
         prisma.appSettings.findUnique({ where: { id: "global" } }),
         prisma.aiProvider.findMany({ orderBy: { createdAt: "desc" } }),
         prisma.evaluationConfig.findMany({ orderBy: [{ isDefault: "desc" }, { updatedAt: "desc" }] }),
@@ -73,12 +76,17 @@ export async function GET(req: NextRequest) {
     }
 
     // Parse JSON fields on JD templates
-    const jdTemplates = jdTemplatesRaw.map((t) => ({
-      ...t,
-      scoringRules: JSON.parse(t.scoringRules),
-      customScoringRules: JSON.parse(t.customScoringRules),
-      builtInRuleDescriptions: JSON.parse(t.builtInRuleDescriptions || "{}"),
-    }));
+    const jdTemplates = requisitionsRaw.map((r) => {
+      const config = r.config ? JSON.parse(r.config) : {};
+      return {
+        id: r.id,
+        title: r.title || "Untitled Role",
+        content: config.jobDescription || "",
+        scoringRules: config.scoringRules || null,
+        customScoringRules: config.customScoringRules || [],
+        builtInRuleDescriptions: config.builtInRuleDescriptions || {},
+      };
+    });
 
     // Resolve the active AI provider
     const activeProviderId = settings?.aiProviderId;
