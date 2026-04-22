@@ -11,12 +11,13 @@ interface Props {
   onClose: () => void;
   requisitionId: string;
   onSuccess: () => void;
+  onDuplicatesDetected?: (count: number) => void;
 }
 
-export function BulkAddModal({ open, onClose, requisitionId, onSuccess }: Props) {
+export function BulkAddModal({ open, onClose, requisitionId, onSuccess, onDuplicatesDetected }: Props) {
   const [urls, setUrls] = useState("");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ totalTasks: number; invalidUrls?: string[] } | null>(null);
+  const [result, setResult] = useState<{ totalTasks: number; invalidUrls?: string[]; duplicatesDetected?: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit() {
@@ -38,6 +39,7 @@ export function BulkAddModal({ open, onClose, requisitionId, onSuccess }: Props)
         setUrls("");
         onSuccess();
       }
+
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -79,10 +81,23 @@ export function BulkAddModal({ open, onClose, requisitionId, onSuccess }: Props)
           </div>
 
           {result && (
-            <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 text-sm text-emerald-400">
-              Run started with {result.totalTasks} candidate{result.totalTasks === 1 ? "" : "s"}.
-              {result.invalidUrls && result.invalidUrls.length > 0 && (
-                <p className="text-xs text-amber-400 mt-1">{result.invalidUrls.length} invalid URLs skipped.</p>
+            <div className="space-y-2">
+              <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 text-sm text-emerald-400">
+                Run started with {result.totalTasks} candidate{result.totalTasks === 1 ? "" : "s"}.
+                {result.invalidUrls && result.invalidUrls.length > 0 && (
+                  <p className="text-xs text-amber-400 mt-1">{result.invalidUrls.length} invalid URLs skipped.</p>
+                )}
+              </div>
+              {result.duplicatesDetected && result.duplicatesDetected > 0 && (
+                <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-sm text-amber-400 flex items-center justify-between gap-3">
+                  <span>⚠ {result.duplicatesDetected} duplicate candidate{result.duplicatesDetected === 1 ? "" : "s"} detected</span>
+                  <button
+                    className="text-xs font-medium underline underline-offset-2 hover:text-amber-300 transition-colors shrink-0"
+                    onClick={() => onDuplicatesDetected?.(result.duplicatesDetected!)}
+                  >
+                    Review now
+                  </button>
+                </div>
               )}
             </div>
           )}

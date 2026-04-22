@@ -1,10 +1,52 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseAndValidateUrls } from "@/lib/validators";
-import { triggerProcessing } from "@/lib/trigger";
+import { enqueueTaskBatch } from "@/lib/queue";
 import { resolveRequisitionId } from "@/lib/resolve-requisition";
 
 export const dynamic = "force-dynamic";
+
+type PairInput = { requisitionId: string; taskAId: string; taskBId: string; kind: string; matchValue: string };
+
+function withinBatchPairs(urlToTaskIds: Map<string, string[]>, requisitionId: string): PairInput[] {
+  const pairs: PairInput[] = [];
+  for (const [url, ids] of urlToTaskIds.entries()) {
+    for (let i = 0; i < ids.length - 1; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        pairs.push({ requisitionId, taskAId: ids[i], taskBId: ids[j], kind: "LINKEDIN_URL", matchValue: url });
+      }
+    }
+  }
+  return pairs;
+}
+
+async function crossRunPairs(
+  prismaClient: typeof prisma,
+  requisitionId: string,
+  previousJobIds: string[],
+  urlToTaskIds: Map<string, string[]>,
+  valid: string[],
+): Promise<PairInput[]> {
+  const keptBoth = await prismaClient.duplicatePair.findMany({
+    where: { requisitionId, status: "RESOLVED_KEPT_BOTH", kind: "LINKEDIN_URL" },
+    include: { taskA: { select: { url: true } }, taskB: { select: { url: true } } },
+  });
+  const suppressed = new Set(keptBoth.flatMap((p) => [p.taskA.url, p.taskB.url]));
+  const urlsToCheck = valid.filter((u) => !suppressed.has(u));
+  if (urlsToCheck.length === 0) return [];
+
+  const prevDone = await prismaClient.task.findMany({
+    where: { jobId: { in: previousJobIds }, url: { in: urlsToCheck }, status: "DONE" },
+    select: { id: true, url: true },
+  });
+  const pairs: PairInput[] = [];
+  for (const prev of prevDone) {
+    for (const newId of urlToTaskIds.get(prev.url) ?? []) {
+      pairs.push({ requisitionId, taskAId: newId, taskBId: prev.id, kind: "LINKEDIN_URL", matchValue: prev.url });
+    }
+  }
+  return pairs;
+}
 
 export async function GET(
   _req: NextRequest,
@@ -75,12 +117,42 @@ export async function POST(
       data: { updatedAt: new Date() },
     });
 
-    after(async () => { await triggerProcessing(); });
+    const createdTasks = await prisma.task.findMany({
+      where: { jobId: run.id },
+      select: { id: true, url: true, source: true },
+    });
+    await enqueueTaskBatch(createdTasks.map((t) => ({ id: t.id, source: t.source })));
+
+    // Build URL -> new task IDs map
+    const urlToNewTaskIds = new Map<string, string[]>();
+    for (const t of createdTasks) {
+      const arr = urlToNewTaskIds.get(t.url) ?? [];
+      arr.push(t.id);
+      urlToNewTaskIds.set(t.url, arr);
+    }
+
+    const previousJobs = await prisma.job.findMany({
+      where: { requisitionId, id: { not: run.id } },
+      select: { id: true },
+    });
+    const previousJobIds = previousJobs.map((j) => j.id);
+
+    const pairsToCreate: PairInput[] = [
+      ...withinBatchPairs(urlToNewTaskIds, requisitionId),
+      ...(previousJobIds.length > 0
+        ? await crossRunPairs(prisma, requisitionId, previousJobIds, urlToNewTaskIds, valid)
+        : []),
+    ];
+
+    if (pairsToCreate.length > 0) {
+      await prisma.duplicatePair.createMany({ data: pairsToCreate, skipDuplicates: true });
+    }
 
     return NextResponse.json({
       runId: run.id,
       totalTasks: valid.length,
       invalidUrls: invalid.length > 0 ? invalid : undefined,
+      duplicatesDetected: pairsToCreate.length > 0 ? pairsToCreate.length : undefined,
     });
   } catch (error) {
     console.error("[Runs] POST failed:", error);

@@ -41,12 +41,21 @@ export async function exportToSheet(
   }
 
   try {
-    const response = await fetch(webAppUrl, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify(payload),
-      redirect: "follow",
-    });
+    let response;
+    try {
+      response = await fetch(webAppUrl, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify(payload),
+        redirect: "follow",
+        signal: AbortSignal.timeout(15000), // 15s timeout for Sheets export
+      });
+    } catch (fetchErr: any) {
+      if (fetchErr.name === "TimeoutError" || fetchErr.name === "AbortError") {
+        return { success: false, error: "Sheets export timed out after 15s" };
+      }
+      throw fetchErr;
+    }
 
     if (!response.ok) {
       return { success: false, error: `Sheet API error (${response.status})` };

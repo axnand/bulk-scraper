@@ -48,9 +48,11 @@ interface Props {
   data: JobResults;
   requisitionId: string;
   onRefresh: () => void;
+  duplicateTaskIds?: Set<string>;
+  onOpenDuplicates?: () => void;
 }
 
-export function CandidatesTab({ data, requisitionId, onRefresh }: Props) {
+export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds, onOpenDuplicates }: Props) {
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filterFit, setFilterFit] = useState("All");
@@ -356,6 +358,8 @@ export function CandidatesTab({ data, requisitionId, onRefresh }: Props) {
                         if (selectMode) return;
                         setExpandedTask(expandedTask === task.id ? null : task.id);
                       }}
+                      isDuplicate={duplicateTaskIds?.has(task.id)}
+                      onOpenDuplicates={onOpenDuplicates}
                     />
                   </div>
                 );
@@ -492,7 +496,7 @@ export function CandidatesTab({ data, requisitionId, onRefresh }: Props) {
 
 // ─── Sub-components ────────────────────────────────────────────────────
 
-function ProfileCard({ task, jobConfig, expanded, onToggle }: { task: TaskResult; jobConfig?: any; expanded: boolean; onToggle: () => void }) {
+function ProfileCard({ task, jobConfig, expanded, onToggle, isDuplicate, onOpenDuplicates }: { task: TaskResult; jobConfig?: any; expanded: boolean; onToggle: () => void; isDuplicate?: boolean; onOpenDuplicates?: () => void }) {
   const profile = task.result;
   const analysis = task.analysisResult;
   if (!profile) return null;
@@ -542,6 +546,14 @@ function ProfileCard({ task, jobConfig, expanded, onToggle }: { task: TaskResult
             >
               {name}
             </Link>
+            {isDuplicate && (
+              <button
+                onClick={e => { e.stopPropagation(); onOpenDuplicates?.(); }}
+                className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400 hover:bg-amber-500/20 transition-colors shrink-0"
+              >
+                ⚠ dup
+              </button>
+            )}
             {task.addedAt && (
               <span className="text-[10px] text-muted-foreground/60 shrink-0">
                 {new Date(task.addedAt).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}

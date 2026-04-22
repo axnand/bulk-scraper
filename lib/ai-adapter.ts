@@ -86,19 +86,28 @@ async function openaiCompatible(
 ): Promise<ChatCompletionResult> {
   const url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature: opts.temperature ?? 0.1,
-      max_tokens: opts.max_tokens ?? 2000,
-    }),
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: opts.temperature ?? 0.1,
+        max_tokens: opts.max_tokens ?? 2000,
+      }),
+      signal: AbortSignal.timeout(60000), // 60s timeout for AI requests
+    });
+  } catch (error: any) {
+    if (error.name === "TimeoutError" || error.name === "AbortError") {
+      throw new Error(`AI Request timed out after 60s (${config.name})`);
+    }
+    throw error;
+  }
 
   if (!response.ok) {
     const errData: any = await response.json().catch(() => ({}));
@@ -143,15 +152,24 @@ async function anthropicRequest(
   if (systemMsg) body.system = systemMsg.content;
   if (opts.temperature != null) body.temperature = opts.temperature;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": config.apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify(body),
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": config.apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60000), // 60s timeout for AI requests
+    });
+  } catch (error: any) {
+    if (error.name === "TimeoutError" || error.name === "AbortError") {
+      throw new Error(`AI Request timed out after 60s (${config.name})`);
+    }
+    throw error;
+  }
 
   if (!response.ok) {
     const errData: any = await response.json().catch(() => ({}));
@@ -222,11 +240,20 @@ async function bedrockRequest(
   };
   if (systemMsg) body.system = [{ text: systemMsg.content }];
 
-  const response = await aws.fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  let response;
+  try {
+    response = await aws.fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60000), // 60s timeout for AI requests
+    });
+  } catch (error: any) {
+    if (error.name === "TimeoutError" || error.name === "AbortError") {
+      throw new Error(`AI Request timed out after 60s (${config.name})`);
+    }
+    throw error;
+  }
 
   if (!response.ok) {
     const errData: any = await response.json().catch(() => ({}));

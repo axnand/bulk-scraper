@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { triggerProcessing } from "@/lib/trigger";
+import { enqueueTaskBatch } from "@/lib/queue";
 
 type Action = "pause" | "resume" | "cancel";
 
@@ -57,9 +57,13 @@ export async function POST(
         data: { status: "PROCESSING" },
       });
 
-      // Re-trigger the processing chain
-      triggerProcessing().catch((err) =>
-        console.error("[Resume] Failed to trigger processing:", err)
+      // Re-enqueue all PENDING tasks for this job (they were de-queued when pg-boss job completed during pause)
+      const pendingTasks = await prisma.task.findMany({
+        where: { jobId, status: "PENDING" },
+        select: { id: true, source: true },
+      });
+      await enqueueTaskBatch(pendingTasks).catch((err) =>
+        console.error("[Resume] Failed to enqueue tasks:", err)
       );
 
       return NextResponse.json({

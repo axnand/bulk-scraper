@@ -10,6 +10,7 @@ interface Props {
   onClose: () => void;
   requisitionId: string;
   onSuccess: () => void;
+  onDuplicatesDetected?: (count: number) => void;
 }
 
 interface UploadedFile {
@@ -20,11 +21,12 @@ interface UploadedFile {
   errorMessage?: string;
 }
 
-export function UploadResumesModal({ isOpen, onClose, requisitionId, onSuccess }: Props) {
+export function UploadResumesModal({ isOpen, onClose, requisitionId, onSuccess, onDuplicatesDetected }: Props) {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [isDragActive, setIsDragActive] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const [duplicatesDetected, setDuplicatesDetected] = useState<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
@@ -106,14 +108,19 @@ export function UploadResumesModal({ isOpen, onClose, requisitionId, onSuccess }
       }
       
       const data = await res.json();
-      
+      const dupCount: number = data.duplicatesDetected ?? 0;
+      setDuplicatesDetected(dupCount);
       setFiles(prev => prev.map(f => ({ ...f, status: "success", progress: 100 })));
-      
-      setTimeout(() => {
-        onSuccess();
-        onClose();
-        setFiles([]);
-      }, 1500);
+      onSuccess();
+
+      if (dupCount > 0) {
+        // Stay open to show the amber duplicate alert — user decides when to close
+      } else {
+        setTimeout(() => {
+          onClose();
+          setFiles([]);
+        }, 1500);
+      }
       
     } catch (err: any) {
       setGlobalError(err.message || "An unexpected error occurred during upload.");
@@ -123,8 +130,16 @@ export function UploadResumesModal({ isOpen, onClose, requisitionId, onSuccess }
     }
   };
 
+  function handleClose() {
+    if (isUploading) return;
+    setFiles([]);
+    setGlobalError(null);
+    setDuplicatesDetected(0);
+    onClose();
+  }
+
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && !isUploading && onClose()}>
+    <Dialog open={isOpen} onOpenChange={(open) => !open && handleClose()}>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle className="text-xl">Upload Resumes or ZIP</DialogTitle>
@@ -164,6 +179,18 @@ export function UploadResumesModal({ isOpen, onClose, requisitionId, onSuccess }
               PDF or ZIP up to 50MB
             </p>
           </div>
+
+          {duplicatesDetected > 0 && (
+            <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-sm text-amber-400 flex items-center justify-between gap-3">
+              <span>⚠ {duplicatesDetected} duplicate candidate{duplicatesDetected === 1 ? "" : "s"} detected</span>
+              <button
+                className="text-xs font-medium underline underline-offset-2 hover:text-amber-300 transition-colors shrink-0"
+                onClick={() => { onDuplicatesDetected?.(duplicatesDetected); handleClose(); }}
+              >
+                Review now
+              </button>
+            </div>
+          )}
 
           {globalError && (
             <div className="bg-destructive/10 text-destructive text-sm px-4 py-3 rounded-md flex items-start gap-2">
@@ -209,7 +236,7 @@ export function UploadResumesModal({ isOpen, onClose, requisitionId, onSuccess }
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose} disabled={isUploading}>
+          <Button variant="ghost" onClick={handleClose} disabled={isUploading}>
             Cancel
           </Button>
           <Button 

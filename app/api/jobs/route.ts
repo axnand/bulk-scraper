@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseAndValidateUrls } from "@/lib/validators";
-import { triggerProcessing } from "@/lib/trigger";
+import { enqueueTaskBatch } from "@/lib/queue";
 
 export const dynamic = "force-dynamic";
 
@@ -201,14 +201,14 @@ export async function POST(req: NextRequest) {
             });
         }
 
-        // 4. Kick off processing only if there are tasks
+        // 4. Enqueue tasks into pg-boss
         if (valid.length > 0) {
-            console.log(`[Jobs] Job ${job.id} created, scheduling after() trigger...`);
-            after(async () => {
-                console.log(`[Jobs] after() callback fired for job ${job.id}`);
-                await triggerProcessing();
-                console.log(`[Jobs] after() callback completed for job ${job.id}`);
+            const createdTasks = await prisma.task.findMany({
+                where: { jobId: job.id },
+                select: { id: true, source: true },
             });
+            await enqueueTaskBatch(createdTasks);
+            console.log(`[Jobs] Enqueued ${createdTasks.length} tasks for job ${job.id.slice(-6)}`);
         }
 
         return NextResponse.json({

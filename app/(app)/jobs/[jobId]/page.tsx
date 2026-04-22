@@ -12,7 +12,7 @@ import {
 import {
   ChevronRight, UserPlus, Users, LayoutDashboard, SlidersHorizontal, Settings2,
   Plus, Upload, Pause, Play, XCircle, Building2, Calendar, History, UploadCloud,
-  Kanban, Zap,
+  Kanban, Zap, AlertTriangle,
 } from "lucide-react";
 import { CandidatesTab } from "@/components/jobs/CandidatesTab";
 import { DashboardTab } from "@/components/jobs/DashboardTab";
@@ -24,6 +24,7 @@ import { AddManuallyModal } from "@/components/jobs/AddManuallyModal";
 import { UploadResumesModal } from "@/components/jobs/UploadResumesModal";
 import { PipelineTab } from "@/components/jobs/PipelineTab";
 import { CampaignTab } from "@/components/jobs/CampaignTab";
+import { ResolveDuplicatesDrawer, type DuplicatePair } from "@/components/jobs/ResolveDuplicatesDrawer";
 
 interface RunSummary {
   id: string;
@@ -129,6 +130,8 @@ export default function RequisitionDetailPage() {
   const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [showUploadResumes, setShowUploadResumes] = useState(false);
+  const [duplicatePairs, setDuplicatePairs] = useState<DuplicatePair[]>([]);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
     if (tabParam && VALID_TABS.has(tabParam)) {
@@ -137,6 +140,16 @@ export default function RequisitionDetailPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabParam]);
+
+  async function fetchDuplicates() {
+    try {
+      const res = await fetch(`/api/requisitions/${requisitionId}/duplicates`);
+      if (res.ok) {
+        const json = await res.json();
+        setDuplicatePairs(json.pairs ?? []);
+      }
+    } catch { /* ignore */ }
+  }
 
   async function fetchAll() {
     try {
@@ -158,6 +171,14 @@ export default function RequisitionDetailPage() {
 
   useEffect(() => {
     fetchAll();
+    fetchDuplicates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requisitionId]);
+
+  // 60s duplicate poll — independent of the active-run poll
+  useEffect(() => {
+    const interval = setInterval(fetchDuplicates, 60_000);
+    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requisitionId]);
 
@@ -323,6 +344,20 @@ export default function RequisitionDetailPage() {
         </div>
       </div>
 
+      {/* Duplicate banner */}
+      {duplicatePairs.length > 0 && (
+        <button
+          onClick={() => setDrawerOpen(true)}
+          className="mx-8 mt-3 flex items-center gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 px-4 py-2.5 text-sm text-amber-400 hover:bg-amber-500/15 transition-colors text-left w-[calc(100%-4rem)]"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span className="flex-1">
+            <span className="font-medium">{duplicatePairs.length} duplicate candidate{duplicatePairs.length === 1 ? "" : "s"} detected</span>
+            <span className="text-amber-400/70 ml-2 text-xs">— Review &amp; resolve</span>
+          </span>
+        </button>
+      )}
+
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden shadow-none">
         <div className="border-b border-border px-8 shrink-0 bg-background shadow-none border-l-0 border-r-0">
@@ -382,7 +417,13 @@ export default function RequisitionDetailPage() {
         </div>
 
         <TabsContent value="candidates" className="flex-1 overflow-y-auto m-0 p-8">
-          <CandidatesTab data={data} requisitionId={requisitionId} onRefresh={fetchAll} />
+          <CandidatesTab
+            data={data}
+            requisitionId={requisitionId}
+            onRefresh={fetchAll}
+            duplicateTaskIds={new Set(duplicatePairs.flatMap(p => [p.taskA.id, p.taskB.id]))}
+            onOpenDuplicates={() => setDrawerOpen(true)}
+          />
         </TabsContent>
 
         <TabsContent value="pipeline" className="flex-1 overflow-hidden m-0 p-8">
@@ -424,7 +465,8 @@ export default function RequisitionDetailPage() {
         open={showBulkAdd}
         onClose={() => setShowBulkAdd(false)}
         requisitionId={requisitionId}
-        onSuccess={fetchAll}
+        onSuccess={() => { fetchAll(); fetchDuplicates(); }}
+        onDuplicatesDetected={() => { setShowBulkAdd(false); setDrawerOpen(true); }}
       />
       <AddManuallyModal
         open={showManualAdd}
@@ -436,7 +478,15 @@ export default function RequisitionDetailPage() {
         isOpen={showUploadResumes}
         onClose={() => setShowUploadResumes(false)}
         requisitionId={requisitionId}
-        onSuccess={fetchAll}
+        onSuccess={() => { fetchAll(); fetchDuplicates(); }}
+        onDuplicatesDetected={() => { setShowUploadResumes(false); setDrawerOpen(true); }}
+      />
+
+      <ResolveDuplicatesDrawer
+        open={drawerOpen}
+        onOpenChange={setDrawerOpen}
+        pairs={duplicatePairs}
+        onResolved={fetchDuplicates}
       />
     </div>
   );

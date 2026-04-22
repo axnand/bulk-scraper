@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse, after } from "next/server";
-import { randomUUID } from "node:crypto";
+import { NextRequest, NextResponse } from "next/server";
+import { randomUUID, createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
-import { triggerProcessing } from "@/lib/trigger";
+import { enqueueTaskBatch } from "@/lib/queue";
 import { resolveRequisitionId } from "@/lib/resolve-requisition";
 import { uploadPdfToS3 } from "@/lib/s3";
 import { extractResumeInfo } from "@/lib/extract-resume";
@@ -90,6 +90,7 @@ export async function POST(
   type ParsedProfile = {
     name: string;
     text: string;
+    contentHash: string;
     source: "resume" | "zip_import";
     s3Key: string;
     extractedInfo: ReturnType<typeof extractResumeInfo>;
@@ -128,10 +129,12 @@ export async function POST(
     }
 
     const extractedInfo = extractResumeInfo(text);
+    const contentHash = createHash("sha256").update(text).digest("hex");
 
     parsedProfiles.push({
       name: pdf.name,
       text,
+      contentHash,
       source: pdf.source,
       s3Key,
       extractedInfo,
@@ -211,6 +214,7 @@ export async function POST(
           // Pre-store extracted text + regex-extracted structured info so the processor skips Unipile.
           // Mirror canonical fields (first_name/last_name/headline/location/public_identifier) so
           // the candidate UI — which was built around Unipile's shape — renders without special-casing.
+          contentHash: p.contentHash,
           result: JSON.stringify({
             resumeText: p.text,
             sourceFileName: p.name,
@@ -232,10 +236,71 @@ export async function POST(
     `[UploadProfiles] Created job ${job.id} with ${parsedProfiles.length} resume tasks for requisition ${requisitionId}. Skipped: ${skipped.length}`
   );
 
-  // ── Trigger the analysis pipeline ──
-  after(async () => {
-    await triggerProcessing();
+  // ── Enqueue tasks into pg-boss ──
+  const createdTasks = await prisma.task.findMany({
+    where: { jobId: job.id },
+    select: { id: true, contentHash: true, source: true },
   });
+  await enqueueTaskBatch(createdTasks.map((t) => ({ id: t.id, source: t.source })));
+  console.log(`[UploadProfiles] Enqueued ${createdTasks.length} tasks for job ${job.id.slice(-6)}`);
+
+  // ── Duplicate pair detection ──
+  const hashToNewTaskIds = new Map<string, string[]>();
+  for (const t of createdTasks) {
+    if (!t.contentHash) continue;
+    const arr = hashToNewTaskIds.get(t.contentHash) ?? [];
+    arr.push(t.id);
+    hashToNewTaskIds.set(t.contentHash, arr);
+  }
+
+  const pairsToCreate: {
+    requisitionId: string; taskAId: string; taskBId: string; kind: string; matchValue: string;
+  }[] = [];
+
+  // Within-submission: same PDF uploaded more than once in this batch
+  for (const [hash, ids] of hashToNewTaskIds.entries()) {
+    for (let i = 0; i < ids.length - 1; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        pairsToCreate.push({ requisitionId, taskAId: ids[i], taskBId: ids[j], kind: "RESUME_HASH", matchValue: hash });
+      }
+    }
+  }
+
+  // Cross-run: same hash already DONE in a previous job
+  const uploadedHashes = parsedProfiles.map((p) => p.contentHash);
+  const previousJobs = await prisma.job.findMany({
+    where: { requisitionId, id: { not: job.id } },
+    select: { id: true },
+  });
+  const previousJobIds = previousJobs.map((j) => j.id);
+
+  if (previousJobIds.length > 0) {
+    const keptBoth = await prisma.duplicatePair.findMany({
+      where: { requisitionId, status: "RESOLVED_KEPT_BOTH", kind: "RESUME_HASH" },
+      include: { taskA: { select: { contentHash: true } }, taskB: { select: { contentHash: true } } },
+    });
+    const suppressed = new Set(
+      keptBoth.flatMap((p) => [p.taskA.contentHash, p.taskB.contentHash].filter((h): h is string => Boolean(h)))
+    );
+    const hashesToCheck = uploadedHashes.filter((h) => !suppressed.has(h));
+
+    if (hashesToCheck.length > 0) {
+      const prevDone = await prisma.task.findMany({
+        where: { jobId: { in: previousJobIds }, contentHash: { in: hashesToCheck }, status: "DONE" },
+        select: { id: true, contentHash: true },
+      });
+      for (const prev of prevDone) {
+        if (!prev.contentHash) continue;
+        for (const newId of hashToNewTaskIds.get(prev.contentHash) ?? []) {
+          pairsToCreate.push({ requisitionId, taskAId: newId, taskBId: prev.id, kind: "RESUME_HASH", matchValue: prev.contentHash });
+        }
+      }
+    }
+  }
+
+  if (pairsToCreate.length > 0) {
+    await prisma.duplicatePair.createMany({ data: pairsToCreate, skipDuplicates: true });
+  }
 
   return NextResponse.json({
     message: "Profiles queued for analysis",
@@ -243,5 +308,6 @@ export async function POST(
     sessionLabel,
     totalProfiles: parsedProfiles.length,
     skipped: skipped.length > 0 ? skipped : undefined,
+    duplicatesDetected: pairsToCreate.length > 0 ? pairsToCreate.length : undefined,
   });
 }

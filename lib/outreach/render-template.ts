@@ -8,6 +8,8 @@ export interface TemplateVars {
 }
 
 export function buildVars(profile: any, analysis: any): TemplateVars {
+  const startTime = Date.now(); // Start time logging
+
   const fullName =
     [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
     analysis?.candidateInfo?.name ||
@@ -31,6 +33,9 @@ export function buildVars(profile: any, analysis: any): TemplateVars {
 
   const score =
     analysis?.scorePercent != null ? `${Math.round(analysis.scorePercent)}%` : "";
+
+  const duration = Date.now() - startTime; // Calculate duration
+  console.log(`buildVars processing took ${duration}ms`); // Log duration
 
   return { name: fullName, firstName, lastName, company, role, score };
 }

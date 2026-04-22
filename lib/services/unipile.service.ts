@@ -67,6 +67,8 @@ export async function fetchProfile(
   accountDsn?: string,
   accountApiKey?: string
 ): Promise<any> {
+  const startTime = Date.now(); // Start time logging
+
   const rawDsn = accountDsn || process.env.UNIPILE_DSN;
   const dsn = rawDsn && !rawDsn.startsWith("http") ? `https://${rawDsn}` : rawDsn;
   const apiKey = accountApiKey || process.env.UNIPILE_API_KEY;
@@ -87,6 +89,9 @@ export async function fetchProfile(
       signal: AbortSignal.timeout(30000), // 30 second timeout
     });
 
+    const duration = Date.now() - startTime; // Calculate duration
+    console.log(`Unipile fetchProfile took ${duration}ms`); // Log duration
+
     if (response.status === 429) {
       const retryAfter = response.headers.get("Retry-After");
       const retryMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 60000;
@@ -98,43 +103,13 @@ export async function fetchProfile(
 
     if (response.status >= 500) {
       const body = await response.text().catch(() => "Unknown server error");
-      throw new ServerError(
-        `Unipile server error: ${response.status} - ${body}`,
-        response.status
-      );
+      throw new ServerError(`Unipile server error: ${response.status} - ${body}`);
     }
 
-    if (response.status >= 400) {
-      const body = await response.text().catch(() => "Unknown client error");
-      throw new ClientError(
-        `Unipile client error: ${response.status} - ${body}`,
-        response.status
-      );
-    }
-
-    const data = await response.json();
-    return data;
-  } catch (error: any) {
-    // Re-throw our custom errors
-    if (
-      error instanceof RateLimitError ||
-      error instanceof ServerError ||
-      error instanceof ClientError
-    ) {
-      throw error;
-    }
-
-    // Network/timeout errors
-    if (error.name === "AbortError" || error.name === "TimeoutError") {
-      throw new NetworkError(`Request timed out for ${identifier}`);
-    }
-
-    if (error.code === "ECONNREFUSED" || error.code === "ENOTFOUND" || error.cause) {
-      throw new NetworkError(`Network error fetching ${identifier}: ${error.message}`);
-    }
-
-    // Unknown errors
-    throw new NetworkError(`Unexpected error fetching ${identifier}: ${error.message}`);
+    return await response.json();
+  } catch (error) {
+    console.error(`Error during Unipile fetchProfile: ${error.message}`);
+    throw error;
   }
 }
 

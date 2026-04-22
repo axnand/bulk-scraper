@@ -53,6 +53,7 @@ model Requisition {
   updatedAt     DateTime  @updatedAt
   jobs          Job[]
   campaigns     Campaign[]
+  duplicatePairs DuplicatePair[]
 
   @@index([archived])
 }
@@ -89,6 +90,7 @@ model Task {
   errorMessage   String?  @db.Text // failure reason
   retryCount     Int      @default(0)
   accountId      String?  // assigned at processing time
+  contentHash    String?  // SHA-256 of resume text — dedup detection for resume/zip_import tasks
   stage          CandidateStage @default(SOURCED)
   stageUpdatedAt DateTime @default(now())
   createdAt      DateTime @default(now())
@@ -100,10 +102,35 @@ model Task {
   stageEvents      StageEvent[]
   notes            Note[]
   contact          CandidateContact?
+  duplicatesAsA    DuplicatePair[]   @relation("DuplicatePairA")
+  duplicatesAsB    DuplicatePair[]   @relation("DuplicatePairB")
 
   @@index([jobId])
   @@index([accountId])
   @@index([stage])
+  @@index([contentHash])
+}
+
+model DuplicatePair {
+  id            String    @id @default(cuid())
+  requisitionId String
+  taskAId       String
+  taskBId       String
+  kind          String    // "LINKEDIN_URL" | "RESUME_HASH"
+  matchValue    String    @db.Text
+  status        String    @default("PENDING") // PENDING | RESOLVED_DELETED_A | RESOLVED_DELETED_B | RESOLVED_KEPT_BOTH
+  resolvedAt    DateTime?
+  resolvedBy    String?
+  createdAt     DateTime  @default(now())
+
+  taskA       Task        @relation("DuplicatePairA", fields: [taskAId], references: [id], onDelete: Cascade)
+  taskB       Task        @relation("DuplicatePairB", fields: [taskBId], references: [id], onDelete: Cascade)
+  requisition Requisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+
+  @@unique([taskAId, taskBId])
+  @@index([requisitionId, status])
+  @@index([taskAId])
+  @@index([taskBId])
 }
 
 model Campaign {

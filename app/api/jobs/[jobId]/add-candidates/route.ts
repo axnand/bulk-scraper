@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseAndValidateUrls } from "@/lib/validators";
-import { triggerProcessing } from "@/lib/trigger";
+import { enqueueTaskBatch } from "@/lib/queue";
 
 export const dynamic = "force-dynamic";
 
@@ -48,9 +48,11 @@ export async function POST(
       },
     });
 
-    after(async () => {
-      await triggerProcessing();
+    const createdTasks = await prisma.task.findMany({
+      where: { jobId, status: "PENDING" },
+      select: { id: true, source: true },
     });
+    await enqueueTaskBatch(createdTasks);
 
     return NextResponse.json({ added: validUrls.length, invalidUrls });
   } catch (error) {
