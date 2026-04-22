@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { toast } from "sonner";
-import { Briefcase, Building2, ExternalLink, MoreHorizontal, Send, Loader2 } from "lucide-react";
+import { Briefcase, Building2, ExternalLink, MoreHorizontal, Send, Loader2, Mail, Link2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -35,6 +35,7 @@ export interface PipelineTask {
   publicId: string | null;
   source: string;
   addedAt: string;
+  outreachMessages?: { channel: string; status: string }[];
 }
 
 interface Props {
@@ -98,6 +99,12 @@ export function CandidateKanbanCard({
       : task.recommendation === "Moderate Fit"
       ? "border-amber-500/40 bg-amber-500/10 text-amber-500"
       : "border-rose-500/40 bg-rose-500/10 text-rose-500";
+
+  const msgs = task.outreachMessages || [];
+  const hasEmail = msgs.some(m => m.channel === "EMAIL");
+  const emailReplied = msgs.some(m => m.channel === "EMAIL" && m.status === "REPLIED");
+  const hasLinkedIn = msgs.some(m => m.channel.startsWith("LINKEDIN"));
+  const liReplied = msgs.some(m => m.channel.startsWith("LINKEDIN") && m.status === "REPLIED");
 
   async function handleSendInvite(e: React.MouseEvent) {
     e.stopPropagation();
@@ -239,18 +246,35 @@ export function CandidateKanbanCard({
         </div>
 
         {/* Footer */}
-        <div className="mt-2.5 flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground/60">
-            {timeAgo(task.stageUpdatedAt || task.addedAt)}
-          </span>
-          {task.scorePercent !== null && (
-            <Badge
-              variant="outline"
-              className={cn("text-xs font-bold h-5 px-2 py-0 border rounded-full", scoreCls)}
-            >
-              {Math.round(task.scorePercent)}%
-            </Badge>
-          )}
+        <div className="mt-2.5 flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground/60 flex items-center gap-1.5">
+              {timeAgo(task.stageUpdatedAt || task.addedAt)}
+              
+              {/* Channel Indicators */}
+              {(hasEmail || hasLinkedIn) && (
+                <>
+                  <span className="text-muted-foreground/30">•</span>
+                  <div className="flex gap-1" title="Channels">
+                    {hasLinkedIn && (
+                      <Link2Icon className={cn("h-3 w-3", liReplied ? "text-emerald-500 fill-emerald-500/20" : "text-muted-foreground/70")} />
+                    )}
+                    {hasEmail && (
+                      <Mail className={cn("h-3 w-3", emailReplied ? "text-emerald-500" : "text-muted-foreground/70")} />
+                    )}
+                  </div>
+                </>
+              )}
+            </span>
+            {task.scorePercent !== null && (
+              <Badge
+                variant="outline"
+                className={cn("text-xs font-bold h-5 px-2 py-0 border rounded-full", scoreCls)}
+              >
+                {Math.round(task.scorePercent)}%
+              </Badge>
+            )}
+          </div>
         </div>
 
         {/* Shortlisted CTA */}

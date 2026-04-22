@@ -232,7 +232,12 @@ export function CampaignTab({ requisitionId }: Props) {
             <tbody className="divide-y divide-border/60">
               {campaigns.map(campaign => {
                 let thresholdPct = 70;
-                try { thresholdPct = JSON.parse(campaign.threshold)?.minScorePercent ?? 70; } catch {}
+                let maxPct = 100;
+                try { 
+                  const parsed = JSON.parse(campaign.threshold);
+                  thresholdPct = parsed?.minScorePercent ?? 70;
+                  maxPct = parsed?.maxScorePercent ?? 100;
+                } catch {}
 
                 return (
                   <tr key={campaign.id} className="hover:bg-muted/20 transition-colors">
@@ -250,7 +255,7 @@ export function CampaignTab({ requisitionId }: Props) {
                     <td className="px-4 py-3 text-xs text-muted-foreground">
                       {campaign.channel === "LINKEDIN_INVITE" ? "LinkedIn Invite" : campaign.channel}
                     </td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{thresholdPct}% min score</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{thresholdPct}% – {maxPct}%</td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">
                       {campaign.approvalMode === "AUTO" ? "Auto" : "Manual"}
                     </td>
@@ -313,10 +318,13 @@ export function CampaignTab({ requisitionId }: Props) {
 }
 
 function campaignToFormValues(campaign: Campaign): CampaignFormValues {
-  let threshold = { minScorePercent: 70 };
+  let threshold = { minScorePercent: 70, maxScorePercent: 100 };
   let template = { body: "", inviteNote: "" };
-  try { threshold = JSON.parse(campaign.threshold); } catch {}
-  try { template = JSON.parse(campaign.template); } catch {}
+  try { threshold = { ...threshold, ...JSON.parse(campaign.threshold) }; } catch {}
+  try { 
+    const parsedTemplate = JSON.parse(campaign.template);
+    template = { ...template, ...parsedTemplate };
+  } catch {}
 
   return {
     name: campaign.name,

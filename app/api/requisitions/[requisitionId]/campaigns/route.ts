@@ -50,7 +50,7 @@ export async function POST(
       name: string;
       channel?: string;
       template: Record<string, unknown>;
-      threshold: { minScorePercent: number };
+      threshold: { minScorePercent: number; maxScorePercent?: number };
       approvalMode?: string;
       dailyCap?: number;
       sendingAccountId?: string;
@@ -65,6 +65,9 @@ export async function POST(
     }
     if (typeof threshold?.minScorePercent !== "number") {
       return NextResponse.json({ error: "threshold.minScorePercent is required" }, { status: 400 });
+    }
+    if (threshold?.maxScorePercent !== undefined && typeof threshold.maxScorePercent !== "number") {
+      return NextResponse.json({ error: "threshold.maxScorePercent must be a number" }, { status: 400 });
     }
 
     const campaign = await prisma.campaign.create({

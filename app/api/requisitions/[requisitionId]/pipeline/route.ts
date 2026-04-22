@@ -36,6 +36,7 @@ export async function GET(
         source: true,
         sourceFileName: true,
         createdAt: true,
+        outreachMessages: { select: { channel: true, status: true } },
       },
       orderBy: { stageUpdatedAt: "desc" },
     });
@@ -91,6 +92,7 @@ export async function GET(
         recommendation: analysis?.recommendation ?? null,
         profilePictureUrl: profile?.profile_picture_url || null,
         publicId: profile?.public_identifier || null,
+        outreachMessages: t.outreachMessages ?? [],
       };
 
       if (!grouped[stage]) grouped[stage] = [];

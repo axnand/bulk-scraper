@@ -15,7 +15,10 @@ async function runOutreachCycle(): Promise<{ sent: number; failed: number; remai
   const messages = await prisma.outreachMessage.findMany({
     where: {
       status: "APPROVED",
-      scheduledFor: { lte: now },
+      OR: [
+        { scheduledFor: null },
+        { scheduledFor: { lte: now } }
+      ]
     },
     include: {
       campaign: { include: { sendingAccount: true } },
@@ -31,6 +34,7 @@ async function runOutreachCycle(): Promise<{ sent: number; failed: number; remai
 
   let sent = 0;
   let failed = 0;
+  const exhaustedCampaigns = new Set<string>();
 
   for (const msg of messages) {
     const campaign = msg.campaign;
@@ -40,7 +44,10 @@ async function runOutreachCycle(): Promise<{ sent: number; failed: number; remai
       continue;
     }
 
-    // Enforce daily cap per campaign
+    // Enforce daily cap per campaign — skip this campaign only, not others
+    if (exhaustedCampaigns.has(campaign.id)) {
+      continue;
+    }
     const todaySent = await prisma.outreachMessage.count({
       where: {
         campaignId: campaign.id,
@@ -49,14 +56,16 @@ async function runOutreachCycle(): Promise<{ sent: number; failed: number; remai
       },
     });
     if (todaySent >= campaign.dailyCap) {
-      console.log(`[Outreach] Campaign ${campaign.id.slice(-6)} hit daily cap (${todaySent}/${campaign.dailyCap}) — skipping remaining messages`);
-      break;
+      console.log(`[Outreach] Campaign ${campaign.id.slice(-6)} hit daily cap (${todaySent}/${campaign.dailyCap}) — skipping its messages`);
+      exhaustedCampaigns.add(campaign.id);
+      continue;
     }
 
     const profile = msg.task.result ? JSON.parse(msg.task.result) : null;
     const providerUserId: string | null =
       profile?.provider_id ||
       profile?.public_identifier ||
+      (msg.task.url ? msg.task.url.match(/linkedin\.com\/in\/([^\/\?]+)/)?.[1] : null) ||
       null;
 
     if (!providerUserId) {
@@ -76,7 +85,11 @@ async function runOutreachCycle(): Promise<{ sent: number; failed: number; remai
 
       // Use the message's own channel to decide send method — not the campaign channel,
       // because follow-up DMs are queued with channel=LINKEDIN_DM on LINKEDIN_INVITE campaigns.
-      if (msg.channel === "LINKEDIN_INVITE") {
+      if (process.env.LINKEDIN_MODE === "local") {
+        console.log(`[Outreach MOCK] Pretending to send ${msg.channel} to ${providerUserId}`);
+        providerMessageId = `mock-msg-${msg.id}`;
+        providerChatId = msg.channel === "LINKEDIN_DM" ? `mock-chat-${msg.id}` : null;
+      } else if (msg.channel === "LINKEDIN_INVITE") {
         const { invitationId } = await sendInvitation({
           accountId: account.accountId,
           providerUserId,
@@ -98,11 +111,19 @@ async function runOutreachCycle(): Promise<{ sent: number; failed: number; remai
         providerMessageId = messageId || null;
       }
 
-      // Advance to MESSAGED for any DM sent, as long as we haven't already passed that stage
-      const TERMINAL_STAGES = ["MESSAGED", "REPLIED", "INTERVIEW", "HIRED", "REJECTED", "ARCHIVED"];
-      const isDm = msg.channel === "LINKEDIN_DM";
-      const advanceToMessaged = isDm && !TERMINAL_STAGES.includes(msg.task.stage);
-      const toStage = advanceToMessaged ? "MESSAGED" : msg.task.stage;
+      // Advance stage depending on channel
+      const TERMINAL_STAGES = ["CONTACT_REQUESTED", "CONNECTED", "MESSAGED", "REPLIED", "INTERVIEW", "HIRED", "REJECTED", "ARCHIVED"];
+      const isDm = msg.channel === "LINKEDIN_DM" || msg.channel === "EMAIL";
+      const isInvite = msg.channel === "LINKEDIN_INVITE";
+
+      let advanceToStage: string | null = null;
+      if (isDm && (!TERMINAL_STAGES.includes(msg.task.stage) || msg.task.stage === "CONTACT_REQUESTED" || msg.task.stage === "CONNECTED")) {
+        advanceToStage = "MESSAGED";
+      } else if (isInvite && msg.task.stage === "SHORTLISTED") {
+        advanceToStage = "CONTACT_REQUESTED";
+      }
+
+      const toStage = (advanceToStage || msg.task.stage) as any;
 
       await prisma.$transaction([
         prisma.outreachMessage.update({
@@ -114,10 +135,10 @@ async function runOutreachCycle(): Promise<{ sent: number; failed: number; remai
             providerChatId,
           },
         }),
-        ...(advanceToMessaged
+        ...(advanceToStage
           ? [prisma.task.update({
               where: { id: msg.taskId },
-              data: { stage: "MESSAGED", stageUpdatedAt: new Date() },
+              data: { stage: advanceToStage as any, stageUpdatedAt: new Date() },
             })]
           : []),
         prisma.stageEvent.create({
