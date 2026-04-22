@@ -103,12 +103,12 @@ export async function fetchProfile(
 
     if (response.status >= 500) {
       const body = await response.text().catch(() => "Unknown server error");
-      throw new ServerError(`Unipile server error: ${response.status} - ${body}`);
+      throw new ServerError(`Unipile server error: ${response.status} - ${body}`, response.status);
     }
 
     return await response.json();
   } catch (error) {
-    console.error(`Error during Unipile fetchProfile: ${error.message}`);
+    console.error(`Error during Unipile fetchProfile: ${(error as Error).message}`);
     throw error;
   }
 }
