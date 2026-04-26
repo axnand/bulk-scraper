@@ -47,6 +47,7 @@ export interface RuleDefinition {
   scoreParameters: ScoreParameter[];
   logFormat: string;        // instruction shown inside scoringLogs for this rule
   isPreComputed?: boolean;  // true for stability/location — skipped from LLM prompt
+  resumeDescription?: string; // LLM scoring instructions used when processing uploaded resumes
 }
 
 export interface PromptEnvelope {
@@ -166,7 +167,11 @@ export const DEFAULT_RULE_DEFINITIONS: Record<string, RuleDefinition> = {
     scoreParameters: [
       { key: "stability", label: "Stability", allowedValuesHint: "<10 or 7 or 0>", maxPoints: 10 },
     ],
-    logFormat: "",
+    logFormat: "<1-2 sentences: list companies and approximate tenures you found, average tenure you calculated, and the score>",
+    resumeDescription: `STABILITY (Max: 10) — From the raw resume text, identify all full-time roles (ignore internships, trainee, part-time, volunteer). Calculate average tenure per employer.
+   - Avg tenure > 2.5 years → stability=10
+   - Avg tenure 1.5–2.5 years → stability=7
+   - Avg tenure < 1.5 years → stability=0`,
   },
   growth: {
     key: "growth",
@@ -315,7 +320,10 @@ Any ambiguity → NO growth
     scoreParameters: [
       { key: "locationMatch", label: "Location", allowedValuesHint: "<5 or 0>", maxPoints: 5 },
     ],
-    logFormat: "",
+    logFormat: "<1 sentence: state the candidate location you found and whether it matches the JD location>",
+    resumeDescription: `LOCATION (Max: 5) — Find the candidate's city/country from the resume header or contact section. Compare it against the job's required location.
+   - Candidate location matches job location (same city, metro area, or country when the role is country-wide) → locationMatch=5
+   - No match or location not found → locationMatch=0`,
   },
 };
 
@@ -701,10 +709,12 @@ export function buildSystemPrompt(
     builtInRuleDescriptions?: Record<string, string>;
     ruleDefinitions?: Record<string, Partial<RuleDefinition>>;
     promptEnvelope?: Partial<PromptEnvelope>;
+    resumeMode?: boolean;
   }
 ): string {
   const opts = options || {};
   const envelope: PromptEnvelope = { ...DEFAULT_PROMPT_ENVELOPE, ...opts.promptEnvelope };
+  const resumeMode = opts.resumeMode ?? false;
 
   const allRules = getEffectiveRules({
     scoringRules,
@@ -717,9 +727,18 @@ export function buildSystemPrompt(
   // ── SECTION 1: Identity ──
   const today = new Date().toISOString().split("T")[0];
   const role = opts.promptRole?.trim() || envelope.defaultRole;
-  const identity = envelope.identityTemplate
+  let identity = envelope.identityTemplate
     .replace("{role}", role)
     .replace("{today}", today);
+
+  // For resume uploads the LLM scores stability + location from raw text — remove the
+  // "pre-computed, do not evaluate" line and tell it to score everything.
+  if (resumeMode) {
+    identity = identity.replace(
+      /\s*Stability, location, and candidate info are pre-computed[^.]*\./i,
+      " Score ALL rules below including Stability and Location by reading the raw resume text."
+    );
+  }
 
   // ── SECTION 2: Behavioral instructions ──
   let behavior = opts.criticalInstructions?.trim() || DEFAULT_CRITICAL_INSTRUCTIONS;
@@ -732,23 +751,32 @@ export function buildSystemPrompt(
   }
 
   // ── SECTION 3: Scoring rules ──
+  // In resume mode, pre-computed rules (stability, location) are included using their
+  // resumeDescription so the LLM can score them from the raw text.
   let ruleNum = 0;
   const allRulesText = enabledRules
-    .filter((r) => !r.isPreComputed && r.description.trim())
+    .filter((r) => {
+      if (resumeMode && r.resumeDescription) return true; // include in resume mode
+      return !r.isPreComputed && r.description.trim();
+    })
     .map((r) => {
       ruleNum++;
-      return `${ruleNum}. ${r.description}`;
+      const desc = resumeMode && r.resumeDescription ? r.resumeDescription : r.description;
+      return `${ruleNum}. ${desc}`;
     })
     .join("\n\n");
 
   // ── SECTION 4: JSON output schema ──
   const scoringFields = enabledRules
-    .filter((r) => !r.isPreComputed)
+    .filter((r) => resumeMode ? (r.resumeDescription || !r.isPreComputed) : !r.isPreComputed)
     .flatMap((r) => r.scoreParameters.map((p) => `    "${p.key}": ${p.allowedValuesHint}`))
     .join(",\n");
 
   const logsFields = enabledRules
-    .filter((r) => !r.isPreComputed && r.logFormat.trim())
+    .filter((r) => {
+      if (resumeMode && r.resumeDescription) return r.logFormat.trim() !== "";
+      return !r.isPreComputed && r.logFormat.trim();
+    })
     .map((r) => `    "${r.key}": "${r.logFormat}"`)
     .join(",\n");
 
@@ -771,7 +799,7 @@ export function buildUserPrompt(profileData: any, jobDescription: string, candid
     prompt += `---\n`;
     prompt += `NOTE: This candidate was sourced from an uploaded resume/LinkedIn PDF export, not a live LinkedIn scrape.\n`;
     prompt += `Extract all relevant information (name, company, role, experience, education, skills) DIRECTLY from the raw text above.\n`;
-    prompt += `For pre-computed fields like stability and location: score them as 0 since structured data is unavailable.\n`;
+    prompt += `Score ALL rules (including Stability and Location) by reading the raw resume text directly.\n`;
     return prompt;
   }
 
@@ -911,42 +939,49 @@ export async function analyzeProfile(
   const customRules: CustomScoringRule[] = config.customScoringRules || [];
 
   // ── Pass 1: Deterministic pre-extraction ──
+  const isResumeMode = !!profileData?.resumeText;
   const candidateInfo = extractCandidateInfo(profileData);
   const careerStats = computeCareerStats(profileData.work_experience || []);
 
-  const stabilityScore =
+  // Pre-compute stability + location as a fallback (authoritative for LinkedIn scrapes).
+  // For resume uploads these serve as fallback only — the LLM scores them from raw text.
+  const stabilityPreComputed =
     (rules.stability !== false && careerStats) ? careerStats.stabilityScore : "";
-  const locationScore =
+  const locationPreComputed =
     rules.location !== false
       ? scoreLocationMatch(profileData.location || "", config.jobDescription)
       : "";
 
-  // Pre-computed scoring logs
+  // Pre-computed logs (used for non-resume mode; resume mode uses LLM logs)
   const preComputedLogs: Record<string, string> = {};
-  if (rules.stability !== false && careerStats) {
-    const avg = careerStats.averageTenureYears;
-    preComputedLogs.stability =
-      avg > 2.5
-        ? `Avg tenure ${avg} yrs (>2.5) across ${careerStats.distinctCompanyCount} companies → 10/10`
-        : avg >= 1.5
-          ? `Avg tenure ${avg} yrs (1.5–2.5) across ${careerStats.distinctCompanyCount} companies → 7/10`
-          : `Avg tenure ${avg} yrs (<1.5) across ${careerStats.distinctCompanyCount} companies → 0/10`;
-  }
-  if (rules.location !== false) {
-    preComputedLogs.location =
-      locationScore === 5
-        ? `Candidate location "${profileData.location}" matches JD location → 5/5`
-        : `Candidate location "${profileData.location || "unknown"}" does not match JD location → 0/5`;
+  if (!isResumeMode) {
+    if (rules.stability !== false && careerStats) {
+      const avg = careerStats.averageTenureYears;
+      preComputedLogs.stability =
+        avg > 2.5
+          ? `Avg tenure ${avg} yrs (>2.5) across ${careerStats.distinctCompanyCount} companies → 10/10`
+          : avg >= 1.5
+            ? `Avg tenure ${avg} yrs (1.5–2.5) across ${careerStats.distinctCompanyCount} companies → 7/10`
+            : `Avg tenure ${avg} yrs (<1.5) across ${careerStats.distinctCompanyCount} companies → 0/10`;
+    }
+    if (rules.location !== false) {
+      preComputedLogs.location =
+        locationPreComputed === 5
+          ? `Candidate location "${profileData.location}" matches JD location → 5/5`
+          : `Candidate location "${profileData.location || "unknown"}" does not match JD location → 0/5`;
+    }
   }
 
-  console.log("[Analyzer] Pre-computed:", { stabilityScore, locationScore, candidateInfo: candidateInfo.name });
+  console.log("[Analyzer] Pre-computed:", {
+    stabilityPreComputed, locationPreComputed, isResumeMode, candidateInfo: candidateInfo.name,
+  });
 
   // ── Pass 2: LLM evaluation ──
   const userPrompt = buildUserPrompt(profileData, config.jobDescription, candidateInfo);
   const model = config.aiModel;
   if (!model) throw new Error("No AI model configured. Please select a provider and model before running analysis.");
 
-  // Build system prompt — user's role/guidelines are stitched in automatically
+  // Build system prompt — resume mode includes stability + location rules for LLM scoring
   const systemPrompt = buildSystemPrompt(rules, customRules, {
     customPrompt: config.customPrompt,
     promptRole: config.promptRole,
@@ -955,6 +990,7 @@ export async function analyzeProfile(
     builtInRuleDescriptions: config.builtInRuleDescriptions,
     ruleDefinitions: config.ruleDefinitions,
     promptEnvelope: config.promptEnvelope,
+    resumeMode: isResumeMode,
   });
   console.log(`[Analyzer] System prompt built (${systemPrompt.length} chars), role=${config.promptRole ? 'custom' : 'default'}, guidelines=${config.promptGuidelines ? 'custom' : 'default'}`);
 
@@ -994,10 +1030,19 @@ export async function analyzeProfile(
   });
   const enabledEffectiveRules = effectiveRules.filter((r) => r.enabled);
 
-  const scoring: Record<string, number | string> = {
-    stability: stabilityScore,
-    locationMatch: locationScore,
-  };
+  const scoring: Record<string, number | string> = {};
+
+  // Stability and location: for resume uploads the LLM scores these from raw text;
+  // for LinkedIn scrapes we use the deterministic pre-computed values.
+  if (isResumeMode) {
+    const s = coerce(llmScoring.stability);
+    scoring.stability = typeof s === "number" ? Math.min(s, 10) : stabilityPreComputed;
+    const l = coerce(llmScoring.locationMatch);
+    scoring.locationMatch = typeof l === "number" ? Math.min(l, 5) : locationPreComputed;
+  } else {
+    scoring.stability = stabilityPreComputed;
+    scoring.locationMatch = locationPreComputed;
+  }
 
   for (const rule of enabledEffectiveRules) {
     if (rule.isPreComputed) continue;
@@ -1054,7 +1099,7 @@ export async function analyzeProfile(
       userPrompt,
       model,
       usage: resultUsage,
-      preComputed: { stability: stabilityScore, location: locationScore },
+      preComputed: { stability: stabilityPreComputed, location: locationPreComputed },
     },
   };
 

@@ -16,7 +16,7 @@ import {
 } from "@/lib/services/unipile.service";
 import { analyzeProfile, type AnalysisConfig } from "@/lib/analyzer";
 import { exportToSheet, buildSheetPayload } from "@/lib/sheets";
-import { buildVars, renderTemplate } from "@/lib/outreach/render-template";
+import { fanOutToChannels } from "@/lib/channels/fan-out";
 
 // ─── Shared Helpers ────────────────────────────────────────────────
 
@@ -74,57 +74,35 @@ async function maybeAutoShortlist(
     });
     if (!job?.requisitionId) return;
 
-    const campaign = await prisma.campaign.findFirst({
-      where: { requisitionId: job.requisitionId, status: "ACTIVE" },
-      orderBy: { createdAt: "desc" },
+    // Read auto-shortlist threshold from requisition config
+    const req = await prisma.requisition.findUnique({
+      where: { id: job.requisitionId },
+      select: { config: true },
     });
-    if (!campaign) return;
+    if (!req) return;
 
     let threshold = 70;
     try {
-      const t = JSON.parse(campaign.threshold);
-      if (typeof t?.minScorePercent === "number") threshold = t.minScorePercent;
+      const cfg = JSON.parse(req.config ?? "{}");
+      if (typeof cfg?.autoShortlistThreshold === "number") threshold = cfg.autoShortlistThreshold;
     } catch { /* keep default */ }
 
     if (analysisResult?.scorePercent == null || analysisResult.scorePercent < threshold) return;
 
     const current = await prisma.task.findUnique({
       where: { id: taskId },
-      select: { stage: true, outreachMessages: { select: { id: true, campaignId: true } } },
+      select: { stage: true },
     });
     if (!current) return;
 
     const skipStages = new Set(["SHORTLISTED", "CONTACT_REQUESTED", "CONNECTED", "REPLIED", "INTERVIEW", "HIRED", "REJECTED", "ARCHIVED"]);
     if (skipStages.has(current.stage)) return;
 
-    const alreadyHasMsg = current.outreachMessages.some((m) => m.campaignId === campaign.id);
-    if (alreadyHasMsg) return;
-
-    let tpl: { subject?: string; body?: string } = {};
-    try { tpl = JSON.parse(campaign.template); } catch { /* ignore */ }
-
-    const vars = buildVars(profileData, analysisResult);
-    const renderedBody = renderTemplate(tpl.body ?? "", vars);
-    const renderedSubject = tpl.subject ? renderTemplate(tpl.subject, vars) : undefined;
-
     const now = new Date();
-    const msgStatus = campaign.approvalMode === "AUTO" ? "APPROVED" : "AWAITING_REVIEW";
-
     await prisma.$transaction([
       prisma.task.update({
         where: { id: taskId },
         data: { stage: "SHORTLISTED", stageUpdatedAt: now },
-      }),
-      prisma.outreachMessage.create({
-        data: {
-          campaignId: campaign.id,
-          taskId,
-          channel: campaign.channel,
-          status: msgStatus,
-          renderedBody,
-          renderedSubject,
-          approvedAt: msgStatus === "APPROVED" ? now : undefined,
-        },
       }),
       prisma.stageEvent.create({
         data: {
@@ -138,6 +116,9 @@ async function maybeAutoShortlist(
     ]);
 
     console.log(`[AutoShortlist] Task ${taskId.slice(-6)} shortlisted (score=${Math.round(analysisResult.scorePercent)}%)`);
+
+    // Fan-out to all active Channels — creates ChannelThreads for matching score bands
+    await fanOutToChannels(taskId, jobId);
   } catch (err: any) {
     console.warn(`[AutoShortlist] Task ${taskId.slice(-6)} hook failed: ${err.message}`);
   }

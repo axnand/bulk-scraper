@@ -1,14 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { CandidateStage } from "@prisma/client";
+import { fanOutToChannels } from "@/lib/channels/fan-out";
 
 export const dynamic = "force-dynamic";
 
+// Stages set by the recruiter manually — persisted in manualStage so they
+// survive automatic rollup without being overwritten by thread state changes.
+const MANUAL_STAGES = new Set<string>(["INTERVIEW", "HIRED", "REJECTED", "ARCHIVED"]);
 const VALID_STAGES = new Set<string>(Object.values(CandidateStage));
 
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: Promise<{ requisitionId: string; taskId: string }> }
+  { params }: { params: Promise<{ requisitionId: string; taskId: string }> },
 ) {
   try {
     const { taskId } = await params;
@@ -21,21 +25,27 @@ export async function PATCH(
 
     const existing = await prisma.task.findUnique({
       where: { id: taskId },
-      select: { stage: true },
+      select: { stage: true, jobId: true },
     });
 
     if (!existing) {
       return NextResponse.json({ error: "Task not found" }, { status: 404 });
     }
 
+    const isManual = MANUAL_STAGES.has(stage);
+
     const [updated] = await prisma.$transaction([
       prisma.task.update({
         where: { id: taskId },
         data: {
           stage: stage as CandidateStage,
+          // Persist recruiter decisions in manualStage so the rollup respects them
+          ...(isManual ? { manualStage: stage as CandidateStage } : {}),
+          // Clear manualStage if recruiter is moving back to a system-driven stage
+          ...(!isManual ? { manualStage: null } : {}),
           stageUpdatedAt: new Date(),
         },
-        select: { id: true, stage: true, stageUpdatedAt: true },
+        select: { id: true, stage: true, manualStage: true, stageUpdatedAt: true },
       }),
       prisma.stageEvent.create({
         data: {
@@ -47,6 +57,13 @@ export async function PATCH(
         },
       }),
     ]);
+
+    // Fire-and-forget fan-out when a recruiter manually promotes to SHORTLISTED
+    if (stage === "SHORTLISTED" && existing.jobId) {
+      fanOutToChannels(taskId, existing.jobId).catch(err =>
+        console.error("[Stage PATCH] fanOut failed:", err),
+      );
+    }
 
     return NextResponse.json(updated);
   } catch (error) {

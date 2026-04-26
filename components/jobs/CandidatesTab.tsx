@@ -23,6 +23,7 @@ interface TaskResult {
   source?: string;
   sourceFileName?: string | null;
   hasResume?: boolean;
+  overrides?: any[];
 }
 
 interface JobResults {
@@ -65,6 +66,7 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [exportLoading, setExportLoading] = useState(false);
   const [exportMsg, setExportMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [enrichLoading, setEnrichLoading] = useState(false);
   const [showSheetModal, setShowSheetModal] = useState(false);
   const [sheetUrl, setSheetUrl] = useState(data.config?.sheetWebAppUrl || "");
   const [sheetIntegrations, setSheetIntegrations] = useState<SheetIntegrationType[]>([]);
@@ -129,23 +131,105 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
     }
   }
 
+  async function handleBulkEnrich() {
+    const taskIds = selectedIds.size > 0 ? Array.from(selectedIds) : filteredTasks.map(t => t.id);
+    if (!taskIds.length) return;
+    setEnrichLoading(true);
+    setExportMsg(null);
+    try {
+      const res = await fetch(`/api/requisitions/${requisitionId}/candidates/bulk-enrich`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskIds }),
+      });
+      const d = await res.json();
+      if (res.status === 402) {
+        setExportMsg({ type: "error", text: "Airscale credit limit reached" });
+      } else if (!res.ok) {
+        setExportMsg({ type: "error", text: d.error ?? "Enrichment failed" });
+      } else {
+        setExportMsg({ type: "success", text: `Enriched ${d.enriched}/${d.total} contacts${d.failed ? ` (${d.failed} failed)` : ""}` });
+      }
+    } catch (err: any) {
+      setExportMsg({ type: "error", text: err.message });
+    } finally {
+      setEnrichLoading(false);
+    }
+  }
+
+  const completedTasks = useMemo(() => data.tasks.filter(t => t.status === "DONE"), [data.tasks]);
+  
+  const filteredTasks = useMemo(() => {
+    return completedTasks
+      .filter(task => {
+        const profile = task.result;
+        const analysis = task.analysisResult;
+        if (!profile || !analysis) return false;
+        
+        if (search.trim()) {
+          const fullName = `${profile.first_name || ""} ${profile.last_name || ""}`.toLowerCase();
+          if (!fullName.includes(search.toLowerCase().trim())) return false;
+        }
+        if (filterFit !== "All" && analysis?.recommendation !== filterFit) return false;
+        if (filterLocation.trim()) {
+          const loc = (analysis?.candidateInfo?.currentLocation || profile.location || "").toLowerCase();
+          if (!loc.includes(filterLocation.toLowerCase().trim())) return false;
+        }
+        if (filterMinExp.trim()) {
+          const exp = analysis?.candidateInfo?.totalExperienceYears ?? -1;
+          if (exp < parseFloat(filterMinExp)) return false;
+        }
+        if (filterDate !== "all") {
+          const added = task.addedAt ? new Date(task.addedAt) : null;
+          if (!added) return false;
+          const now = new Date();
+          const diffHours = (now.getTime() - added.getTime()) / (1000 * 60 * 60);
+          if (filterDate === "24h" && diffHours > 24) return false;
+          if (filterDate === "7d" && diffHours > 24 * 7) return false;
+          if (filterDate === "30d" && diffHours > 24 * 30) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const aA = a.analysisResult;
+        const bA = b.analysisResult;
+        if (sort === "score-desc") return (bA?.scorePercent ?? -1) - (aA?.scorePercent ?? -1);
+        if (sort === "score-asc") return (aA?.scorePercent ?? -1) - (bA?.scorePercent ?? -1);
+        if (sort === "date-desc") {
+          const aDate = a.addedAt ? new Date(a.addedAt).getTime() : 0;
+          const bDate = b.addedAt ? new Date(b.addedAt).getTime() : 0;
+          return bDate - aDate;
+        }
+        if (sort === "date-asc") {
+          const aDate = a.addedAt ? new Date(a.addedAt).getTime() : 0;
+          const bDate = b.addedAt ? new Date(b.addedAt).getTime() : 0;
+          return aDate - bDate;
+        }
+        if (sort === "exp-desc") return (bA?.candidateInfo?.totalExperienceYears ?? -1) - (aA?.candidateInfo?.totalExperienceYears ?? -1);
+        if (sort === "exp-asc") return (aA?.candidateInfo?.totalExperienceYears ?? -1) - (bA?.candidateInfo?.totalExperienceYears ?? -1);
+        if (sort === "name-asc") {
+          const aName = `${a.result?.first_name || ""} ${a.result?.last_name || ""}`.trim();
+          const bName = `${b.result?.first_name || ""} ${b.result?.last_name || ""}`.trim();
+          return aName.localeCompare(bName);
+        }
+        return 0;
+      });
+  }, [completedTasks, search, filterFit, filterLocation, filterMinExp, filterDate, sort]);
+
   const kpiStats = useMemo(() => {
-    let strong = 0, moderate = 0, notFit = 0, scoreSum = 0, scoreCount = 0;
-    for (const t of data.tasks) {
+    let strong = 0, moderate = 0, notFit = 0;
+    for (const t of filteredTasks) {
       if (t.analysisResult) {
         const a = t.analysisResult;
         if (a.recommendation === "Strong Fit") strong++;
         else if (a.recommendation === "Moderate Fit") moderate++;
         else if (a.recommendation === "Not a Fit") notFit++;
-        if (typeof a.scorePercent === "number") { scoreSum += a.scorePercent; scoreCount++; }
       }
     }
-    return { strong, moderate, notFit, avgScore: scoreCount > 0 ? Math.round(scoreSum / scoreCount) : 0 };
-  }, [data.tasks]);
+    return { strong, moderate, notFit, total: filteredTasks.length };
+  }, [filteredTasks]);
 
-  const completedTasks = data.tasks.filter(t => t.status === "DONE");
-  const analysedTasks = completedTasks.filter(t => t.analysisResult);
-  const allAnalysedIds = analysedTasks.map(t => t.id);
+  const allAnalysedIds = filteredTasks.map(t => t.id);
   const allSelected = allAnalysedIds.length > 0 && selectedIds.size === allAnalysedIds.length;
 
   return (
@@ -153,7 +237,7 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
       {/* KPI Stats */}
       <div className="space-y-3">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatTile label="Total" value={data.totalTasks} icon={Users} tone="neutral" />
+          <StatTile label="Total" value={kpiStats.total} icon={Users} tone="neutral" />
           <StatTile label="Strong Fit" value={kpiStats.strong} icon={TrendingUp} tone="emerald" />
           <StatTile label="Moderate" value={kpiStats.moderate} icon={Minus} tone="amber" />
           <StatTile label="Not a Fit" value={kpiStats.notFit} icon={TrendingDown} tone="rose" />
@@ -184,9 +268,9 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
           <div className="space-y-3">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-lg font-semibold text-foreground shrink-0">
-                Scraped Profiles ({completedTasks.length})
+                Candidates ({filteredTasks.length})
               </h2>
-              {analysedTasks.length > 0 && !selectMode && (
+              {filteredTasks.length > 0 && !selectMode && (
                 <button
                   onClick={() => setSelectMode(true)}
                   className="ml-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/15 text-primary border border-primary/25 hover:bg-primary/25 transition-colors"
@@ -272,60 +356,7 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
           </div>
 
           <div className="space-y-3">
-            {completedTasks
-              .filter(task => {
-                const profile = task.result;
-                const analysis = task.analysisResult;
-                if (!profile) return false;
-                if (search.trim()) {
-                  const fullName = `${profile.first_name || ""} ${profile.last_name || ""}`.toLowerCase();
-                  if (!fullName.includes(search.toLowerCase().trim())) return false;
-                }
-                if (filterFit !== "All" && analysis?.recommendation !== filterFit) return false;
-                if (filterLocation.trim()) {
-                  const loc = (analysis?.candidateInfo?.currentLocation || profile.location || "").toLowerCase();
-                  if (!loc.includes(filterLocation.toLowerCase().trim())) return false;
-                }
-                if (filterMinExp.trim()) {
-                  const exp = analysis?.candidateInfo?.totalExperienceYears ?? -1;
-                  if (exp < parseFloat(filterMinExp)) return false;
-                }
-                if (filterDate !== "all") {
-                  const added = task.addedAt ? new Date(task.addedAt) : null;
-                  if (!added) return false;
-                  const now = new Date();
-                  const diffHours = (now.getTime() - added.getTime()) / (1000 * 60 * 60);
-                  if (filterDate === "24h" && diffHours > 24) return false;
-                  if (filterDate === "7d" && diffHours > 24 * 7) return false;
-                  if (filterDate === "30d" && diffHours > 24 * 30) return false;
-                }
-                return true;
-              })
-              .sort((a, b) => {
-                const aA = a.analysisResult;
-                const bA = b.analysisResult;
-                if (sort === "score-desc") return (bA?.scorePercent ?? -1) - (aA?.scorePercent ?? -1);
-                if (sort === "score-asc") return (aA?.scorePercent ?? -1) - (bA?.scorePercent ?? -1);
-                if (sort === "date-desc") {
-                  const aDate = a.addedAt ? new Date(a.addedAt).getTime() : 0;
-                  const bDate = b.addedAt ? new Date(b.addedAt).getTime() : 0;
-                  return bDate - aDate;
-                }
-                if (sort === "date-asc") {
-                  const aDate = a.addedAt ? new Date(a.addedAt).getTime() : 0;
-                  const bDate = b.addedAt ? new Date(b.addedAt).getTime() : 0;
-                  return aDate - bDate;
-                }
-                if (sort === "exp-desc") return (bA?.candidateInfo?.totalExperienceYears ?? -1) - (aA?.candidateInfo?.totalExperienceYears ?? -1);
-                if (sort === "exp-asc") return (aA?.candidateInfo?.totalExperienceYears ?? -1) - (bA?.candidateInfo?.totalExperienceYears ?? -1);
-                if (sort === "name-asc") {
-                  const aName = `${a.result?.first_name || ""} ${a.result?.last_name || ""}`.trim();
-                  const bName = `${b.result?.first_name || ""} ${b.result?.last_name || ""}`.trim();
-                  return aName.localeCompare(bName);
-                }
-                return 0;
-              })
-              .map(task => {
+            {filteredTasks.map(task => {
                 const isSelected = selectedIds.has(task.id);
                 const isSelectable = selectMode && !!task.analysisResult;
                 return (
@@ -340,16 +371,6 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
                         : ""
                     }`}
                   >
-                    {isSelected && (
-                      <div className="absolute top-3 right-3 z-10 h-6 w-6 rounded-full bg-primary flex items-center justify-center shadow-lg">
-                        <svg className="w-3.5 h-3.5 text-primary-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                        </svg>
-                      </div>
-                    )}
-                    {isSelectable && !isSelected && (
-                      <div className="absolute top-3 right-3 z-10 h-6 w-6 rounded-full border-2 border-border bg-background/80" />
-                    )}
                     <ProfileCard
                       task={task}
                       jobConfig={data.config}
@@ -360,6 +381,8 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
                       }}
                       isDuplicate={duplicateTaskIds?.has(task.id)}
                       onOpenDuplicates={onOpenDuplicates}
+                      selectMode={selectMode}
+                      isSelected={isSelected}
                     />
                   </div>
                 );
@@ -386,6 +409,13 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
                 {exportMsg.text}
               </span>
             )}
+            <button
+              onClick={handleBulkEnrich}
+              disabled={enrichLoading || exportLoading}
+              className="px-3 py-2 rounded-lg text-xs font-semibold bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 transition-colors disabled:opacity-50 shrink-0"
+            >
+              {enrichLoading ? "Enriching…" : "Enrich Contacts"}
+            </button>
             <button
               onClick={() => { setExportMsg(null); setShowSheetModal(true); }}
               disabled={exportLoading}
@@ -421,7 +451,7 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
             <div className="flex items-center justify-between">
               <h3 className="text-base font-semibold text-foreground">Export to Google Sheet</h3>
               <span className="text-xs text-muted-foreground">
-                {selectedIds.size > 0 ? `${selectedIds.size} selected` : `All ${analysedTasks.length} profiles`}
+                {selectedIds.size > 0 ? `${selectedIds.size} selected` : `All ${filteredTasks.length} profiles`}
               </span>
             </div>
 
@@ -496,7 +526,7 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
 
 // ─── Sub-components ────────────────────────────────────────────────────
 
-function ProfileCard({ task, jobConfig, expanded, onToggle, isDuplicate, onOpenDuplicates }: { task: TaskResult; jobConfig?: any; expanded: boolean; onToggle: () => void; isDuplicate?: boolean; onOpenDuplicates?: () => void }) {
+function ProfileCard({ task, jobConfig, expanded, onToggle, isDuplicate, onOpenDuplicates, selectMode, isSelected }: { task: TaskResult; jobConfig?: any; expanded: boolean; onToggle: () => void; isDuplicate?: boolean; onOpenDuplicates?: () => void; selectMode?: boolean; isSelected?: boolean; }) {
   const profile = task.result;
   const analysis = task.analysisResult;
   if (!profile) return null;
@@ -547,12 +577,12 @@ function ProfileCard({ task, jobConfig, expanded, onToggle, isDuplicate, onOpenD
               {name}
             </Link>
             {isDuplicate && (
-              <button
+              <span
                 onClick={e => { e.stopPropagation(); onOpenDuplicates?.(); }}
-                className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400 hover:bg-amber-500/20 transition-colors shrink-0"
+                className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400 hover:bg-amber-500/20 transition-colors shrink-0 cursor-pointer"
               >
                 ⚠ dup
-              </button>
+              </span>
             )}
             {task.addedAt && (
               <span className="text-[10px] text-muted-foreground/60 shrink-0">
@@ -595,25 +625,58 @@ function ProfileCard({ task, jobConfig, expanded, onToggle, isDuplicate, onOpenD
         </div>
 
         {analysis && (
-          <div className="flex flex-col items-end gap-1 shrink-0 min-w-[72px]">
-            <span className={`text-lg font-bold tabular-nums leading-none ${
-              analysis.scorePercent >= 70 ? "text-emerald-500"
-              : analysis.scorePercent >= 40 ? "text-amber-500"
-              : "text-rose-500"
-            }`}>{analysis.scorePercent}%</span>
-            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-              analysis.recommendation === "Strong Fit"
-                ? "bg-emerald-500/10 text-emerald-500"
-                : analysis.recommendation === "Moderate Fit"
-                ? "bg-amber-500/10 text-amber-500"
-                : "bg-rose-500/10 text-rose-500"
-            }`}>{analysis.recommendation}</span>
+          <div className="flex flex-col items-end gap-1.5 shrink-0 min-w-[72px] pr-1">
+            <div className="flex items-center gap-3">
+              <span className={`text-xl font-bold tabular-nums leading-none ${
+                analysis.scorePercent >= 70 ? "text-emerald-500"
+                : analysis.scorePercent >= 40 ? "text-amber-500"
+                : "text-rose-500"
+              }`}>{analysis.scorePercent}%</span>
+              
+              {selectMode ? (
+                <div className={`w-[22px] h-[22px] rounded-full flex items-center justify-center border-[1.5px] transition-colors shrink-0 ${
+                  isSelected 
+                    ? "bg-primary border-primary text-primary-foreground shadow-sm" 
+                    : "border-border/60 bg-background"
+                }`}>
+                  {isSelected && (
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  )}
+                </div>
+              ) : (
+                <div className="w-[22px] flex justify-center">
+                  {/* Empty spacer for alignment if not select mode, or maybe put the chevron here? 
+                      Actually in the design, chevron is below. We'll leave it as is or omit spacer. */}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-1.5 mt-0.5">
+              {task.overrides && task.overrides.length > 0 && (
+                <span className="text-[9px] font-medium text-blue-500 border border-blue-500/20 bg-blue-500/10 px-1.5 py-0.5 rounded">
+                  Edited
+                </span>
+              )}
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                analysis.recommendation === "Strong Fit"
+                  ? "bg-emerald-500/10 text-emerald-500"
+                  : analysis.recommendation === "Moderate Fit"
+                  ? "bg-amber-500/10 text-amber-500"
+                  : "bg-rose-500/10 text-rose-500"
+              }`}>{analysis.recommendation}</span>
+              
+              <div className="w-[22px] flex justify-center ml-1.5">
+                {!selectMode && (
+                  <svg className={`w-4 h-4 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                )}
+              </div>
+            </div>
           </div>
         )}
-
-        <svg className={`w-5 h-5 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
       </button>
 
       {expanded && (
@@ -683,23 +746,42 @@ function ProfileCard({ task, jobConfig, expanded, onToggle, isDuplicate, onOpenD
                     <div className="divide-y divide-border/50">
                       {effectiveRules.map(rule => {
                         const ruleMax = Math.max(0, ...rule.scoreParameters.map(p => p.maxPoints));
-                        const val = rule.scoreParameters.reduce<number>((best, p) => {
-                          const s = analysis.scoring?.[p.key];
-                          return typeof s === "number" && s > best ? s : best;
-                        }, 0);
+                        
+                        let bestVal = 0;
+                        let isOverridden = false;
+                        for (const p of rule.scoreParameters) {
+                          const o = task.overrides?.find(o => o.paramKey === p.key);
+                          if (o) {
+                            isOverridden = true;
+                            bestVal = o.override;
+                            break;
+                          } else {
+                            const s = analysis.scoring?.[p.key];
+                            if (typeof s === "number" && s > bestVal) bestVal = s;
+                          }
+                        }
+
                         const logText = analysis.scoringLogs?.[rule.key];
                         const isCustom = rule.type === "custom";
+                        
+                        const pct = ruleMax > 0 ? (bestVal / ruleMax) * 100 : 0;
+                        const barColor = isOverridden ? "bg-blue-500" : bestVal >= ruleMax * 0.7 ? "bg-emerald-500" : bestVal > 0 ? "bg-amber-500" : "bg-muted-foreground/30";
+                        const textColor = isOverridden ? "text-blue-500" : "text-foreground";
+
                         return (
                           <div key={rule.key} className="px-3 py-2 space-y-1">
                             <div className="flex items-center gap-3">
-                              <span className={`text-xs w-36 shrink-0 ${isCustom ? "text-primary" : "text-muted-foreground"}`}>{rule.label}</span>
+                              <span className={`text-xs w-36 shrink-0 ${isCustom ? "text-primary" : "text-muted-foreground"}`}>
+                                {rule.label}
+                                {isOverridden && <span className="ml-1.5 text-[8px] text-blue-500 border border-blue-500/20 bg-blue-500/10 px-1 py-0.5 rounded">HR Edited</span>}
+                              </span>
                               <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
                                 <div
-                                  className={`h-full rounded-full ${val >= ruleMax * 0.7 ? "bg-emerald-500" : val > 0 ? "bg-amber-500" : "bg-muted-foreground/30"}`}
-                                  style={{ width: `${ruleMax > 0 ? (val / ruleMax) * 100 : 0}%` }}
+                                  className={`h-full rounded-full ${barColor}`}
+                                  style={{ width: `${pct}%` }}
                                 />
                               </div>
-                              <span className="text-xs font-mono text-foreground w-12 text-right">{val}/{ruleMax}</span>
+                              <span className={`text-xs font-mono w-12 text-right ${textColor}`}>{bestVal}/{ruleMax}</span>
                             </div>
                             {logText && (
                               <p className="text-[11px] text-muted-foreground pl-[9.5rem] leading-relaxed">{logText}</p>

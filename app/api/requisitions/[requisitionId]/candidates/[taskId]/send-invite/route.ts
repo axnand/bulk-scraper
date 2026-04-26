@@ -15,15 +15,7 @@ export async function POST(
 
     const task = await prisma.task.findUnique({
       where: { id: taskId },
-      select: {
-        id: true,
-        url: true,
-        stage: true,
-        result: true,
-        outreachMessages: {
-          select: { id: true, campaignId: true, status: true },
-        },
-      },
+      select: { id: true, url: true, stage: true, result: true },
     });
 
     if (!task) {
@@ -37,7 +29,6 @@ export async function POST(
       );
     }
 
-    // Resolve provider_id from the scraped profile; fall back to public identifier from URL
     const profile = task.result ? JSON.parse(task.result) : null;
     const providerUserId: string | null =
       profile?.provider_id ||
@@ -51,40 +42,37 @@ export async function POST(
       );
     }
 
-    // Find the active LINKEDIN_INVITE campaign for this requisition
-    const campaign = await prisma.campaign.findFirst({
-      where: {
-        requisitionId,
-        status: "ACTIVE",
-        channel: { in: ["LINKEDIN_INVITE", "LINKEDIN_DM"] },
-      },
+    // Find the active LINKEDIN channel for this requisition
+    const channel = await prisma.channel.findFirst({
+      where: { requisitionId, type: "LINKEDIN", status: "ACTIVE" },
       include: { sendingAccount: true },
       orderBy: { createdAt: "desc" },
     });
 
-    if (!campaign) {
+    if (!channel) {
       return NextResponse.json(
-        { error: "No active LinkedIn campaign for this requisition" },
+        { error: "No active LinkedIn channel for this requisition" },
         { status: 400 },
       );
     }
 
-    const account = campaign.sendingAccount;
+    const account = channel.sendingAccount;
     if (!account) {
       return NextResponse.json(
-        { error: "Campaign has no sending account configured" },
+        { error: "Channel has no sending account configured" },
         { status: 400 },
       );
     }
 
-    // Pull invite note from campaign template (optional, LinkedIn 300 char limit)
+    // Pull invite note from channel config (first invite rule, if any)
     let inviteNote: string | undefined;
     try {
-      const tpl = JSON.parse(campaign.template);
-      inviteNote = typeof tpl?.inviteNote === "string" ? tpl.inviteNote.slice(0, 300) : undefined;
-    } catch {
-      /* template not JSON — ignore */
-    }
+      const cfg = channel.config as any;
+      const firstRule = cfg?.inviteRules?.[0];
+      if (firstRule?.noteTemplate) {
+        inviteNote = firstRule.noteTemplate.slice(0, 300);
+      }
+    } catch { /* skip */ }
 
     const { invitationId } = await sendInvitation({
       accountId: account.accountId,
@@ -96,34 +84,23 @@ export async function POST(
 
     const now = new Date();
 
-    const existingMsg = task.outreachMessages.find(m => m.campaignId === campaign.id);
-
     await prisma.$transaction([
       prisma.task.update({
         where: { id: taskId },
         data: { stage: "CONTACT_REQUESTED", stageUpdatedAt: now },
       }),
-      existingMsg
-        ? prisma.outreachMessage.update({
-            where: { id: existingMsg.id },
-            data: {
-              status: "SENT",
-              sentAt: now,
-              providerMessageId: invitationId || null,
-            },
-          })
-        : prisma.outreachMessage.create({
-            data: {
-              campaignId: campaign.id,
-              taskId,
-              channel: "LINKEDIN_INVITE",
-              status: "SENT",
-              renderedBody: inviteNote ?? "",
-              approvedAt: now,
-              sentAt: now,
-              providerMessageId: invitationId || null,
-            },
-          }),
+      prisma.outreachMessage.create({
+        data: {
+          campaignId: channel.id,
+          taskId,
+          channel: "LINKEDIN_INVITE",
+          status: "SENT",
+          renderedBody: inviteNote ?? "",
+          approvedAt: now,
+          sentAt: now,
+          providerMessageId: invitationId || null,
+        },
+      }),
       prisma.stageEvent.create({
         data: {
           taskId,

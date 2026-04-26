@@ -5,7 +5,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 import {
   RefreshCw, LayoutGrid, Search, X, ExternalLink,
-  Send, MessageSquare, ChevronDown, Loader2,
+  ChevronDown, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,8 +59,7 @@ export function PipelineTab({ requisitionId }: Props) {
 
   // Bulk selection
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [bulkInviting, setBulkInviting] = useState(false);
-  const [bulkMessaging, setBulkMessaging] = useState(false);
+  const [enriching, setEnriching] = useState(false);
 
   const fetchPipeline = useCallback(async () => {
     try {
@@ -166,76 +165,6 @@ export function PipelineTab({ requisitionId }: Props) {
     return map;
   }, [stages, selectedIds]);
 
-  const shortlistedSelected = selectedByStage["SHORTLISTED"]?.length ?? 0;
-  const connectedSelected = selectedByStage["CONNECTED"]?.length ?? 0;
-
-  async function handleBulkInvite() {
-    const taskIds = selectedByStage["SHORTLISTED"] ?? [];
-    if (!taskIds.length) return;
-    setBulkInviting(true);
-    try {
-      const res = await fetch(`/api/requisitions/${requisitionId}/candidates/bulk-invite`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ taskIds }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Bulk invite failed");
-      toast.success(`Sent ${data.sent} LinkedIn invite${data.sent !== 1 ? "s" : ""}${data.failed > 0 ? `, ${data.failed} failed` : ""}`);
-      // Optimistically move successful ones to CONTACT_REQUESTED
-      const sentIds: string[] = data.results.filter((r: any) => r.ok).map((r: any) => r.taskId);
-      setStages(prev => {
-        let next = { ...prev };
-        for (const id of sentIds) {
-          const task = (next["SHORTLISTED"] ?? []).find(t => t.id === id);
-          if (!task) continue;
-          next["SHORTLISTED"] = (next["SHORTLISTED"] ?? []).filter(t => t.id !== id);
-          next["CONTACT_REQUESTED"] = [
-            { ...task, stage: "CONTACT_REQUESTED", stageUpdatedAt: new Date().toISOString() },
-            ...(next["CONTACT_REQUESTED"] ?? []),
-          ];
-        }
-        return next;
-      });
-      setSelectedIds(prev => {
-        const next = new Set(prev);
-        sentIds.forEach(id => next.delete(id));
-        return next;
-      });
-    } catch (err: any) {
-      toast.error(err.message || "Bulk invite failed");
-    } finally {
-      setBulkInviting(false);
-    }
-  }
-
-  async function handleBulkMessage() {
-    const taskIds = selectedByStage["CONNECTED"] ?? [];
-    if (!taskIds.length) return;
-    setBulkMessaging(true);
-    try {
-      const res = await fetch(`/api/requisitions/${requisitionId}/candidates/bulk-message`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ taskIds }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Bulk message failed");
-      toast.success(`Queued ${data.queued} DM${data.queued !== 1 ? "s" : ""}${data.failed > 0 ? `, ${data.failed} failed` : ""}`);
-      setSelectedIds(prev => {
-        const next = new Set(prev);
-        taskIds.forEach(id => next.delete(id));
-        return next;
-      });
-      // Refresh to pick up stage changes from worker
-      setTimeout(fetchPipeline, 2000);
-    } catch (err: any) {
-      toast.error(err.message || "Bulk message failed");
-    } finally {
-      setBulkMessaging(false);
-    }
-  }
-
   async function handleBulkMove(newStage: CandidateStage) {
     const taskIds = [...selectedIds];
     if (!taskIds.length) return;
@@ -275,6 +204,31 @@ export function PipelineTab({ requisitionId }: Props) {
     } catch {
       setStages(snapshot);
       toast.error("Failed to move some candidates");
+    }
+  }
+
+  async function handleBulkEnrich() {
+    const taskIds = [...selectedIds];
+    if (!taskIds.length) return;
+    setEnriching(true);
+    try {
+      const res = await fetch(`/api/requisitions/${requisitionId}/candidates/bulk-enrich`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskIds }),
+      });
+      const d = await res.json();
+      if (res.status === 402) {
+        toast.error("Airscale credit limit reached");
+      } else if (!res.ok) {
+        toast.error(d.error ?? "Enrichment failed");
+      } else {
+        toast.success(`Enriched ${d.enriched}/${d.total} contacts${d.failed ? ` (${d.failed} failed)` : ""}`);
+      }
+    } catch {
+      toast.error("Network error during enrichment");
+    } finally {
+      setEnriching(false);
     }
   }
 
@@ -446,31 +400,6 @@ export function PipelineTab({ requisitionId }: Props) {
 
           <div className="w-px h-5 bg-border mx-1" />
 
-          {shortlistedSelected > 0 && (
-            <Button
-              size="sm"
-              className="h-7 text-xs gap-1.5"
-              disabled={bulkInviting}
-              onClick={handleBulkInvite}
-            >
-              {bulkInviting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-              {bulkInviting ? "Sending…" : `Send invite (${shortlistedSelected})`}
-            </Button>
-          )}
-
-          {connectedSelected > 0 && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs gap-1.5"
-              disabled={bulkMessaging}
-              onClick={handleBulkMessage}
-            >
-              {bulkMessaging ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MessageSquare className="h-3.5 w-3.5" />}
-              {bulkMessaging ? "Queuing…" : `Send DM (${connectedSelected})`}
-            </Button>
-          )}
-
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="h-7 text-xs gap-1">
@@ -493,6 +422,16 @@ export function PipelineTab({ requisitionId }: Props) {
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs gap-1"
+            onClick={handleBulkEnrich}
+            disabled={enriching}
+          >
+            {enriching ? <><RefreshCw className="h-3 w-3 animate-spin" />Enriching…</> : <><Zap className="h-3 w-3" />Enrich Contacts</>}
+          </Button>
 
           <button
             onClick={clearSelection}

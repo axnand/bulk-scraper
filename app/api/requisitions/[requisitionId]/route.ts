@@ -97,6 +97,13 @@ export async function PUT(
       data: patch,
     });
 
+    if (configChanged && (body.scoringRules || body.customScoringRules || body.builtInRuleDescriptions || body.ruleDefinitions)) {
+      // Fire and forget score recalculation
+      import("@/lib/recalculate-scores").then((m) => {
+        m.recalculateScoresForRequisition(requisitionId, currentConfig).catch(console.error);
+      });
+    }
+
     return NextResponse.json(updated);
   } catch (error) {
     console.error("[Requisitions] PUT failed:", error);

@@ -12,6 +12,7 @@ export interface ExtractedResumeInfo {
   currentDesignation: string;
   currentLocation: string;
   workExperience: ExtractedWorkExperience[];
+  isLinkedInExport?: boolean;
 }
 
 const MONTHS: Record<string, number> = {
@@ -29,6 +30,9 @@ function parseMonth(s: string): number | null {
 const DATE_LINE_RE =
   /^([A-Za-z]+)\s+(\d{4})\s*[-–—]\s*(Present|([A-Za-z]+)\s+(\d{4}))(?:\s*\(.+\))?\s*$/;
 
+// "1 year" | "2 years" | "1 year 3 months" | "5 months" — LinkedIn tenure summaries
+const TENURE_SUMMARY_RE = /^\d+\s+years?\s*(?:\d+\s+months?)?$|^\d+\s+months?$/i;
+
 // Positions that must NOT count toward tenure / stability — they're not full-time employment.
 // Whole-word match against the position string (case-insensitive).
 const NON_FULL_TIME_POSITION_RE =
@@ -37,6 +41,16 @@ const NON_FULL_TIME_POSITION_RE =
 function isFullTimeRole(position: string): boolean {
   if (!position) return false;
   return !NON_FULL_TIME_POSITION_RE.test(position);
+}
+
+// Lines that look like description text rather than a company name.
+function looksLikeDescriptionText(s: string): boolean {
+  if (!s) return false;
+  if (TENURE_SUMMARY_RE.test(s)) return true;
+  if (s.length > 100) return true;
+  if (/^[a-z]/.test(s)) return true;
+  if (/^[-•·–*]|^\d+\.\s/.test(s)) return true;
+  return false;
 }
 
 function extractWorkExperience(lines: string[]): ExtractedWorkExperience[] {
@@ -51,6 +65,7 @@ function extractWorkExperience(lines: string[]): ExtractedWorkExperience[] {
   if (expStart === -1) return [];
 
   const entries: ExtractedWorkExperience[] = [];
+  let lastKnownCompany = "";
 
   for (let i = expStart; i < lines.length; i++) {
     const line = lines[i];
@@ -72,7 +87,29 @@ function extractWorkExperience(lines: string[]): ExtractedWorkExperience[] {
     let compIdx = posIdx - 1;
     while (compIdx >= 0 && !lines[compIdx]) compIdx--;
     if (compIdx < 0) continue;
-    const company = lines[compIdx];
+    let company = lines[compIdx];
+
+    // Skip LinkedIn tenure summary lines (e.g. "1 year", "2 years 3 months") and
+    // look one line further up for the real company name.
+    if (TENURE_SUMMARY_RE.test(company)) {
+      let prevIdx = compIdx - 1;
+      while (prevIdx >= 0 && !lines[prevIdx]) prevIdx--;
+      if (
+        prevIdx >= 0 &&
+        !SECTION_HEADERS.has(lines[prevIdx].toLowerCase()) &&
+        !DATE_LINE_RE.test(lines[prevIdx])
+      ) {
+        company = lines[prevIdx];
+        compIdx = prevIdx;
+      }
+    }
+
+    // If the candidate company still looks like description text (e.g. a bullet from the
+    // previous role's description that bleeds into the next role's lookup window), fall
+    // back to the last valid company we recorded — common for grouped multi-role companies.
+    if (looksLikeDescriptionText(company) && lastKnownCompany) {
+      company = lastKnownCompany;
+    }
 
     // Guard against misreads (company shouldn't be a section header or another date line)
     if (SECTION_HEADERS.has(company.toLowerCase())) continue;
@@ -92,6 +129,10 @@ function extractWorkExperience(lines: string[]): ExtractedWorkExperience[] {
       const endYear = parseInt(m[5], 10);
       if (!endMonth || !endYear) continue;
       end = `${endMonth}/1/${endYear}`;
+    }
+
+    if (!looksLikeDescriptionText(company)) {
+      lastKnownCompany = company;
     }
 
     entries.push({
@@ -134,26 +175,58 @@ function isSectionHeader(s: string): boolean {
   return SECTION_HEADERS.has(s.toLowerCase().trim());
 }
 
-const LINKEDIN_URL_PATTERN = /linkedin\.com\/in\/([\w%-]+(?:\r?\n[\w%-]+)*)/i;
+const LINKEDIN_URL_PATTERN = /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([\w%-]+(?:[\/\-][\w%-]+)*)/i;
 const HEADLINE_PATTERN = /^(.+?)\s+@\s+(.+)$/;
+const TRAILING_AT_PATTERN = /^(.+?)\s+@\s*$/;
 
 // LinkedIn URL may wrap across lines, e.g. "www.linkedin.com/in/naman-\nsuyal-441416258"
+// And sometimes includes query strings or trailing slashes
 function extractLinkedInUrl(text: string): string {
-  const m = LINKEDIN_URL_PATTERN.exec(text);
-  if (!m) return "";
-  const handle = m[1].replaceAll(/\s+/g, "");
+  // try to match wrapped lines as well
+  const match = text.match(/(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([\w%-]+(?:\r?\n[\w%-]+)*)/i);
+  if (!match) return "";
+  let handle = match[1].replace(/\s+/g, "");
+  // remove any trailing slash or query params if accidentally captured
+  handle = handle.split(/[?\/]/)[0];
   return `https://www.linkedin.com/in/${handle}`;
 }
 
-// Strongest anchor in LinkedIn PDFs: a line of the form "Designation @ Company".
-function findHeadline(
-  lines: string[]
-): { idx: number; designation: string; org: string } | null {
+interface HeadlineMatch {
+  nameSearchIdx: number;     // look for candidate name before this line index
+  locationSearchIdx: number; // look for location after this line index
+  designation: string;
+  org: string;
+}
+
+// Strongest anchor in LinkedIn PDFs: "Designation @ Company" — single or two-line split.
+function findHeadline(lines: string[]): HeadlineMatch | null {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line || /linkedin\.com/i.test(line)) continue;
+
+    // Single-line: "Designation @ Company"
     const m = HEADLINE_PATTERN.exec(line);
-    if (m) return { idx: i, designation: m[1].trim(), org: m[2].trim() };
+    if (m) {
+      return { nameSearchIdx: i, locationSearchIdx: i, designation: m[1].trim(), org: m[2].trim() };
+    }
+
+    // Two-line split: line ends with " @" and org is on the next non-empty line
+    const mt = TRAILING_AT_PATTERN.exec(line);
+    if (mt) {
+      let nextIdx = i + 1;
+      while (nextIdx < lines.length && !lines[nextIdx]) nextIdx++;
+      if (nextIdx < lines.length) {
+        const nextLine = lines[nextIdx];
+        if (!SECTION_HEADERS.has(nextLine.toLowerCase()) && !DATE_LINE_RE.test(nextLine)) {
+          return {
+            nameSearchIdx: i,
+            locationSearchIdx: nextIdx,
+            designation: mt[1].trim(),
+            org: nextLine.trim(),
+          };
+        }
+      }
+    }
   }
   return null;
 }
@@ -189,11 +262,23 @@ export function extractResumeInfo(text: string): ExtractedResumeInfo {
     currentDesignation: "",
     currentLocation: "",
     workExperience: [],
+    isLinkedInExport: false,
   };
 
   if (!text) return result;
 
   result.linkedinUrl = extractLinkedInUrl(text);
+
+  // Check for LinkedIn Export Markers
+  const hasLinkedInMarkers = 
+    /Top Skills/i.test(text) && 
+    /Summary/i.test(text) && 
+    /Experience/i.test(text) && 
+    /Education/i.test(text);
+
+  if (hasLinkedInMarkers || text.includes("Page 1 of") || text.includes("www.linkedin.com/in")) {
+    result.isLinkedInExport = true;
+  }
 
   const lines = text.split(/\r?\n/).map((l) => l.trim());
 
@@ -201,8 +286,8 @@ export function extractResumeInfo(text: string): ExtractedResumeInfo {
   if (headline) {
     result.currentDesignation = headline.designation;
     result.currentOrg = headline.org;
-    result.name = findNameBeforeHeadline(lines, headline.idx);
-    result.currentLocation = findLocationAfterHeadline(lines, headline.idx);
+    result.name = findNameBeforeHeadline(lines, headline.nameSearchIdx);
+    result.currentLocation = findLocationAfterHeadline(lines, headline.locationSearchIdx);
   }
 
   result.workExperience = extractWorkExperience(lines);

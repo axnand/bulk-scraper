@@ -12,45 +12,68 @@ export async function GET(
     const { requisitionId: rawId } = await params;
     const requisitionId = await resolveRequisitionId(rawId);
 
-    const runs = await prisma.job.findMany({
+    // Fetch all jobs for this requisition ordered oldest→newest so runIndex is stable
+    const jobs = await prisma.job.findMany({
       where: { requisitionId },
-      select: { id: true, createdAt: true, status: true },
-      orderBy: { createdAt: "desc" },
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
     });
 
-    const runMeta: Record<string, { createdAt: Date; status: string; index: number }> = {};
-    runs.forEach((r, idx) => {
-      runMeta[r.id] = { createdAt: r.createdAt, status: r.status, index: runs.length - idx };
-    });
+    const jobIds = jobs.map(j => j.id);
+    const runIndexById: Record<string, number> = {};
+    jobs.forEach((j, i) => { runIndexById[j.id] = i + 1; });
 
-    if (runs.length === 0) {
-      return NextResponse.json({ runs: [], tasks: [] });
+    if (jobIds.length === 0) {
+      return NextResponse.json({ tasks: [] });
     }
 
     const tasks = await prisma.task.findMany({
-      where: { jobId: { in: runs.map(r => r.id) } },
-      orderBy: { createdAt: "desc" },
+      where: { jobId: { in: jobIds } },
+      orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        jobId: true,
+        url: true,
+        source: true,
+        sourceFileName: true,
+        sourceFileUrl: true,
+        status: true,
+        result: true,
+        analysisResult: true,
+        errorMessage: true,
+        retryCount: true,
+        createdAt: true,
+        overrides: {
+          select: {
+            ruleKey: true,
+            paramKey: true,
+            original: true,
+            override: true,
+            reason: true,
+            author: true,
+            createdAt: true,
+          },
+        },
+      },
     });
 
-    const shaped = tasks.map(t => ({
-      id: t.id,
-      runId: t.jobId,
-      runIndex: runMeta[t.jobId]?.index ?? 0,
-      addedAt: t.createdAt,
-      url: t.url,
-      source: t.source,
-      sourceFileName: t.sourceFileName,
-      hasResume: !!t.sourceFileUrl,
-      status: t.status,
-      result: t.result ? JSON.parse(t.result) : null,
-      analysisResult: t.analysisResult ? JSON.parse(t.analysisResult) : null,
-      errorMessage: t.errorMessage,
-      retryCount: t.retryCount,
-    }));
-
     return NextResponse.json({
-      runs: runs.map((r, idx) => ({ ...r, index: runs.length - idx })),
-      tasks: shaped,
+      tasks: tasks.map(t => ({
+        id: t.id,
+        url: t.url,
+        source: t.source,
+        sourceFileName: t.sourceFileName ?? null,
+        hasResume: !!t.sourceFileUrl,
+        status: t.status,
+        result: t.result ? JSON.parse(t.result) : null,
+        analysisResult: t.analysisResult ? JSON.parse(t.analysisResult) : null,
+        errorMessage: t.errorMessage ?? null,
+        retryCount: t.retryCount,
+        runId: t.jobId,
+        runIndex: runIndexById[t.jobId] ?? 1,
+        addedAt: t.createdAt,
+        overrides: t.overrides,
+      })),
     });
   } catch (error) {
     console.error("[Candidates] GET failed:", error);

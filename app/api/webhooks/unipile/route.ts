@@ -1,9 +1,12 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { CandidateStage } from "@prisma/client";
-import { extractIdentifier } from "@/lib/services/unipile.service";
+import { markThreadReplied } from "@/lib/channels/thread-worker";
+import { recomputeTaskStage } from "@/lib/channels/stage-rollup";
 
 export const dynamic = "force-dynamic";
+
+// ─── Signature verification ───────────────────────────────────────────────────
 
 async function verifySignature(req: NextRequest, rawBody: string): Promise<boolean> {
   const secret = process.env.UNIPILE_WEBHOOK_SECRET;
@@ -28,6 +31,29 @@ async function verifySignature(req: NextRequest, rawBody: string): Promise<boole
   return sig === `sha256=${hex}`;
 }
 
+// ─── Webhook event deduplication ─────────────────────────────────────────────
+//
+// Unipile retries failed deliveries. We deduplicate using WebhookEvent.id
+// (the provider's own event ID). Returns true if this is a fresh event.
+
+async function dedupeEvent(provider: string, eventType: string, eventId: string | null): Promise<boolean> {
+  if (!eventId) return true; // no id to dedupe on — process it
+  try {
+    await prisma.webhookEvent.create({
+      data: { id: eventId, provider, eventType },
+    });
+    return true;
+  } catch (err: any) {
+    if (err.code === "P2002") {
+      // Unique constraint = duplicate event — skip
+      return false;
+    }
+    throw err;
+  }
+}
+
+// ─── Main handler ─────────────────────────────────────────────────────────────
+
 export async function POST(req: NextRequest) {
   const rawBody = await req.text();
 
@@ -45,20 +71,35 @@ export async function POST(req: NextRequest) {
 
   console.log(`[Webhook/Unipile] event=${event.type} data=${JSON.stringify(event.data)}`);
 
+  // Deduplicate using the most specific available ID
+  const eventId =
+    event.data?.event_id ??
+    event.data?.message_id ??
+    event.data?.invitation_id ??
+    event.data?.id ??
+    null;
+
+  const isDuplicate = !(await dedupeEvent("unipile", event.type, eventId ? `${event.type}:${eventId}` : null));
+  if (isDuplicate) {
+    console.log(`[Webhook/Unipile] Duplicate event ${event.type}:${eventId} — skipping`);
+    return NextResponse.json({ ok: true, duplicate: true });
+  }
+
   try {
     switch (event.type) {
-      // Unipile source=users event=new_relation (invite accepted / new connection)
       case "users.new_relation":
-      // Legacy / alternate formats kept for safety
       case "users_relations.invitation_accepted":
       case "new_relation":
         await handleInvitationAccepted(event.data);
         break;
-      // Unipile source=messaging event=message_received
       case "messaging.message_received":
       case "messaging.new_message":
       case "message_received":
         await handleNewMessage(event.data);
+        break;
+      case "mail_received":
+      case "emails.mail_received":
+        await handleMailReceived(event.data);
         break;
       default:
         console.log(`[Webhook/Unipile] Unhandled event type: ${event.type}`);
@@ -71,29 +112,23 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
-/**
- * Resolve which OutreachMessage / task corresponds to this acceptance.
- *
- * Strategy (in order):
- * 1. Match by providerMessageId (invitation_id stored when invite was sent)
- * 2. Fallback: match by account_id + attendee provider_id stored in task result
- */
-async function resolveInviteMsg(data: any) {
-  const invitationId = data?.invitation_id ?? data?.id;
+// ─── Invitation accepted ──────────────────────────────────────────────────────
 
-  // Strategy 1 — direct match on stored invitation_id
+async function handleInvitationAccepted(data: any) {
+  // Try to match a ChannelThread by the stored invitation message ID
+  const invitationId = data?.invitation_id ?? data?.id;
   if (invitationId) {
-    const msg = await prisma.outreachMessage.findFirst({
-      where: { providerMessageId: invitationId },
-      include: { campaign: { include: { sendingAccount: true } }, task: true },
+    const threadMsg = await prisma.threadMessage.findFirst({
+      where: { providerMessageId: invitationId, type: "INVITE" },
+      select: { threadId: true },
     });
-    if (msg) return msg;
-    console.warn(`[Webhook/Unipile] invitation_id=${invitationId} not found — trying fallback`);
+    if (threadMsg) {
+      await handleThreadInviteAccepted(threadMsg.threadId);
+      return;
+    }
   }
 
-  // Strategy 2 — match by Unipile account + attendee provider_id
-  // users.new_relation payload fields: account_id, user_provider_id, user_public_identifier
-  const accountId = data?.account_id;
+  // Fallback: scan INVITE_PENDING threads and match by LinkedIn provider_id
   const attendeeProviderId: string | undefined =
     data?.user_provider_id ??
     data?.user_public_identifier ??
@@ -101,210 +136,125 @@ async function resolveInviteMsg(data: any) {
     data?.provider_id ??
     data?.attendee?.provider_id;
 
-  if (!accountId || !attendeeProviderId) return null;
+  if (attendeeProviderId) {
+    const accountId = data?.account_id;
+    const thread = await findThreadByProviderUserId(attendeeProviderId, accountId);
+    if (thread) {
+      await handleThreadInviteAccepted(thread.id);
+      return;
+    }
+  }
 
-  // Find CONTACT_REQUESTED tasks whose scraped profile contains this provider_id
-  const candidates = await prisma.task.findMany({
-    where: {
-      stage: "CONTACT_REQUESTED",
-      outreachMessages: {
-        some: {
-          channel: "LINKEDIN_INVITE",
-          status: "SENT",
-          campaign: { sendingAccount: { accountId } }
-        }
-      }
-    },
-    select: {
-      id: true,
-      stage: true,
-      result: true,
-      url: true,
-      outreachMessages: {
-        where: { channel: "LINKEDIN_INVITE", status: "SENT" },
-        include: { campaign: { include: { sendingAccount: true } } },
-        take: 1,
-      },
+  console.warn("[Webhook/Unipile] invitation_accepted: could not match any channel thread — payload:", JSON.stringify(data));
+}
+
+async function handleThreadInviteAccepted(threadId: string): Promise<void> {
+  const thread = await prisma.channelThread.findUnique({
+    where: { id: threadId },
+    select: { id: true, taskId: true, status: true, providerState: true },
+  });
+  if (!thread) return;
+
+  const ps = (thread.providerState as Record<string, string> | null) ?? {};
+  if (ps.phase !== "INVITE_PENDING") {
+    return;
+  }
+
+  await prisma.channelThread.update({
+    where: { id: threadId },
+    data: {
+      providerState: { phase: "CONNECTED" },
+      nextActionAt: new Date(),
     },
   });
 
-  for (const task of candidates) {
+  await recomputeTaskStage(thread.taskId);
+  console.log(`[Webhook/Unipile] Thread ${threadId.slice(-6)} → CONNECTED`);
+}
+
+async function findThreadByProviderUserId(
+  providerUserId: string,
+  accountId?: string,
+): Promise<{ id: string } | null> {
+  const threads = await prisma.channelThread.findMany({
+    where: {
+      providerState: { path: ["phase"], equals: "INVITE_PENDING" },
+      ...(accountId ? { channel: { sendingAccount: { accountId } } } : {}),
+    },
+    select: {
+      id: true,
+      task: { select: { result: true } },
+    },
+  });
+
+  for (const t of threads) {
     try {
-      const profile = task.result ? JSON.parse(task.result) : null;
-      
-      const pids = [
-        profile?.provider_id,
-        profile?.public_identifier,
-        task.url ? extractIdentifier(task.url) : null,
-        task.url ? task.url.match(/linkedin\.com\/in\/([^\/\?]+)/)?.[1] : null
-      ].filter(Boolean);
-
-      if (attendeeProviderId && pids.includes(attendeeProviderId) && task.outreachMessages.length > 0) {
-        const omsg = task.outreachMessages[0];
-        return {
-          ...omsg,
-          task,
-          campaign: omsg.campaign,
-        } as any;
-      }
-    } catch { /* invalid JSON — skip */ }
+      const profile = t.task.result ? JSON.parse(t.task.result as string) : null;
+      const pid = profile?.provider_id || profile?.public_identifier;
+      if (pid === providerUserId) return { id: t.id };
+    } catch { /* skip */ }
   }
-
   return null;
 }
 
-/**
- * invitation_accepted → CONTACT_REQUESTED → CONNECTED, then auto-send follow-up DM.
- */
-async function handleInvitationAccepted(data: any) {
-  const msg = await resolveInviteMsg(data);
+// ─── Inbound message received ─────────────────────────────────────────────────
 
-  if (!msg) {
-    console.warn("[Webhook/Unipile] invitation_accepted: could not match any task — payload:", JSON.stringify(data));
-    return;
-  }
-
-  if (msg.task.stage !== "CONTACT_REQUESTED") {
-    console.log(`[Webhook/Unipile] Task ${msg.taskId.slice(-6)} already at ${msg.task.stage} — skipping`);
-    return;
-  }
-
-  const now = new Date();
-
-  // Step 1 — move to CONNECTED (its own transaction, always succeeds)
-  await prisma.$transaction([
-    prisma.task.update({
-      where: { id: msg.taskId },
-      data: { stage: "CONNECTED" as CandidateStage, stageUpdatedAt: now },
-    }),
-    prisma.stageEvent.create({
-      data: {
-        taskId: msg.taskId,
-        fromStage: "CONTACT_REQUESTED" as CandidateStage,
-        toStage: "CONNECTED" as CandidateStage,
-        actor: "SYSTEM",
-        reason: "LinkedIn invitation accepted (webhook)",
-      },
-    }),
-  ]);
-
-  console.log(`[Webhook/Unipile] Task ${msg.taskId.slice(-6)} → CONNECTED`);
-
-  // Step 2 — queue follow-up DM (separate operation, won't roll back stage change on failure)
-  let dmBody = "";
-  try {
-    const tpl = JSON.parse(msg.campaign.template);
-    // Try "body" first (explicit DM template), fall back to inviteNote
-    dmBody = tpl?.body ?? tpl?.inviteNote ?? "";
-  } catch { /* no template */ }
-
-  if (!dmBody.trim()) {
-    console.log(`[Webhook/Unipile] Task ${msg.taskId.slice(-6)}: no DM body in campaign — skipping auto-DM`);
-    return;
-  }
-
-  try {
-    // Upsert to handle the @@unique([campaignId, taskId]) constraint gracefully
-    await prisma.outreachMessage.upsert({
-      where: { campaignId_taskId: { campaignId: msg.campaignId, taskId: msg.taskId } },
-      create: {
-        campaignId: msg.campaignId,
-        taskId: msg.taskId,
-        channel: "LINKEDIN_DM",
-        status: "APPROVED",
-        renderedBody: dmBody,
-        approvedAt: now,
-        scheduledFor: now,
-      },
-      update: {
-        channel: "LINKEDIN_DM",
-        status: "APPROVED",
-        renderedBody: dmBody,
-        approvedAt: now,
-        scheduledFor: now,
-      },
-    });
-
-    console.log(`[Webhook/Unipile] Task ${msg.taskId.slice(-6)}: DM queued — triggering worker`);
-
-    // Trigger outreach worker in the background so DM goes out immediately
-    after(async () => {
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-      if (!appUrl) return;
-      await fetch(`${appUrl}/api/process-outreach`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${process.env.CRON_SECRET ?? ""}` },
-      }).catch(err => console.warn("[Webhook/Unipile] Worker trigger failed:", err.message));
-    });
-  } catch (err: any) {
-    console.error(`[Webhook/Unipile] Task ${msg.taskId.slice(-6)}: failed to queue DM:`, err.message);
-  }
-}
-
-/**
- * messaging.new_message (inbound) → MESSAGED/CONNECTED → REPLIED.
- */
 async function handleNewMessage(data: any) {
   const chatId = data?.chat_id ?? data?.chatId;
   const isInbound = data?.is_from_me === false || data?.from_me === false;
-  const body = data?.text ?? data?.body ?? "";
 
   if (!chatId) {
     console.warn("[Webhook/Unipile] new_message: no chat_id in payload");
     return;
   }
-
   if (!isInbound) return; // outbound echo — ignore
 
-  const msg = await prisma.outreachMessage.findFirst({
-    where: { providerChatId: chatId },
-    include: { task: { select: { id: true, stage: true } } },
-  });
-
-  if (!msg) {
-    console.log(`[Webhook/Unipile] new_message: no OutreachMessage for chatId=${chatId} — ignoring`);
-    return;
-  }
-
-  const now = new Date();
-  const fromStage = msg.task.stage;
-
-  // Record the inbound message
-  await prisma.outreachMessage.create({
-    data: {
-      campaignId: msg.campaignId,
-      taskId: msg.taskId,
-      channel: "LINKEDIN_DM",
-      status: "REPLIED",
-      renderedBody: "",
-      direction: "IN",
-      inboundBody: body,
+  const thread = await prisma.channelThread.findFirst({
+    where: {
       providerChatId: chatId,
-      sentAt: now,
+      status: { in: ["ACTIVE", "PENDING"] },
     },
+    select: { id: true, taskId: true },
   });
 
-  // Advance from MESSAGED or CONNECTED → REPLIED
-  if (fromStage !== "MESSAGED" && fromStage !== "CONNECTED") {
-    console.log(`[Webhook/Unipile] Task ${msg.taskId.slice(-6)} at ${fromStage} — inbound recorded, stage unchanged`);
+  if (thread) {
+    await markThreadReplied(thread.id, thread.taskId);
+    await recomputeTaskStage(thread.taskId);
+    console.log(`[Webhook/Unipile] Thread ${thread.id.slice(-6)} → REPLIED`);
     return;
   }
 
-  await prisma.$transaction([
-    prisma.task.update({
-      where: { id: msg.taskId },
-      data: { stage: "REPLIED" as CandidateStage, stageUpdatedAt: now },
-    }),
-    prisma.stageEvent.create({
-      data: {
-        taskId: msg.taskId,
-        fromStage,
-        toStage: "REPLIED" as CandidateStage,
-        actor: "SYSTEM",
-        reason: "Inbound LinkedIn message received (webhook)",
-      },
-    }),
-  ]);
+  console.log(`[Webhook/Unipile] new_message: no active thread for chatId=${chatId} — ignoring`);
+}
 
-  console.log(`[Webhook/Unipile] Task ${msg.taskId.slice(-6)} → REPLIED`);
+// ─── Inbound email received (Gmail / Outlook) ─────────────────────────────────
+
+async function handleMailReceived(data: any) {
+  // Unipile sets in_reply_to.id to the Unipile provider_id of the parent email
+  const inReplyToId: string | undefined =
+    data?.in_reply_to?.id ??
+    data?.in_reply_to?.message_id;
+
+  if (!inReplyToId) {
+    // Not a reply — a fresh inbound email, nothing to match against
+    return;
+  }
+
+  // providerThreadId holds the provider_id of the email we sent (stored at send time)
+  const thread = await prisma.channelThread.findFirst({
+    where: {
+      providerThreadId: inReplyToId,
+      status: { in: ["ACTIVE", "PENDING"] },
+    },
+    select: { id: true, taskId: true },
+  });
+
+  if (thread) {
+    await markThreadReplied(thread.id, thread.taskId);
+    await recomputeTaskStage(thread.taskId);
+    console.log(`[Webhook/Unipile] Email thread ${thread.id.slice(-6)} → REPLIED`);
+    return;
+  }
+
+  console.log(`[Webhook/Unipile] mail_received: no active email thread for in_reply_to=${inReplyToId} — ignoring`);
 }

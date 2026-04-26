@@ -7,9 +7,10 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { LayoutGrid, List, Plus, Search } from "lucide-react";
+import { LayoutGrid, List, Plus, Search, X } from "lucide-react";
 import { JobCard, RequisitionSummary } from "@/components/jobs/JobCard";
 import { CreatableCombobox } from "@/components/ui/creatable-combobox";
+import { FilterBar, FilterDivider, FilterPills, FilterSelect, SortSelect } from "@/components/ui/filter-bar";
 
 export default function JobsPage() {
   const router = useRouter();
@@ -35,6 +36,14 @@ export default function JobsPage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+
+  // Filters
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [filterDepartment, setFilterDepartment] = useState("");
+  const [filterRecruiter, setFilterRecruiter] = useState("");
+  const [filterDate, setFilterDate] = useState("all");
+  const [filterHasRun, setFilterHasRun] = useState(false);
+  const [sortBy, setSortBy] = useState("updated");
 
   async function fetchReqs() {
     try {
@@ -154,11 +163,51 @@ export default function JobsPage() {
   const existingDepartments = Array.from(new Set(reqs.map(r => r.department).filter(Boolean)));
   const existingRecruiters = Array.from(new Set(reqs.map(r => r.recruiterName).filter(Boolean)));
 
-  const filtered = reqs.filter(r => {
-    if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    return r.title.toLowerCase().includes(q) || r.department.toLowerCase().includes(q);
-  });
+  const hasActiveFilters =
+    filterStatus !== "all" ||
+    filterDepartment !== "" ||
+    filterRecruiter !== "" ||
+    filterDate !== "all" ||
+    filterHasRun;
+
+  function clearFilters() {
+    setFilterStatus("all");
+    setFilterDepartment("");
+    setFilterRecruiter("");
+    setFilterDate("all");
+    setFilterHasRun(false);
+    setSortBy("updated");
+  }
+
+  const now = Date.now();
+  const filtered = reqs
+    .filter(r => {
+      if (search.trim()) {
+        const q = search.toLowerCase();
+        if (!r.title.toLowerCase().includes(q) && !r.department.toLowerCase().includes(q)) return false;
+      }
+      if (filterStatus === "active" && !(r.isActive ?? true)) return false;
+      if (filterStatus === "inactive" && (r.isActive ?? true)) return false;
+      if (filterDepartment && r.department !== filterDepartment) return false;
+      if (filterRecruiter && r.recruiterName !== filterRecruiter) return false;
+      if (filterHasRun && r.activeRunStatus === null) return false;
+      if (filterDate !== "all") {
+        const created = new Date(r.createdAt).getTime();
+        const cutoffs: Record<string, number> = {
+          week: 7 * 24 * 60 * 60 * 1000,
+          month: 30 * 24 * 60 * 60 * 1000,
+          quarter: 90 * 24 * 60 * 60 * 1000,
+        };
+        if (now - created > (cutoffs[filterDate] ?? Infinity)) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      if (sortBy === "candidates") return b.totalCandidates - a.totalCandidates;
+      if (sortBy === "runs") return b.runCount - a.runCount;
+      if (sortBy === "created") return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
 
   const activeRoles = filtered.filter(r => r.isActive ?? true);
   const inactiveRoles = filtered.filter(r => !(r.isActive ?? true));
@@ -214,6 +263,101 @@ export default function JobsPage() {
           </Button>
         </div>
       </div>
+
+      {/* Filter bar */}
+      <FilterBar>
+        {/* Status */}
+        <FilterPills
+          value={filterStatus}
+          onChange={setFilterStatus}
+          options={[
+            { label: "All", value: "all" },
+            { label: "Active", value: "active", color: "emerald" },
+            { label: "Inactive", value: "inactive" },
+          ]}
+        />
+
+        <FilterDivider />
+
+        {/* Department */}
+        <FilterSelect
+          value={filterDepartment}
+          onChange={setFilterDepartment}
+          icon="filter"
+          options={[
+            { label: "All Departments", value: "" },
+            ...existingDepartments.map(d => ({ label: d, value: d })),
+          ]}
+        />
+
+        {/* Recruiter */}
+        {existingRecruiters.length > 0 && (
+          <FilterSelect
+            value={filterRecruiter}
+            onChange={setFilterRecruiter}
+            icon="filter"
+            options={[
+              { label: "All Recruiters", value: "" },
+              ...existingRecruiters.map(r => ({ label: r, value: r })),
+            ]}
+          />
+        )}
+
+        <FilterDivider />
+
+        {/* Date created */}
+        <FilterSelect
+          value={filterDate}
+          onChange={setFilterDate}
+          icon="calendar"
+          options={[
+            { label: "Any time", value: "all" },
+            { label: "Past week", value: "week" },
+            { label: "Past month", value: "month" },
+            { label: "Past quarter", value: "quarter" },
+          ]}
+        />
+
+        <FilterDivider />
+
+        {/* Has active run */}
+        <FilterPills
+          value={filterHasRun ? "running" : "all"}
+          onChange={v => setFilterHasRun(v === "running")}
+          options={[
+            { label: "All runs", value: "all" },
+            { label: "Running now", value: "running", color: "amber" },
+          ]}
+        />
+
+        <FilterDivider />
+
+        {/* Sort */}
+        <SortSelect
+          value={sortBy}
+          onChange={setSortBy}
+          options={[
+            { label: "Last updated", value: "updated" },
+            { label: "Recently created", value: "created" },
+            { label: "Most candidates", value: "candidates" },
+            { label: "Most runs", value: "runs" },
+          ]}
+        />
+
+        {/* Clear all */}
+        {hasActiveFilters && (
+          <>
+            <FilterDivider />
+            <button
+              onClick={clearFilters}
+              className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            >
+              <X className="h-3 w-3" />
+              Clear
+            </button>
+          </>
+        )}
+      </FilterBar>
 
       {loading ? (
         <div className={viewMode === "grid"

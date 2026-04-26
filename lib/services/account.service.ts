@@ -187,6 +187,7 @@ export async function getAccountStats() {
       id: true,
       accountId: true,
       name: true,
+      type: true,
       dsn: true,
       apiKey: true,
       status: true,

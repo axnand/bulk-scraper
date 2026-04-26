@@ -40,6 +40,36 @@ export async function POST(
       },
     });
 
+    // --- Auto Detection Logic ---
+    const text = body.trim();
+    const emailMatch = text.match(/[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+/);
+    const phoneMatch = text.match(/(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+    const salaryMatch = text.match(/(?:\₹|INR|Rs\.?)\s*[\d,]+(?:\.\d+)?(?:k|lakhs?|lpa|cr)?(?:\/month|\/yr)?|\b\d+(?:\.\d+)?\s*(?:lpa|k|cpa|lakh|crore)\b/i);
+
+    const extractedEmail = emailMatch ? emailMatch[0] : null;
+    const extractedPhone = phoneMatch ? phoneMatch[0] : null;
+    const extractedSalary = salaryMatch ? salaryMatch[0] : null;
+
+    if (extractedEmail || extractedPhone || extractedSalary) {
+      const updateData: any = {};
+      if (extractedEmail) updateData.email = extractedEmail;
+      if (extractedPhone) updateData.phone = extractedPhone;
+      if (extractedSalary) updateData.salary = extractedSalary;
+
+      await prisma.candidateContact.upsert({
+        where: { taskId },
+        create: {
+          taskId,
+          ...updateData,
+          source: "MANUAL",
+        },
+        update: {
+          ...updateData,
+        },
+      });
+    }
+    // -----------------------------
+
     return NextResponse.json({ note }, { status: 201 });
   } catch (error) {
     console.error("[Notes] POST failed:", error);

@@ -18,8 +18,7 @@ import {
 } from "@/lib/services/unipile.service";
 import { analyzeProfile, type AnalysisConfig } from "@/lib/analyzer";
 import { exportToSheet, buildSheetPayload } from "@/lib/sheets";
-import { triggerProcessing, triggerOutreach } from "@/lib/trigger";
-import { buildVars, renderTemplate } from "@/lib/outreach/render-template";
+import { triggerProcessing } from "@/lib/trigger";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -68,27 +67,17 @@ async function markTaskFailed(
   }
 }
 
-/**
- * After a task is scored, auto-advance to SHORTLISTED if the score meets the global job threshold.
- * Separately, for each active campaign whose score range matches, create an OutreachMessage.
- */
 async function maybeAutoShortlist(
   taskId: string,
   jobId: string,
-  profileData: any,
+  _profileData: any,
   analysisResult: any,
   jobConfig: any,
 ) {
   try {
-    const job = await prisma.job.findUnique({
-      where: { id: jobId },
-      select: { requisitionId: true },
-    });
-    if (!job?.requisitionId) return;
-
     const current = await prisma.task.findUnique({
       where: { id: taskId },
-      select: { stage: true, outreachMessages: { select: { id: true, campaignId: true } } },
+      select: { stage: true },
     });
     if (!current) return;
 
@@ -96,119 +85,28 @@ async function maybeAutoShortlist(
       "SHORTLISTED", "CONTACT_REQUESTED", "CONNECTED", "REPLIED",
       "INTERVIEW", "HIRED", "REJECTED", "ARCHIVED",
     ]);
-    const alreadyShortlisted = skipStages.has(current.stage);
+    if (skipStages.has(current.stage)) return;
 
-    // 1. Global shortlisting based on job config's minScoreThreshold
     const globalThreshold = Number(jobConfig?.minScoreThreshold) || 0;
-    const meetsGlobalThreshold =
-      analysisResult?.scorePercent != null &&
-      analysisResult.scorePercent >= globalThreshold;
+    if (analysisResult?.scorePercent == null || analysisResult.scorePercent < globalThreshold) return;
 
-    if (meetsGlobalThreshold && !alreadyShortlisted) {
-      const now = new Date();
-      await prisma.$transaction([
-        prisma.task.update({
-          where: { id: taskId },
-          data: { stage: "SHORTLISTED", stageUpdatedAt: now },
-        }),
-        prisma.stageEvent.create({
-          data: {
-            taskId,
-            fromStage: current.stage,
-            toStage: "SHORTLISTED",
-            actor: "SYSTEM",
-            reason: `score ${Math.round(analysisResult.scorePercent)}% ≥ global threshold ${globalThreshold}%`,
-          },
-        }),
-      ]);
-      console.log(`[AutoShortlist] Task ${taskId.slice(-6)} globally shortlisted (score=${Math.round(analysisResult.scorePercent)}% threshold=${globalThreshold}%)`);
-    }
-
-    // 2. Campaign outreach — loop over ALL active campaigns for this requisition
-    const activeCampaigns = await prisma.campaign.findMany({
-      where: { requisitionId: job.requisitionId, status: "ACTIVE" },
-    });
-
-    if (activeCampaigns.length === 0) return;
-
-    for (const campaign of activeCampaigns) {
-      let minThreshold = 70;
-      let maxThreshold = 100;
-      try {
-        const t = JSON.parse(campaign.threshold);
-        if (typeof t?.minScorePercent === "number") minThreshold = t.minScorePercent;
-        if (typeof t?.maxScorePercent === "number") maxThreshold = t.maxScorePercent;
-      } catch { /* keep defaults */ }
-
-      if (
-        analysisResult?.scorePercent == null ||
-        analysisResult.scorePercent < minThreshold ||
-        analysisResult.scorePercent > maxThreshold
-      ) continue;
-
-      // Primary deduplicate check using data already fetched
-      const alreadyHasMsg = current.outreachMessages.some(m => m.campaignId === campaign.id);
-      if (alreadyHasMsg) continue;
-
-      let tpl: { subject?: string; body?: string; inviteNote?: string } = {};
-      try { tpl = JSON.parse(campaign.template); } catch { /* ignore */ }
-
-      const vars = buildVars(profileData, analysisResult);
-      const templateText = campaign.channel === "LINKEDIN_INVITE"
-        ? (tpl.inviteNote ?? "")
-        : (tpl.body ?? "");
-      const renderedBody = renderTemplate(templateText, vars)
-        .slice(0, campaign.channel === "LINKEDIN_INVITE" ? 300 : undefined);
-      const renderedSubject = tpl.subject ? renderTemplate(tpl.subject, vars) : undefined;
-
-      const now = new Date();
-      const msgStatus = "APPROVED";
-
-      // Re-fetch task stage to account for earlier loop iterations that may have shortlisted it
-      const taskInDb = await prisma.task.findUnique({
+    const now = new Date();
+    await prisma.$transaction([
+      prisma.task.update({
         where: { id: taskId },
-        select: { stage: true, outreachMessages: { select: { campaignId: true } } },
-      });
-
-      // Secondary deduplication after re-fetch
-      if (taskInDb?.outreachMessages?.some(m => m.campaignId === campaign.id)) continue;
-
-      const isShortlistedNow = taskInDb && skipStages.has(taskInDb.stage);
-
-      const tx = [];
-      if (!meetsGlobalThreshold && !alreadyShortlisted && !isShortlistedNow) {
-        tx.push(prisma.task.update({
-          where: { id: taskId },
-          data: { stage: "SHORTLISTED", stageUpdatedAt: now },
-        }));
-        tx.push(prisma.stageEvent.create({
-          data: {
-            taskId,
-            fromStage: current.stage,
-            toStage: "SHORTLISTED",
-            actor: "SYSTEM",
-            reason: `score ${Math.round(analysisResult.scorePercent)}% fits campaign ${campaign.name}`,
-          },
-        }));
-      }
-
-      tx.push(prisma.outreachMessage.create({
+        data: { stage: "SHORTLISTED", stageUpdatedAt: now },
+      }),
+      prisma.stageEvent.create({
         data: {
-          campaignId: campaign.id,
           taskId,
-          channel: campaign.channel,
-          status: msgStatus,
-          renderedBody,
-          renderedSubject,
-          approvedAt: now,
+          fromStage: current.stage,
+          toStage: "SHORTLISTED",
+          actor: "SYSTEM",
+          reason: `score ${Math.round(analysisResult.scorePercent)}% ≥ global threshold ${globalThreshold}%`,
         },
-      }));
-
-      await prisma.$transaction(tx);
-      console.log(`[AutoOutreach] Task ${taskId.slice(-6)} enrolled in campaign "${campaign.name}" — score=${Math.round(analysisResult.scorePercent)}%`);
-
-      setTimeout(triggerOutreach, 100);
-    }
+      }),
+    ]);
+    console.log(`[AutoShortlist] Task ${taskId.slice(-6)} shortlisted (score=${Math.round(analysisResult.scorePercent)}% threshold=${globalThreshold}%)`);
   } catch (err: any) {
     console.warn(`[AutoShortlist] Task ${taskId.slice(-6)} hook failed: ${err.message}`);
   }

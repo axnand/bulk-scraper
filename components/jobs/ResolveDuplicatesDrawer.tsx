@@ -73,8 +73,13 @@ function ScoreBadge({ score }: { score: number | null }) {
 function TaskCard({ task, label }: { task: DuplicateTask; label: string }) {
   const score = parseScore(task.analysisResult);
   const name = parseName(task);
-  const jobShort = task.jobId.slice(-6).toUpperCase();
-  const added = new Date(task.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  const added = new Date(task.createdAt).toLocaleString(undefined, { 
+    month: "short", 
+    day: "numeric", 
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  });
   const displayUrl = task.url.startsWith("resume://") ? (task.sourceFileName ?? task.url) : task.url;
 
   return (
@@ -87,7 +92,6 @@ function TaskCard({ task, label }: { task: DuplicateTask; label: string }) {
       <p className="text-xs text-muted-foreground truncate" title={displayUrl}>{displayUrl}</p>
       <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
         <span>Added {added}</span>
-        <span>Run ···{jobShort}</span>
       </div>
     </div>
   );

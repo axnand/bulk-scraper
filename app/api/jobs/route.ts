@@ -119,19 +119,20 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        // Fallback: read from AppSettings (backward compat for extension)
-        if (!body.evaluationConfigId) {
-            try {
-                const appSettings = await prisma.appSettings.findUnique({ where: { id: "global" } });
-                if (appSettings?.promptRole?.trim()) promptRole = appSettings.promptRole;
-                if (appSettings?.promptGuidelines?.trim()) promptGuidelines = appSettings.promptGuidelines;
-                if (appSettings?.criticalInstructions?.trim()) criticalInstructions = appSettings.criticalInstructions;
-                if (promptRole || promptGuidelines || criticalInstructions) {
-                    console.log(`[Jobs] Snapshotting AI eval settings — role: ${promptRole ? 'custom' : 'default'}, guidelines: ${promptGuidelines ? 'custom' : 'default'}, criticalInstructions: ${criticalInstructions ? 'custom' : 'default'}`);
+        // Fallback: read from AppSettings (backward compat for extension and AI model fallback)
+        let defaultAiModel = "gpt-4.1"; // Hardcoded safe default
+        try {
+            const appSettings = await prisma.appSettings.findUnique({ where: { id: "global" } });
+            if (appSettings) {
+                if (!body.evaluationConfigId) {
+                    if (appSettings.promptRole?.trim()) promptRole = appSettings.promptRole;
+                    if (appSettings.promptGuidelines?.trim()) promptGuidelines = appSettings.promptGuidelines;
+                    if (appSettings.criticalInstructions?.trim()) criticalInstructions = appSettings.criticalInstructions;
                 }
-            } catch {
-                // Non-fatal — fall back to built-in defaults
+                if (appSettings.aiModel) defaultAiModel = appSettings.aiModel;
             }
+        } catch {
+            // Non-fatal — fall back to built-in defaults
         }
 
         // 2. Build config object
@@ -142,7 +143,7 @@ export async function POST(req: NextRequest) {
             customScoringRules: resolvedCustomScoringRules,
             sheetWebAppUrl: body.sheetWebAppUrl || "",
             jdTitle: jobTitle,
-            aiModel: body.aiModel,
+            aiModel: body.aiModel || defaultAiModel,
             aiProviderId: body.aiProviderId || undefined,
             minScoreThreshold: body.minScoreThreshold ?? 0,
             ...(promptRole && { promptRole }),

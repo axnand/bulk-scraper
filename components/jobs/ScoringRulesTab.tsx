@@ -102,6 +102,7 @@ export function ScoringRulesTab({ requisitionId, initialConfig, onSaved }: Props
   const [ruleDefinitions, setRuleDefinitions] = useState<Record<string, Partial<RuleDefinition>>>(cfg.ruleDefinitions || {});
   const [promptEnvelope, setPromptEnvelope] = useState<Partial<PromptEnvelope>>(cfg.promptEnvelope || {});
   const [minScoreThreshold, setMinScoreThreshold] = useState(cfg.minScoreThreshold ?? 70);
+  const [autoShortlistThreshold, setAutoShortlistThreshold] = useState(cfg.autoShortlistThreshold ?? 70);
 
   const [expandedRuleKey, setExpandedRuleKey] = useState<string | null>(null);
   const [expandEnvelope, setExpandEnvelope] = useState(false);
@@ -618,10 +619,36 @@ export function ScoringRulesTab({ requisitionId, initialConfig, onSaved }: Props
         </CardContent>
       </Card>
 
-      {/* ── Min score threshold ── */}
+      {/* ── Auto-shortlist threshold ── */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Minimum Score Threshold</CardTitle>
+          <CardTitle className="text-base">Auto-shortlist Threshold</CardTitle>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Candidates scoring at or above this threshold are automatically moved to <strong>Shortlisted</strong> and fan-out to active outreach channels begins.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between">
+            <Label className="text-sm">Threshold</Label>
+            <span className="text-2xl font-bold text-primary font-mono">{autoShortlistThreshold}%</span>
+          </div>
+          <input
+            type="range" min={0} max={100} value={autoShortlistThreshold}
+            onChange={e => setAutoShortlistThreshold(parseInt(e.target.value))}
+            onMouseUp={e => saveConfig({ autoShortlistThreshold: parseInt((e.target as HTMLInputElement).value) })}
+            onTouchEnd={e => saveConfig({ autoShortlistThreshold: parseInt((e.currentTarget as HTMLInputElement).value) })}
+            className="w-full accent-primary"
+          />
+          <div className="flex justify-between text-[10px] text-muted-foreground">
+            <span>0%</span><span>50%</span><span>100%</span>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Min score threshold (sheet export) ── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Sheet Export Threshold</CardTitle>
           <p className="text-xs text-muted-foreground mt-0.5">Only profiles scoring at or above this threshold are auto-exported to Google Sheets.</p>
         </CardHeader>
         <CardContent className="space-y-3">

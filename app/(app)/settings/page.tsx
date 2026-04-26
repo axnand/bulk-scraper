@@ -52,6 +52,7 @@ interface Account {
   id: string;
   accountId: string;
   name: string;
+  type: string;
   dsn: string;
   apiKey: string;
   status: string;
@@ -61,7 +62,14 @@ interface Account {
   cooldownUntil: string | null;
   lastUsedAt: string | null;
   createdAt: string;
+  inmailBalance?: { premium: number | null; recruiter: number | null; salesNavigator: number | null } | null;
 }
+
+const ACCOUNT_TYPE_META: Record<string, { label: string; color: string }> = {
+  LINKEDIN:  { label: "LinkedIn",  color: "bg-[#0077B5]/10 text-[#0077B5] border-[#0077B5]/30" },
+  EMAIL:     { label: "Email",     color: "bg-violet-500/10 text-violet-500 border-violet-500/30" },
+  WHATSAPP:  { label: "WhatsApp",  color: "bg-emerald-500/10 text-emerald-600 border-emerald-500/30" },
+};
 
 interface AiProvider {
   id: string;
@@ -201,6 +209,7 @@ export default function SettingsPage() {
   const [formAccountId, setFormAccountId] = useState("");
   const [formDsn, setFormDsn] = useState("");
   const [formApiKey, setFormApiKey] = useState("");
+  const [formType, setFormType] = useState("LINKEDIN");
   const [formSubmitting, setFormSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ success?: boolean; message?: string; error?: string } | null>(null);
@@ -299,11 +308,11 @@ export default function SettingsPage() {
     try {
       const res = await fetch("/api/accounts", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: formName, accountId: formAccountId, dsn: formDsn, apiKey: formApiKey }),
+        body: JSON.stringify({ name: formName, accountId: formAccountId, dsn: formDsn, apiKey: formApiKey, type: formType }),
       });
       const data = await res.json();
       if (!res.ok) { setFormError(data.error || "Failed"); return; }
-      setFormName(""); setFormAccountId(""); setFormDsn(""); setFormApiKey("");
+      setFormName(""); setFormAccountId(""); setFormDsn(""); setFormApiKey(""); setFormType("LINKEDIN");
       setShowAddForm(false); setTestResult(null);
       fetchAccounts();
     } catch { setFormError("Network error"); } finally { setFormSubmitting(false); }
@@ -592,8 +601,30 @@ export default function SettingsPage() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="space-y-1.5">
                         <Label className="text-xs">Friendly Name</Label>
-                        <Input value={formName} onChange={e => setFormName(e.target.value)} placeholder="LinkedIn Account 1" className="h-9 text-sm" />
+                        <Input value={formName} onChange={e => setFormName(e.target.value)} placeholder="My LinkedIn Account" className="h-9 text-sm" />
                       </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Account Type <span className="text-destructive">*</span></Label>
+                        <div className="flex gap-2">
+                          {(["LINKEDIN", "EMAIL", "WHATSAPP"] as const).map(t => (
+                            <button
+                              key={t}
+                              type="button"
+                              onClick={() => setFormType(t)}
+                              className={cn(
+                                "flex-1 h-9 text-xs rounded-md border font-medium transition-colors",
+                                formType === t
+                                  ? ACCOUNT_TYPE_META[t].color + " border-current"
+                                  : "border-border text-muted-foreground hover:border-muted-foreground",
+                              )}
+                            >
+                              {ACCOUNT_TYPE_META[t].label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="space-y-1.5">
                         <Label className="text-xs">Account ID <span className="text-destructive">*</span></Label>
                         <Input value={formAccountId} onChange={e => setFormAccountId(e.target.value)} placeholder="abc123def456" required className="h-9 text-sm" />
@@ -685,6 +716,11 @@ export default function SettingsPage() {
                             <div className="flex items-center gap-2 mb-1 flex-wrap">
                               <span className="text-sm font-medium text-foreground">{account.name || account.accountId}</span>
                               <Badge variant="outline" className={cn("text-[10px] h-4 px-1.5", sc.badge)}>{sc.label}</Badge>
+                              {account.type && ACCOUNT_TYPE_META[account.type as keyof typeof ACCOUNT_TYPE_META] && (
+                                <Badge variant="outline" className={cn("text-[10px] h-4 px-1.5", ACCOUNT_TYPE_META[account.type as keyof typeof ACCOUNT_TYPE_META].color)}>
+                                  {ACCOUNT_TYPE_META[account.type as keyof typeof ACCOUNT_TYPE_META].label}
+                                </Badge>
+                              )}
                             </div>
                             <p className="text-[11px] text-muted-foreground font-mono mb-1.5 truncate">
                               ID: {account.accountId}
@@ -703,6 +739,19 @@ export default function SettingsPage() {
                                 <span className="text-orange-600 dark:text-orange-400 font-medium">Cooldown: {cooldownRemaining}m</span>
                               )}
                             </div>
+                            {account.type === "LINKEDIN" && account.inmailBalance && (
+                              <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-muted-foreground mt-0.5">
+                                {account.inmailBalance.premium != null && (
+                                  <span>InMail credits: <span className="font-mono font-medium text-foreground/80">{account.inmailBalance.premium}</span></span>
+                                )}
+                                {account.inmailBalance.recruiter != null && (
+                                  <span>Recruiter: <span className="font-mono font-medium text-foreground/80">{account.inmailBalance.recruiter}</span></span>
+                                )}
+                                {account.inmailBalance.salesNavigator != null && (
+                                  <span>Sales Nav: <span className="font-mono font-medium text-foreground/80">{account.inmailBalance.salesNavigator}</span></span>
+                                )}
+                              </div>
+                            )}
                           </div>
                           <div className="flex items-center gap-0.5 shrink-0">
                             <Button variant="ghost" size="icon" className="h-8 w-8"

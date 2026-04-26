@@ -12,7 +12,7 @@ import {
 import {
   ChevronRight, UserPlus, Users, LayoutDashboard, SlidersHorizontal, Settings2,
   Plus, Upload, Pause, Play, XCircle, Building2, Calendar, History, UploadCloud,
-  Kanban, Zap, AlertTriangle,
+  Kanban, AlertTriangle, Radio,
 } from "lucide-react";
 import { CandidatesTab } from "@/components/jobs/CandidatesTab";
 import { DashboardTab } from "@/components/jobs/DashboardTab";
@@ -23,7 +23,8 @@ import { BulkAddModal } from "@/components/jobs/BulkAddModal";
 import { AddManuallyModal } from "@/components/jobs/AddManuallyModal";
 import { UploadResumesModal } from "@/components/jobs/UploadResumesModal";
 import { PipelineTab } from "@/components/jobs/PipelineTab";
-import { CampaignTab } from "@/components/jobs/CampaignTab";
+import { ResolutionsTab } from "@/components/jobs/ResolutionsTab";
+import { ChannelsTab } from "@/components/jobs/ChannelsTab";
 import { ResolveDuplicatesDrawer, type DuplicatePair } from "@/components/jobs/ResolveDuplicatesDrawer";
 
 interface RunSummary {
@@ -92,7 +93,7 @@ function combine(
   requisition: RequisitionDetail,
   tasks: TaskResult[]
 ): CombinedView {
-  const successCount = tasks.filter(t => t.status === "DONE").length;
+  const successCount = tasks.filter(t => t.status === "DONE" && t.result && t.analysisResult).length;
   const failedCount = tasks.filter(t => t.status === "FAILED").length;
   const activeRun = requisition.runs.find(r => ACTIVE_RUN_STATUSES.has(r.status)) || null;
 
@@ -114,7 +115,7 @@ function combine(
   };
 }
 
-const VALID_TABS = new Set(["candidates", "pipeline", "campaign", "history", "dashboard", "rules", "jd"]);
+const VALID_TABS = new Set(["candidates", "pipeline", "channels", "history", "dashboard", "rules", "jd"]);
 
 export default function RequisitionDetailPage() {
   const { jobId: requisitionId } = useParams<{ jobId: string }>();
@@ -363,6 +364,13 @@ export default function RequisitionDetailPage() {
         <div className="border-b border-border px-8 shrink-0 bg-background shadow-none border-l-0 border-r-0">
           <TabsList className="bg-transparent h-auto p-0 gap-0">
             <TabsTrigger
+              value="dashboard"
+              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-[13px] font-medium text-muted-foreground gap-2 h-11"
+            >
+              <LayoutDashboard className="h-4 w-4" />
+              Dashboard
+            </TabsTrigger>
+            <TabsTrigger
               value="candidates"
               className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-[13px] font-medium text-muted-foreground gap-2 h-11"
             >
@@ -378,11 +386,11 @@ export default function RequisitionDetailPage() {
               Pipeline
             </TabsTrigger>
             <TabsTrigger
-              value="campaign"
+              value="channels"
               className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-[13px] font-medium text-muted-foreground gap-2 h-11"
             >
-              <Zap className="h-4 w-4" />
-              Campaigns
+              <Radio className="h-4 w-4" />
+              Channels
             </TabsTrigger>
             <TabsTrigger
               value="history"
@@ -391,13 +399,6 @@ export default function RequisitionDetailPage() {
               <History className="h-4 w-4" />
               History
               <Badge variant="secondary" className="ml-1 text-xs">{data.runs.length}</Badge>
-            </TabsTrigger>
-            <TabsTrigger
-              value="dashboard"
-              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground px-4 py-3 text-[13px] font-medium text-muted-foreground gap-2 h-11"
-            >
-              <LayoutDashboard className="h-4 w-4" />
-              Dashboard
             </TabsTrigger>
             <TabsTrigger
               value="rules"
@@ -413,8 +414,22 @@ export default function RequisitionDetailPage() {
               <Settings2 className="h-4 w-4" />
               Settings
             </TabsTrigger>
+            {/* {data.failedCount > 0 && (
+              <TabsTrigger
+                value="resolutions"
+                className="rounded-none border-b-2 border-transparent data-[state=active]:border-rose-500 data-[state=active]:bg-transparent data-[state=active]:text-rose-500 px-4 py-3 text-[13px] font-medium text-muted-foreground gap-2 h-11 text-rose-500 hover:text-rose-600 transition-colors"
+              >
+                <AlertTriangle className="h-4 w-4" />
+                Resolutions
+                <Badge variant="destructive" className="ml-1 text-[10px] px-1.5 py-0 h-4">{data.failedCount}</Badge>
+              </TabsTrigger>
+            )} */}
           </TabsList>
         </div>
+
+        <TabsContent value="resolutions" className="flex-1 overflow-y-auto m-0 p-8">
+          <ResolutionsTab requisitionId={requisitionId} />
+        </TabsContent>
 
         <TabsContent value="candidates" className="flex-1 overflow-y-auto m-0 p-8">
           <CandidatesTab
@@ -430,8 +445,8 @@ export default function RequisitionDetailPage() {
           <PipelineTab requisitionId={requisitionId} />
         </TabsContent>
 
-        <TabsContent value="campaign" className="flex-1 overflow-y-auto m-0 p-8">
-          <CampaignTab requisitionId={requisitionId} />
+        <TabsContent value="channels" className="flex-1 overflow-y-auto m-0 p-8">
+          <ChannelsTab requisitionId={requisitionId} />
         </TabsContent>
 
         <TabsContent value="history" className="flex-1 overflow-y-auto m-0 p-8">

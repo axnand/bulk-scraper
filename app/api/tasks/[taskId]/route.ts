@@ -32,6 +32,8 @@ export async function GET(
             createdAt: true,
           },
         },
+        contact: true,
+        overrides: true,
       },
     });
 
@@ -60,9 +62,48 @@ export async function GET(
       },
       stageEvents: task.stageEvents,
       outreachMessages: task.outreachMessages,
+      contact: task.contact,
+      overrides: task.overrides,
     });
   } catch (error) {
     console.error("[Task] GET failed:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
+}
+
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ taskId: string }> }
+) {
+  try {
+    const { taskId } = await params;
+    const body = await req.json();
+    const { candidateInfo } = body as { candidateInfo?: Record<string, string | number> };
+
+    if (!candidateInfo || Object.keys(candidateInfo).length === 0) {
+      return NextResponse.json({ error: "candidateInfo is required" }, { status: 400 });
+    }
+
+    const task = await prisma.task.findUnique({
+      where: { id: taskId },
+      select: { analysisResult: true },
+    });
+
+    if (!task) {
+      return NextResponse.json({ error: "Task not found" }, { status: 404 });
+    }
+
+    const analysis = task.analysisResult ? JSON.parse(task.analysisResult) : {};
+    analysis.candidateInfo = { ...(analysis.candidateInfo || {}), ...candidateInfo };
+
+    await prisma.task.update({
+      where: { id: taskId },
+      data: { analysisResult: JSON.stringify(analysis) },
+    });
+
+    return NextResponse.json({ ok: true, candidateInfo: analysis.candidateInfo });
+  } catch (error) {
+    console.error("[Task] PATCH failed:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

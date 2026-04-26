@@ -203,12 +203,17 @@ export async function POST(
         const publicId = p.extractedInfo.linkedinUrl
           ? p.extractedInfo.linkedinUrl.split("/").findLast((s) => s !== "") || ""
           : "";
+
+        const finalSourceFileName = p.extractedInfo.isLinkedInExport 
+          ? `${p.name} [LinkedIn Export]`
+          : p.name;
+
         return {
           jobId: job.id,
           // Prefer the LinkedIn URL we pulled out of the PDF; fall back to a synthetic one
           url: p.extractedInfo.linkedinUrl || `resume://${encodeURIComponent(p.name)}`,
           source: p.source,
-          sourceFileName: p.name,
+          sourceFileName: finalSourceFileName,
           sourceFileUrl: p.s3Key,
           status: "PENDING",
           // Pre-store extracted text + regex-extracted structured info so the processor skips Unipile.
@@ -217,7 +222,7 @@ export async function POST(
           contentHash: p.contentHash,
           result: JSON.stringify({
             resumeText: p.text,
-            sourceFileName: p.name,
+            sourceFileName: finalSourceFileName,
             extractedInfo: p.extractedInfo,
             first_name: firstName,
             last_name: lastName,

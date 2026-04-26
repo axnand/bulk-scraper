@@ -7,12 +7,15 @@ import {
   ChevronRight, ExternalLink, Briefcase, Building2, MapPin,
   GraduationCap, FileText, Send, Loader2, MessageSquare,
   ArrowRightLeft, Calendar, TrendingUp, Award, AlertCircle, CheckCircle2,
-  XCircle, ChevronLeft,
+  XCircle, ChevronLeft, StickyNote, Pencil,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { estimateCost, formatCost } from "@/lib/model-pricing";
 import { getEffectiveRules } from "@/lib/analyzer";
 import { cn } from "@/lib/utils";
@@ -66,11 +69,41 @@ interface TaskDetail {
     requisitionTitle: string;
     config: any;
   };
+  contact: {
+    email: string | null;
+    linkedinEmail: string | null;
+    personalEmail: string | null;
+    workEmail: string | null;
+    phone: string | null;
+    salary: string | null;
+    source: string | null;
+    enrichedAt: string | null;
+  } | null;
+  overrides?: any[];
 }
 
 function getInitials(name: string) {
   return name.split(" ").slice(0, 2).map(n => n[0] ?? "").join("").toUpperCase();
 }
+
+const LinkedinIcon = (props: React.SVGProps<SVGSVGElement>) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="24"
+    height="24"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    {...props}
+  >
+    <path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z" />
+    <rect width="4" height="12" x="2" y="9" />
+    <circle cx="4" cy="4" r="2" />
+  </svg>
+);
 
 export default function CandidateDetailPage() {
   const { taskId } = useParams<{ taskId: string }>();
@@ -80,13 +113,18 @@ export default function CandidateDetailPage() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [noteInput, setNoteInput] = useState("");
   const [savingNote, setSavingNote] = useState(false);
+  const [timelineFilter, setTimelineFilter] = useState<"all" | "note" | "message" | "stage">("all");
 
-  useEffect(() => {
+  const refreshTask = () => {
     fetch(`/api/tasks/${taskId}`)
       .then(r => r.ok ? r.json() : r.json().then((e: any) => Promise.reject(e.error)))
       .then(setTask)
       .catch(e => setError(typeof e === "string" ? e : "Failed to load candidate"))
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    refreshTask();
     fetch(`/api/tasks/${taskId}/notes`)
       .then(r => r.json())
       .then(d => setNotes(d.notes ?? []))
@@ -109,6 +147,85 @@ export default function CandidateDetailPage() {
     } catch { /* ignore */ } finally {
       setSavingNote(false);
     }
+  }
+
+  type EnrichType = "work_email" | "personal_email" | "phone" | "all";
+  const [enrichingType, setEnrichingType] = useState<EnrichType | null>(null);
+  const [enrichErrors, setEnrichErrors] = useState<Partial<Record<EnrichType, string>>>({});
+  const [creditBalance, setCreditBalance] = useState<number | null>(null);
+
+  useEffect(() => {
+    fetch("/api/airscale/credits")
+      .then(r => r.json())
+      .then(d => setCreditBalance(d.credits ?? null))
+      .catch(() => {});
+  }, []);
+
+  async function handleEnrich(type: EnrichType) {
+    setEnrichingType(type);
+    setEnrichErrors(prev => { const n = { ...prev }; delete n[type]; return n; });
+    try {
+      const res = await fetch(`/api/tasks/${taskId}/enrich`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type }),
+      });
+      const d = await res.json();
+      if (!d.ok) {
+        setEnrichErrors(prev => ({ ...prev, [type]: d.error ?? "Not found" }));
+        return;
+      }
+      refreshTask();
+    } catch {
+      setEnrichErrors(prev => ({ ...prev, [type]: "Network error" }));
+    } finally {
+      setEnrichingType(null);
+    }
+  }
+
+  async function updateCandidateInfo(key: string, value: string | number) {
+    // Optimistic Update
+    setTask(prev => {
+      if (!prev) return prev;
+      const analysis = prev.analysisResult || {};
+      return {
+        ...prev,
+        analysisResult: {
+          ...analysis,
+          candidateInfo: { ...(analysis.candidateInfo || {}), [key]: value }
+        }
+      };
+    });
+
+    try {
+      const res = await fetch(`/api/tasks/${taskId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidateInfo: { [key]: value } }),
+      });
+      if (!res.ok) throw new Error("Failed to update");
+    } catch {
+      alert("Failed to update candidate info");
+      refreshTask(); // Revert on failure
+    }
+  }
+
+  async function saveScoreOverride(paramKey: string, ruleKey: string, override: number, reason: string) {
+    const res = await fetch(`/api/tasks/${taskId}/overrides`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paramKey, ruleKey, override, reason }),
+    });
+    if (!res.ok) throw new Error("Failed to save override");
+    refreshTask();
+  }
+
+  async function removeScoreOverride(paramKey: string) {
+    const res = await fetch(`/api/tasks/${taskId}/overrides?paramKey=${paramKey}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) throw new Error("Failed to remove override");
+    refreshTask();
   }
 
   if (loading) {
@@ -229,25 +346,52 @@ export default function CandidateDetailPage() {
                   {analysis.recommendation}
                 </Badge>
               )}
+              {task.url && (
+                <a
+                  href={task.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-muted-foreground hover:text-[#0a66c2] transition-colors inline-flex items-center justify-center rounded-md hover:bg-muted p-1"
+                  title="View LinkedIn Profile"
+                >
+                  <LinkedinIcon className="h-5 w-5" />
+                </a>
+              )}
             </div>
-            <p className="text-sm text-muted-foreground mt-0.5">{info?.currentDesignation || headline}</p>
+            <div className="mt-0.5 max-w-xl">
+              <EditableField
+                value={info?.currentDesignation || headline}
+                onSave={v => updateCandidateInfo("currentDesignation", v)}
+                className="text-sm text-muted-foreground w-full"
+              />
+            </div>
             <div className="flex items-center gap-5 mt-2 text-xs text-muted-foreground flex-wrap">
               {info?.currentOrg && (
                 <span className="flex items-center gap-1.5">
                   <Building2 className="h-3.5 w-3.5 shrink-0" />
-                  {info.currentOrg}
+                  <EditableField
+                    value={info.currentOrg}
+                    onSave={v => updateCandidateInfo("currentOrg", v)}
+                  />
                 </span>
               )}
               {location && (
                 <span className="flex items-center gap-1.5">
                   <MapPin className="h-3.5 w-3.5 shrink-0" />
-                  {location}
+                  <EditableField
+                    value={location}
+                    onSave={v => updateCandidateInfo("currentLocation", v)}
+                  />
                 </span>
               )}
               {info?.totalExperienceYears > 0 && (
                 <span className="flex items-center gap-1.5">
                   <Briefcase className="h-3.5 w-3.5 shrink-0" />
-                  {info.totalExperienceYears} yrs experience
+                  <EditableField
+                    value={String(info.totalExperienceYears)}
+                    suffix="yrs experience"
+                    onSave={v => updateCandidateInfo("totalExperienceYears", parseFloat(v) || 0)}
+                  />
                 </span>
               )}
               {info?.stabilityAvgYears > 0 && (
@@ -290,7 +434,77 @@ export default function CandidateDetailPage() {
         <div className="h-full grid grid-cols-1 xl:grid-cols-[280px_1fr_300px] divide-x divide-border">
 
           {/* LEFT PANEL — Profile meta */}
-          <aside className="overflow-y-auto p-5 space-y-6">
+          <aside className="overflow-y-auto p-4 space-y-4">
+
+            {/* Contact & Enrichment */}
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <SectionLabel>Contact & Details</SectionLabel>
+                {creditBalance !== null && (
+                  <span className="text-[10px] text-muted-foreground tabular-nums">
+                    {creditBalance.toLocaleString()} credits
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                {/* Work Email */}
+                <ContactRevealCard
+                  label="Work Email"
+                  value={task.contact?.workEmail ?? null}
+                  fallbackValue={task.contact?.email ?? null}
+                  creditCost={1}
+                  loading={enrichingType === "work_email"}
+                  error={enrichErrors.work_email}
+                  onReveal={() => handleEnrich("work_email")}
+                  disabled={enrichingType !== null}
+                />
+
+                {/* Personal Email */}
+                <ContactRevealCard
+                  label="Personal Email"
+                  value={task.contact?.personalEmail ?? null}
+                  creditCost={1}
+                  loading={enrichingType === "personal_email"}
+                  error={enrichErrors.personal_email}
+                  onReveal={() => handleEnrich("personal_email")}
+                  disabled={enrichingType !== null}
+                />
+
+                {/* Phone */}
+                <ContactRevealCard
+                  label="Phone"
+                  value={task.contact?.phone ?? null}
+                  creditCost={2}
+                  loading={enrichingType === "phone"}
+                  error={enrichErrors.phone}
+                  onReveal={() => handleEnrich("phone")}
+                  disabled={enrichingType !== null}
+                />
+
+                {/* Salary (manual/note-sourced) */}
+                {task.contact?.salary && (
+                  <EditableField renderMode="statcard" label="Salary / Expected" value={task.contact.salary} onSave={() => Promise.resolve()} />
+                )}
+
+                {/* Reveal All */}
+                {(!task.contact?.workEmail && !task.contact?.personalEmail && !task.contact?.phone) && (
+                  <button
+                    onClick={() => handleEnrich("all")}
+                    disabled={enrichingType !== null}
+                    className="w-full mt-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold border border-primary/25 bg-primary/5 text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
+                  >
+                    {enrichingType === "all"
+                      ? <><Loader2 className="h-3 w-3 animate-spin" />Enriching all…</>
+                      : <>🔓 Reveal All — 4 credits</>}
+                  </button>
+                )}
+
+                {enrichErrors.all && (
+                  <p className="text-[11px] text-destructive text-center">{enrichErrors.all}</p>
+                )}
+              </div>
+            </section>
 
             {/* Quick stats */}
             {info && (
@@ -298,28 +512,28 @@ export default function CandidateDetailPage() {
                 <SectionLabel>Profile Info</SectionLabel>
                 <div className="grid grid-cols-2 gap-2 mt-3">
                   {info.totalExperienceYears > 0 && (
-                    <StatCard label="Experience" value={`${info.totalExperienceYears} yrs`} />
+                    <EditableField renderMode="statcard" label="Experience" value={String(info.totalExperienceYears)} onSave={v => updateCandidateInfo("totalExperienceYears", parseFloat(v) || 0)} />
                   )}
                   {info.companiesSwitched > 0 && (
-                    <StatCard label="Companies" value={String(info.companiesSwitched)} />
+                    <EditableField renderMode="statcard" label="Companies" value={String(info.companiesSwitched)} onSave={v => updateCandidateInfo("companiesSwitched", parseInt(v) || 0)} />
                   )}
                   {info.stabilityAvgYears > 0 && (
-                    <StatCard label="Avg Tenure" value={`${info.stabilityAvgYears} yrs`} />
+                    <EditableField renderMode="statcard" label="Avg Tenure" value={String(info.stabilityAvgYears)} onSave={v => updateCandidateInfo("stabilityAvgYears", parseFloat(v) || 0)} />
                   )}
                   {info.currentLocation && (
-                    <StatCard label="Location" value={info.currentLocation} span />
+                    <EditableField renderMode="statcard" label="Location" value={info.currentLocation} span onSave={v => updateCandidateInfo("currentLocation", v)} />
                   )}
                   {info.btech && (
-                    <StatCard label="BTech / BE" value={info.btech} span />
+                    <EditableField renderMode="statcard" label="BTech / BE" value={info.btech} span onSave={v => updateCandidateInfo("btech", v)} />
                   )}
                   {info.graduation && (
-                    <StatCard label="Graduation" value={info.graduation} span />
+                    <EditableField renderMode="statcard" label="Graduation" value={info.graduation} span onSave={v => updateCandidateInfo("graduation", v)} />
                   )}
                   {info.mba && (
-                    <StatCard label="MBA" value={info.mba} span />
+                    <EditableField renderMode="statcard" label="MBA" value={info.mba} span onSave={v => updateCandidateInfo("mba", v)} />
                   )}
                   {info.graduationYear && (
-                    <StatCard label="Grad Year" value={String(info.graduationYear)} />
+                    <EditableField renderMode="statcard" label="Grad Year" value={String(info.graduationYear)} onSave={v => updateCandidateInfo("graduationYear", parseInt(v) || 0)} />
                   )}
                 </div>
               </section>
@@ -378,7 +592,7 @@ export default function CandidateDetailPage() {
           </aside>
 
           {/* CENTER PANEL — Main content */}
-          <main className="overflow-y-auto p-6 space-y-6">
+          <main className="overflow-y-auto p-5 space-y-5">
 
             {/* AI Summary */}
             {analysis?.experienceSummary && (
@@ -409,38 +623,17 @@ export default function CandidateDetailPage() {
                       builtInRuleDescriptions: jobConfig.builtInRuleDescriptions,
                       ruleDefinitions: jobConfig.ruleDefinitions,
                     }).filter((r: any) => r.enabled);
-
                     return effectiveRules.map((rule: any, idx: number) => {
-                      const ruleMax = Math.max(0, ...rule.scoreParameters.map((p: any) => p.maxPoints));
-                      const val = (rule.scoreParameters as any[]).reduce<number>((best: number, p: any) => {
-                        const s = analysis.scoring?.[p.key];
-                        return typeof s === "number" && s > best ? s : best;
-                      }, 0);
-                      const logText = analysis.scoringLogs?.[rule.key];
-                      const pct = ruleMax > 0 ? (val / ruleMax) * 100 : 0;
-                      const barColor = val >= ruleMax * 0.7 ? "bg-emerald-500" : val > 0 ? "bg-amber-500" : "bg-muted-foreground/20";
-
                       return (
-                        <div
+                        <ScoreOverrideRow
                           key={rule.key}
-                          className={cn("px-5 py-3.5", idx > 0 && "border-t border-border/60")}
-                        >
-                          <div className="flex items-center gap-4">
-                            <span className="text-sm text-muted-foreground w-36 shrink-0 font-medium">{rule.label}</span>
-                            <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-                              <div className={cn("h-full rounded-full transition-all", barColor)} style={{ width: `${pct}%` }} />
-                            </div>
-                            <span className={cn(
-                              "text-sm font-bold tabular-nums w-16 text-right shrink-0",
-                              val >= ruleMax * 0.7 ? "text-emerald-500" : val > 0 ? "text-amber-500" : "text-muted-foreground"
-                            )}>
-                              {val}/{ruleMax}
-                            </span>
-                          </div>
-                          {logText && (
-                            <p className="text-xs text-muted-foreground mt-1.5 pl-40 leading-relaxed">{logText}</p>
-                          )}
-                        </div>
+                          rule={rule}
+                          analysis={analysis}
+                          overrides={task.overrides || []}
+                          idx={idx}
+                          onSave={saveScoreOverride}
+                          onRemove={removeScoreOverride}
+                        />
                       );
                     });
                   })()}
@@ -570,7 +763,7 @@ export default function CandidateDetailPage() {
           </main>
 
           {/* RIGHT PANEL — Notes + Activity */}
-          <aside className="overflow-y-auto p-5 space-y-6">
+          <aside className="overflow-y-auto p-4 space-y-4">
 
             {/* Notes */}
             <section>
@@ -614,27 +807,119 @@ export default function CandidateDetailPage() {
             </section>
 
             {/* Activity */}
-            {((task.stageEvents?.length ?? 0) + (task.outreachMessages?.filter(m => m.status === "SENT" || m.direction === "IN")?.length ?? 0)) > 0 && (
-              <section>
-                <SectionLabel>Activity</SectionLabel>
-                <ol className="mt-3 relative border-l-2 border-border/50 space-y-4 pl-5">
-                  {buildTimeline(task.stageEvents ?? [], task.outreachMessages ?? []).map((item, i) => (
-                    <li key={i} className="relative">
-                      <span className="absolute -left-[1.4rem] top-1 h-4 w-4 rounded-full border-2 border-background bg-muted flex items-center justify-center">
-                        {item.type === "stage"
-                          ? <ArrowRightLeft className="h-2 w-2 text-muted-foreground" />
-                          : <Send className="h-2 w-2 text-muted-foreground" />}
-                      </span>
-                      <p className="text-xs font-semibold text-foreground leading-snug">{item.label}</p>
-                      {item.sub && <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">{item.sub}</p>}
-                      <p className="text-[10px] text-muted-foreground/50 mt-0.5">{item.time}</p>
-                    </li>
-                  ))}
-                </ol>
-              </section>
-            )}
+            {(() => {
+              const allItems = buildTimeline(task.stageEvents ?? [], task.outreachMessages ?? [], notes);
+              const filtered = timelineFilter === "all" ? allItems : allItems.filter(i => i.type === timelineFilter);
+              if (allItems.length === 0) return null;
+              return (
+                <section>
+                  <SectionLabel>Activity</SectionLabel>
+                  <div className="mt-2 flex items-center gap-1 flex-wrap">
+                    {(["all", "note", "message", "stage"] as const).map(f => {
+                      const labels = { all: "All", note: "Notes", message: "Messages", stage: "Stages" };
+                      const count = f === "all" ? allItems.length : allItems.filter(i => i.type === f).length;
+                      const active = timelineFilter === f;
+                      return (
+                        <button
+                          key={f}
+                          onClick={() => setTimelineFilter(f)}
+                          className={cn(
+                            "px-2 py-1 rounded-md text-[10px] font-medium transition-colors border",
+                            active
+                              ? "bg-primary/10 text-primary border-primary/20"
+                              : "bg-transparent text-muted-foreground border-transparent hover:bg-muted"
+                          )}
+                        >
+                          {labels[f]} {count > 0 && <span className="ml-0.5 opacity-70">{count}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <ol className="mt-3 relative border-l-2 border-border/50 space-y-4 pl-5">
+                    {filtered.map((item, i) => (
+                      <li key={i} className="relative">
+                        <span className="absolute -left-[1.4rem] top-1 h-4 w-4 rounded-full border-2 border-background bg-muted flex items-center justify-center">
+                          {item.type === "stage"
+                            ? <ArrowRightLeft className="h-2 w-2 text-muted-foreground" />
+                            : item.type === "note"
+                            ? <StickyNote className="h-2 w-2 text-muted-foreground" />
+                            : <Send className="h-2 w-2 text-muted-foreground" />}
+                        </span>
+                        <p className="text-xs font-semibold text-foreground leading-snug">{item.label}</p>
+                        {item.sub && <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">{item.sub}</p>}
+                        <p className="text-[10px] text-muted-foreground/50 mt-0.5">{item.time}</p>
+                      </li>
+                    ))}
+                  </ol>
+                  {filtered.length === 0 && (
+                    <p className="text-xs text-muted-foreground/50 mt-3">No {timelineFilter === "all" ? "" : timelineFilter} activity yet.</p>
+                  )}
+                </section>
+              );
+            })()}
           </aside>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ContactRevealCard({
+  label, value, fallbackValue, creditCost, loading, error, onReveal, disabled,
+}: {
+  label: string;
+  value: string | null;
+  fallbackValue?: string | null;
+  creditCost: number;
+  loading: boolean;
+  error?: string;
+  onReveal: () => void;
+  disabled: boolean;
+}) {
+  const display = value ?? fallbackValue ?? null;
+  const [copied, setCopied] = useState(false);
+
+  function copy() {
+    if (!display) return;
+    navigator.clipboard.writeText(display);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-card overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border/60 bg-muted/20">
+        <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">{label}</span>
+        {display && (
+          <button
+            onClick={copy}
+            className="text-[10px] text-muted-foreground hover:text-foreground transition-colors font-medium"
+          >
+            {copied ? "Copied!" : "Copy"}
+          </button>
+        )}
+      </div>
+      <div className="px-3 py-2.5">
+        {display ? (
+          <p className="text-xs font-mono text-foreground break-all">{display}</p>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <div className="h-2.5 rounded bg-muted/60 w-24 blur-[3px]" />
+              <div className="h-2.5 rounded bg-muted/40 w-16 blur-[3px]" />
+            </div>
+            {error && <p className="text-[10px] text-destructive">{error}</p>}
+            <button
+              onClick={onReveal}
+              disabled={disabled}
+              className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-primary hover:text-primary/80 disabled:opacity-40 transition-colors"
+            >
+              {loading
+                ? <><Loader2 className="h-3 w-3 animate-spin" />Searching…</>
+                : <>🔓 Reveal — {creditCost} credit{creditCost !== 1 ? "s" : ""}</>}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -651,9 +936,108 @@ function SectionLabel({ children, icon }: { children: React.ReactNode; icon?: Re
 
 function StatCard({ label, value, span }: { label: string; value: string; span?: boolean }) {
   return (
-    <div className={cn("bg-muted/40 rounded-lg p-2.5", span && "col-span-2")}>
-      <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">{label}</p>
-      <p className="text-sm font-semibold text-foreground leading-snug">{value}</p>
+    <div className={cn("bg-muted/20 rounded-[10px] p-2.5 items-start", span && "col-span-2")}>
+      <p className="text-[9px] text-muted-foreground/70 uppercase tracking-widest mb-0.5">{label}</p>
+      <p className="text-[13px] font-semibold text-foreground leading-snug truncate">{value}</p>
+    </div>
+  );
+}
+
+function EditableField({
+  value,
+  onSave,
+  renderMode = "text",
+  label,
+  span,
+  className,
+  suffix,
+}: {
+  value: string;
+  onSave: (val: string) => Promise<void>;
+  renderMode?: "text" | "statcard";
+  label?: string;
+  span?: boolean;
+  className?: string;
+  suffix?: React.ReactNode;
+}) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [val, setVal] = useState(value);
+  const [saving, setSaving] = useState(false);
+  const [savedOk, setSavedOk] = useState(false);
+
+  const save = async () => {
+    if (val === value) { setIsEditing(false); return; }
+    setSaving(true);
+    try {
+      await onSave(val);
+      setSavedOk(true);
+      setTimeout(() => setSavedOk(false), 2000);
+    } catch {
+      setVal(value);
+    } finally {
+      setSaving(false);
+      setIsEditing(false);
+    }
+  };
+
+  if (isEditing) {
+    return (
+      <div className={cn(
+        renderMode === "statcard" ? cn("bg-muted/20 rounded-[10px] p-2.5", span && "col-span-2") : "inline-flex w-full max-w-sm",
+        className
+      )}>
+        {renderMode === "statcard" && label && <p className="text-[9px] text-muted-foreground/70 uppercase tracking-widest mb-0.5">{label}</p>}
+        <input
+          autoFocus
+          value={val}
+          onChange={e => setVal(e.target.value)}
+          onBlur={save}
+          onKeyDown={e => {
+            if (e.key === "Enter") save();
+            if (e.key === "Escape") { setVal(value); setIsEditing(false); }
+          }}
+          disabled={saving}
+          className={cn(
+            "w-full bg-background border border-primary/50 ring-2 ring-primary/20 outline-none rounded px-2 py-1 text-sm text-foreground",
+            renderMode === "text" && "min-w-[120px] m-0"
+          )}
+        />
+      </div>
+    );
+  }
+
+  const content = (
+    <div className="flex items-center flex-1 min-w-0">
+      <span className={cn(
+        "group-hover:opacity-80 transition-opacity truncate",
+        renderMode === "statcard" ? "text-[13px] font-semibold text-foreground leading-snug block" : ""
+      )}>
+        {value || "—"}
+        {suffix && <span className="ml-1.5 text-muted-foreground font-normal text-[13px]">{suffix}</span>}
+      </span>
+      {!saving && !savedOk && <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-1.5 text-muted-foreground/50 hover:text-foreground" />}
+      {saving && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground shrink-0 ml-1.5" />}
+      {savedOk && <CheckCircle2 className="h-3 w-3 text-emerald-500 shrink-0 ml-1.5" />}
+    </div>
+  );
+
+  return (
+    <div
+      onClick={() => setIsEditing(true)}
+      className={cn(
+        "group cursor-pointer flex items-center hover:bg-muted/30 rounded transition-colors",
+        renderMode === "statcard" ? cn("bg-muted/20 rounded-[10px] p-2.5 items-start", span && "col-span-2") : "px-1 -mx-1",
+        className
+      )}
+    >
+      {renderMode === "statcard" ? (
+        <div className="w-full overflow-hidden">
+          {label && <p className="text-[9px] text-muted-foreground/70 uppercase tracking-widest mb-0.5">{label}</p>}
+          <div className="flex items-center">
+            {content}
+          </div>
+        </div>
+      ) : content}
     </div>
   );
 }
@@ -661,8 +1045,9 @@ function StatCard({ label, value, span }: { label: string; value: string; span?:
 function buildTimeline(
   stageEvents: StageEvent[],
   outreachMessages: OutreachMsg[],
-): { type: "stage" | "message"; label: string; sub?: string; time: string }[] {
-  const items: { type: "stage" | "message"; label: string; sub?: string; time: string; ts: number }[] = [];
+  notes: Note[] = [],
+): { type: "stage" | "message" | "note"; label: string; sub?: string; time: string }[] {
+  const items: { type: "stage" | "message" | "note"; label: string; sub?: string; time: string; ts: number }[] = [];
 
   for (const ev of stageEvents) {
     const from = ev.fromStage ? (STAGE_CONFIG as any)[ev.fromStage]?.label ?? ev.fromStage : null;
@@ -697,6 +1082,16 @@ function buildTimeline(
     }
   }
 
+  for (const n of notes) {
+    items.push({
+      type: "note",
+      label: `Note by ${n.authorEmail || "Reviewer"}`,
+      sub: n.body.length > 80 ? n.body.slice(0, 80) + "…" : n.body,
+      time: fmtTime(n.createdAt),
+      ts: new Date(n.createdAt).getTime(),
+    });
+  }
+
   return items.sort((a, b) => b.ts - a.ts).map(({ ts: _, ...rest }) => rest);
 }
 
@@ -704,4 +1099,156 @@ function fmtTime(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, {
     month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
   });
+}
+
+function ScoreOverrideRow({
+  rule,
+  analysis,
+  overrides,
+  idx,
+  onSave,
+  onRemove,
+}: {
+  rule: any;
+  analysis: any;
+  overrides: any[];
+  idx: number;
+  onSave: (paramKey: string, ruleKey: string, override: number, reason: string) => Promise<void>;
+  onRemove: (paramKey: string) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [scoreInput, setScoreInput] = useState("");
+  const [reasonInput, setReasonInput] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const ruleMax = Math.max(0, ...rule.scoreParameters.map((p: any) => p.maxPoints));
+  
+  // Find which parameter yielded the highest score natively, and check if any param is overridden
+  let bestVal = 0;
+  let activeParamKey = rule.scoreParameters[0].key;
+  let activeOverride: any = null;
+
+  for (const p of rule.scoreParameters) {
+    const o = overrides.find(o => o.paramKey === p.key);
+    if (o) {
+      activeOverride = o;
+      bestVal = o.override;
+      activeParamKey = p.key;
+      break; // Overrides take absolute precedence
+    } else {
+      const s = analysis.scoring?.[p.key];
+      if (typeof s === "number" && s > bestVal) {
+        bestVal = s;
+        activeParamKey = p.key;
+      }
+    }
+  }
+
+  const logText = analysis.scoringLogs?.[rule.key];
+  const pct = ruleMax > 0 ? (bestVal / ruleMax) * 100 : 0;
+  const isOverridden = !!activeOverride;
+  const barColor = isOverridden ? "bg-blue-500" : bestVal >= ruleMax * 0.7 ? "bg-emerald-500" : bestVal > 0 ? "bg-amber-500" : "bg-muted-foreground/20";
+  const textColor = isOverridden ? "text-blue-500" : bestVal >= ruleMax * 0.7 ? "text-emerald-500" : bestVal > 0 ? "text-amber-500" : "text-muted-foreground";
+
+  const handleSave = async () => {
+    const val = parseInt(scoreInput, 10);
+    if (isNaN(val) || val < 0 || val > ruleMax || !reasonInput.trim()) return;
+    setSaving(true);
+    try {
+      await onSave(activeParamKey, rule.key, val, reasonInput);
+      setOpen(false);
+    } catch {
+      alert("Failed to save override");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRemove = async () => {
+    setSaving(true);
+    try {
+      await onRemove(activeParamKey);
+      setOpen(false);
+    } catch {
+      alert("Failed to remove override");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className={cn("px-5 py-3.5 group", idx > 0 && "border-t border-border/60")}>
+      <div className="flex items-center gap-4">
+        <div className="w-36 shrink-0">
+          <span className="text-sm text-muted-foreground font-medium">{rule.label}</span>
+          {isOverridden && (
+            <Badge variant="outline" className="ml-2 text-[8px] px-1 py-0 h-4 bg-blue-500/10 text-blue-500 border-blue-500/20">
+              Edited by HR
+            </Badge>
+          )}
+        </div>
+        
+        <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+          <div className={cn("h-full rounded-full transition-all", barColor)} style={{ width: `${pct}%` }} />
+        </div>
+
+        <div className="flex items-center justify-end w-24 shrink-0 gap-2">
+          {isOverridden && (
+            <span className="text-xs text-muted-foreground line-through opacity-50">
+              {activeOverride.original}
+            </span>
+          )}
+          <span className={cn("text-sm font-bold tabular-nums", textColor)}>
+            {bestVal}/{ruleMax}
+          </span>
+          <Dialog open={open} onOpenChange={setOpen}>
+            <Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => {
+              setScoreInput(String(bestVal));
+              setReasonInput(activeOverride?.reason || "");
+              setOpen(true);
+            }}>
+              <Pencil className="h-3 w-3 text-muted-foreground" />
+            </Button>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Override Score: {rule.label}</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 py-2">
+                <div className="space-y-1.5">
+                  <Label>New Score (0 to {ruleMax})</Label>
+                  <Input type="number" min={0} max={ruleMax} value={scoreInput} onChange={e => setScoreInput(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Reason for override</Label>
+                  <Textarea value={reasonInput} onChange={e => setReasonInput(e.target.value)} placeholder="Required. Why is this score being changed?" />
+                </div>
+              </div>
+              <DialogFooter className="flex justify-between items-center sm:justify-between w-full">
+                {isOverridden ? (
+                  <Button variant="destructive" size="sm" onClick={handleRemove} disabled={saving}>
+                    Remove Override
+                  </Button>
+                ) : <div />}
+                <div className="flex gap-2">
+                  <Button variant="ghost" size="sm" onClick={() => setOpen(false)} disabled={saving}>Cancel</Button>
+                  <Button size="sm" onClick={handleSave} disabled={saving || !reasonInput.trim() || isNaN(parseInt(scoreInput, 10))}>
+                    {saving ? "Saving..." : "Save"}
+                  </Button>
+                </div>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+      </div>
+      
+      {isOverridden && activeOverride.reason && (
+        <p className="text-xs text-blue-500/80 mt-1.5 pl-40 leading-relaxed font-medium">
+          Override reason: {activeOverride.reason}
+        </p>
+      )}
+      {!isOverridden && logText && (
+        <p className="text-xs text-muted-foreground mt-1.5 pl-40 leading-relaxed">{logText}</p>
+      )}
+    </div>
+  );
 }

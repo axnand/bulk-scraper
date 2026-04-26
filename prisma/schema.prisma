@@ -21,23 +21,62 @@ enum CandidateStage {
   ARCHIVED
 }
 
+// ─── Channel / Thread enums ────────────────────────────────────────────────────
+
+enum ChannelType {
+  LINKEDIN
+  EMAIL
+  WHATSAPP
+}
+
+enum ChannelStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+// Generic thread lifecycle — channel-specific sub-states live in providerState JSON
+enum ThreadStatus {
+  PENDING   // created, initial send not yet attempted
+  ACTIVE    // initial send done, follow-ups may be in flight
+  REPLIED   // candidate responded — terminal-good
+  PAUSED    // another thread on the same task got a reply
+  ARCHIVED  // timeout / exhausted / manually closed — terminal-bad
+}
+
+enum OutreachType {
+  INVITE      // LinkedIn connection request
+  INMAIL      // LinkedIn InMail (direct, no connection required)
+  FIRST_DM    // first DM after LinkedIn connection accepted
+  EMAIL       // email message (any position in sequence)
+  FOLLOWUP    // any follow-up message on any channel
+  WHATSAPP    // WhatsApp message
+}
+
+enum AccountType {
+  LINKEDIN
+  EMAIL
+  WHATSAPP
+}
+
 model Account {
-  id            String    @id @default(cuid())
-  accountId     String    @unique          // Unipile account_id
-  name          String    @default("")     // Friendly label
+  id            String      @id @default(cuid())
+  accountId     String      @unique          // Unipile account_id
+  name          String      @default("")     // Friendly label
+  type          AccountType @default(LINKEDIN) // Which channel this account belongs to
   dsn           String?                    // Optional per-account override
   apiKey        String?                    // Optional per-account override
-  status        String    @default("ACTIVE") // ACTIVE | BUSY | COOLDOWN | DISABLED
+  status        String      @default("ACTIVE") // ACTIVE | BUSY | COOLDOWN | DISABLED
   lastUsedAt    DateTime?
-  requestCount  Int       @default(0)      // rolling counter
-  dailyCount    Int       @default(0)      // daily usage counter
+  requestCount  Int         @default(0)      // rolling counter
+  dailyCount    Int         @default(0)      // daily usage counter
   dailyResetAt  DateTime?                  // when to reset dailyCount
-  minuteCount   Int       @default(0)      // requests in current minute window
+  minuteCount   Int         @default(0)      // requests in current minute window
   minuteResetAt DateTime?                  // when the current minute window expires
   cooldownUntil DateTime?                  // null = not in cooldown
-  createdAt     DateTime  @default(now())
+  createdAt     DateTime    @default(now())
   tasks         Task[]
-  campaigns     Campaign[]
+  channels      Channel[]
 }
 
 model Requisition {
@@ -52,7 +91,7 @@ model Requisition {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   jobs          Job[]
-  campaigns     Campaign[]
+  channels      Channel[]
   duplicatePairs DuplicatePair[]
 
   @@index([archived])
@@ -91,7 +130,9 @@ model Task {
   retryCount     Int      @default(0)
   accountId      String?  // assigned at processing time
   contentHash    String?  // SHA-256 of resume text — dedup detection for resume/zip_import tasks
-  stage          CandidateStage @default(SOURCED)
+  stage          CandidateStage  @default(SOURCED)
+  // manualStage wins over the auto-derived rollup for terminal recruiter decisions
+  manualStage    CandidateStage?
   stageUpdatedAt DateTime @default(now())
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -99,9 +140,11 @@ model Task {
   job              Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
   account          Account?          @relation(fields: [accountId], references: [id])
   outreachMessages OutreachMessage[]
+  channelThreads   ChannelThread[]
   stageEvents      StageEvent[]
   notes            Note[]
   contact          CandidateContact?
+  overrides        ScoreOverride[]
   duplicatesAsA    DuplicatePair[]   @relation("DuplicatePairA")
   duplicatesAsB    DuplicatePair[]   @relation("DuplicatePairB")
 
@@ -133,33 +176,14 @@ model DuplicatePair {
   @@index([taskBId])
 }
 
-model Campaign {
-  id               String    @id @default(cuid())
-  requisitionId    String
-  name             String
-  channel          String    @default("LINKEDIN_INVITE") // LINKEDIN_INVITE | LINKEDIN_DM | EMAIL
-  template         String    @db.Text // JSON: { subject?, body, variables[] }
-  threshold        String    @db.Text // JSON: { minScorePercent, requireRecommendation?, excludeFlags? }
-  approvalMode     String    @default("REVIEW")  // REVIEW | AUTO
-  dailyCap         Int       @default(20)
-  sendingAccountId String?
-  status           String    @default("ACTIVE")  // ACTIVE | PAUSED | ARCHIVED
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-
-  requisition      Requisition       @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
-  sendingAccount   Account?          @relation(fields: [sendingAccountId], references: [id])
-  messages         OutreachMessage[]
-
-  @@index([requisitionId, status])
-}
-
+// OutreachMessage: kept for historical inbound reply tracking.
+// campaignId is now a plain string with no FK — campaigns have been removed.
 model OutreachMessage {
   id                String    @id @default(cuid())
-  campaignId        String
+  campaignId        String    // historical — no longer a FK
   taskId            String
   channel           String
-  status            String    @default("AWAITING_REVIEW") // DRAFT | AWAITING_REVIEW | APPROVED | QUEUED | SENT | FAILED | REPLIED | BOUNCED
+  status            String    @default("AWAITING_REVIEW")
   renderedSubject   String?
   renderedBody      String    @db.Text
   approvedAt        DateTime?
@@ -168,18 +192,111 @@ model OutreachMessage {
   providerMessageId String?
   providerChatId    String?
   direction         String    @default("OUT") // OUT | IN
-  inboundBody       String?   @db.Text        // populated for direction=IN
+  inboundBody       String?   @db.Text
   errorMessage      String?   @db.Text
   retryCount        Int       @default(0)
   createdAt         DateTime  @default(now())
 
-  campaign          Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   task              Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
-  @@unique([campaignId, taskId])
   @@index([status, scheduledFor])
   @@index([taskId])
+  @@index([providerChatId])
 }
+
+// ─── Multi-Channel Outreach System ────────────────────────────────────────────
+
+// One Channel per (requisition, channel type) with JSON config for all rules.
+// Replaces the per-channel Campaign rows conceptually; Campaign table is kept
+// intact for backwards compatibility during migration.
+model Channel {
+  id               String        @id @default(cuid())
+  requisitionId    String
+  type             ChannelType
+  name             String
+  status           ChannelStatus @default(ACTIVE)
+  // Validated JSON shape — see lib/channels/types.ts for the full schema
+  config           Json
+  sendingAccountId String?
+  dailyCap         Int           @default(20)
+  dailyInMailCap   Int           @default(5)    // LinkedIn InMail credits are limited
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  requisition      Requisition   @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  sendingAccount   Account?      @relation(fields: [sendingAccountId], references: [id])
+  threads          ChannelThread[]
+
+  @@index([requisitionId, type, status])
+}
+
+// One ChannelThread per (task, channel) — tracks the full per-candidate lifecycle
+// for that channel. nextActionAt is the sole scheduling key used by the cron tick.
+model ChannelThread {
+  id               String       @id @default(cuid())
+  taskId           String
+  channelId        String
+  channelType      ChannelType                   // denormalized so cron can filter without joining
+  status           ThreadStatus @default(PENDING)
+  // Channel-specific sub-state (e.g. { phase: "INVITE_PENDING" | "CONNECTED" | "INMAIL_SENT" })
+  providerState    Json?
+  matchedRuleKey   String?                        // which inviteRule/emailRule/waRule fired
+  nextActionAt     DateTime?                      // THE scheduling key — cron scans this
+  inviteSentAt     DateTime?                      // set when LinkedIn invite is dispatched
+  lastMessageAt    DateTime?                      // most recent outbound message timestamp
+  followupsSent    Int          @default(0)       // count of followups sent so far
+  followupsTotal   Int          @default(0)       // snapshot from config at thread creation
+  providerChatId   String?                        // Unipile chat_id (LinkedIn DM / WA)
+  providerThreadId String?                        // email thread id
+  archivedAt       DateTime?
+  archivedReason   String?
+  createdAt        DateTime     @default(now())
+
+  task             Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  channel          Channel      @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  messages         ThreadMessage[]
+
+  @@unique([taskId, channelId])
+  @@index([status, nextActionAt])             // hot path: scheduler tick
+  @@index([channelType, status])              // analytics + channel-level dashboards
+  @@index([taskId])                           // stage rollup lookup
+}
+
+// Outreach messages belonging to a ChannelThread (new system).
+// The existing OutreachMessage model belongs to the Campaign (old system) and is
+// kept untouched. These two models coexist during migration.
+model ThreadMessage {
+  id                String       @id @default(cuid())
+  threadId          String
+  type              OutreachType
+  status            String       @default("SENT") // SENT | FAILED
+  renderedBody      String       @db.Text
+  renderedSubject   String?
+  sentAt            DateTime?
+  providerMessageId String?
+  providerChatId    String?
+  errorMessage      String?      @db.Text
+  createdAt         DateTime     @default(now())
+
+  thread            ChannelThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, type])
+  @@index([threadId, createdAt])
+}
+
+// Deduplication table for incoming Unipile (and future) webhooks.
+// Insert-on-conflict-ignore at the top of every webhook handler.
+model WebhookEvent {
+  id          String   @id                    // provider's own event/message id
+  provider    String                           // "unipile"
+  eventType   String
+  receivedAt  DateTime @default(now())
+  processedAt DateTime?
+
+  @@index([provider, eventType, receivedAt])
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 
 model StageEvent {
   id        String         @id @default(cuid())
@@ -208,15 +325,36 @@ model Note {
 }
 
 model CandidateContact {
-  id         String    @id @default(cuid())
-  taskId     String    @unique
-  email      String?
-  phone      String?
-  source     String?   // UNIPILE | WIZA | APOLLO | MANUAL
-  confidence Float?
-  enrichedAt DateTime?
+  id            String    @id @default(cuid())
+  taskId        String    @unique
+  email         String?
+  linkedinEmail String?
+  personalEmail String?
+  workEmail     String?
+  phone         String?
+  salary        String?   // Extracted from notes or profile
+  source        String?   // UNIPILE | WIZA | APOLLO | AIRSCALE | MANUAL
+  confidence    Float?
+  enrichedAt    DateTime?
 
   task       Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+}
+
+model ScoreOverride {
+  id        String   @id @default(cuid())
+  taskId    String
+  ruleKey   String   // e.g. "stability", "growth", "custom_abc123"
+  paramKey  String   // e.g. "promotionSameCompany"
+  original  Int      // AI's original score
+  override  Int      // HR's new score
+  reason    String   @db.Text
+  author    String   @default("")
+  createdAt DateTime @default(now())
+
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, paramKey])
+  @@index([taskId])
 }
 
 model CandidateProfile {
