@@ -83,8 +83,8 @@ export function JobCard({
           )}
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
             <Users className="h-3.5 w-3.5" />
-            <span className="font-medium text-foreground">{r.totalCandidates}</span>
-            <span>candidates</span>
+            <span className="font-medium text-foreground">{r.analyzedCount}</span>
+            <span>analyzed</span>
           </div>
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
             <PlayCircle className="h-3.5 w-3.5" />
@@ -148,8 +148,8 @@ export function JobCard({
         <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <div className="flex items-center gap-1.5">
             <Users className="h-3.5 w-3.5" />
-            <span className="font-medium text-foreground">{r.totalCandidates}</span>
-            <span>candidates</span>
+            <span className="font-medium text-foreground">{r.analyzedCount}</span>
+            <span>analyzed</span>
           </div>
           <div className="flex items-center gap-1.5">
             <PlayCircle className="h-3.5 w-3.5" />

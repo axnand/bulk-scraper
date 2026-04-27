@@ -157,22 +157,24 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
     }
   }
 
-  const completedTasks = useMemo(() => data.tasks.filter(t => t.status === "DONE"), [data.tasks]);
+  const completedTasks = useMemo(() => data.tasks, [data.tasks]);
   
   const filteredTasks = useMemo(() => {
     return completedTasks
       .filter(task => {
         const profile = task.result;
         const analysis = task.analysisResult;
-        if (!profile) return false;
-        
+
+        // Only apply user-driven filters if the user has set them
         if (search.trim()) {
-          const fullName = `${profile.first_name || ""} ${profile.last_name || ""}`.toLowerCase();
+          const scrapedName = `${profile?.first_name || ""} ${profile?.last_name || ""}`;
+          const extractedName = profile?.extractedInfo?.name || analysis?.candidateInfo?.name || "";
+          const fullName = (scrapedName.trim() || extractedName).toLowerCase();
           if (!fullName.includes(search.toLowerCase().trim())) return false;
         }
         if (filterFit !== "All" && analysis?.recommendation !== filterFit) return false;
         if (filterLocation.trim()) {
-          const loc = (analysis?.candidateInfo?.currentLocation || profile.location || "").toLowerCase();
+          const loc = (analysis?.candidateInfo?.currentLocation || profile?.location || "").toLowerCase();
           if (!loc.includes(filterLocation.toLowerCase().trim())) return false;
         }
         if (filterMinExp.trim()) {
