@@ -164,7 +164,7 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
       .filter(task => {
         const profile = task.result;
         const analysis = task.analysisResult;
-        if (!profile || !analysis) return false;
+        if (!profile) return false;
         
         if (search.trim()) {
           const fullName = `${profile.first_name || ""} ${profile.last_name || ""}`.toLowerCase();
