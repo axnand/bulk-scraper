@@ -157,7 +157,10 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
     }
   }
 
-  const completedTasks = useMemo(() => data.tasks, [data.tasks]);
+  const completedTasks = useMemo(
+    () => data.tasks.filter(t => t.result && t.analysisResult),
+    [data.tasks]
+  );
   
   const filteredTasks = useMemo(() => {
     return completedTasks
