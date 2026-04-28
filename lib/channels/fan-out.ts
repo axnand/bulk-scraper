@@ -10,6 +10,7 @@
 import { prisma } from "@/lib/prisma";
 import { ChannelType } from "@prisma/client";
 import { matchRule, type LinkedInConfig, type EmailConfig, type WAConfig } from "./types";
+import { triggerOutreach } from "@/lib/trigger";
 
 export async function fanOutToChannels(taskId: string, jobId: string): Promise<void> {
   try {
@@ -81,6 +82,9 @@ export async function fanOutToChannels(taskId: string, jobId: string): Promise<v
         throw err;
       });
     }
+    // Kick the outreach-tick cron immediately — newly created threads have
+    // nextActionAt=now() and would otherwise wait up to ~60s for the next tick.
+    triggerOutreach(); // fire-and-forget; never throws into the parent flow
   } catch (err: any) {
     // Fan-out is best-effort — log but never fail the parent flow
     console.warn(`[fanOutToChannels] Task ${taskId} fan-out failed: ${err.message}`);

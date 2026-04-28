@@ -36,6 +36,7 @@ interface EmailRule {
 export interface EmailFormValues {
   name: string; sendingAccountId: string; dailyCap: number;
   emailRules: EmailRule[]; followups: Followup[];
+  contactRetryMinutes: number; contactRetryMaxDays: number;
 }
 
 // WhatsApp
@@ -48,6 +49,7 @@ export interface WAFormValues {
   name: string; sendingAccountId: string; dailyCap: number;
   waRules: WARule[]; followups: Followup[];
   quietHoursEnabled: boolean; quietHours: QuietHours;
+  contactRetryMinutes: number; contactRetryMaxDays: number;
 }
 
 export type ChannelFormValues = LinkedInFormValues | EmailFormValues | WAFormValues;
@@ -218,6 +220,72 @@ function FollowupList({
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─── Contact retry fields (Email + WhatsApp) ──────────────────────────────────
+
+function ContactRetryFields({
+  retryMinutes, setRetryMinutes,
+  maxDays, setMaxDays,
+}: {
+  retryMinutes: number; setRetryMinutes: (v: number) => void;
+  maxDays: number; setMaxDays: (v: number) => void;
+}) {
+  // Determine if value is cleanly expressible in hours
+  const isHours = retryMinutes >= 60 && retryMinutes % 60 === 0;
+  const [unit, setUnit] = useState<"minutes" | "hours">(isHours ? "hours" : "minutes");
+  const displayValue = unit === "hours" ? retryMinutes / 60 : retryMinutes;
+
+  function handleValueChange(raw: number) {
+    const mins = unit === "hours" ? raw * 60 : raw;
+    setRetryMinutes(Math.max(1, mins));
+  }
+  function handleUnitChange(u: "minutes" | "hours") {
+    setUnit(u);
+    // Convert the current display value to the new unit's minutes
+    const mins = u === "hours" ? displayValue * 60 : displayValue;
+    setRetryMinutes(Math.max(1, mins));
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-3">
+      <div>
+        <p className="text-sm font-medium">Contact retry</p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          If no contact info yet, retry on this schedule until Airscale enrichment fills it in.
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label className="text-xs">Retry every</Label>
+          <div className="flex gap-1.5">
+            <Input
+              type="number" min={1} max={unit === "hours" ? 168 : 1440}
+              value={displayValue}
+              onChange={e => handleValueChange(Number(e.target.value))}
+              className="h-8 text-sm"
+            />
+            <Select value={unit} onValueChange={v => handleUnitChange(v as any)}>
+              <SelectTrigger className="h-8 text-sm w-28"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="minutes">minutes</SelectItem>
+                <SelectItem value="hours">hours</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">Give up after (days)</Label>
+          <Input
+            type="number" min={1} max={30} value={maxDays}
+            onChange={e => setMaxDays(Number(e.target.value))}
+            className="h-8 text-sm"
+          />
+          <p className="text-[10px] text-muted-foreground">Archive if still no contact after N days</p>
+        </div>
+      </div>
     </div>
   );
 }
@@ -431,6 +499,8 @@ function EmailForm({ accounts, initial, onSubmit, submitLabel }: {
   const [dailyCap, setDailyCap] = useState(initial?.dailyCap ?? 50);
   const [emailRules, setEmailRules] = useState<EmailRule[]>(initial?.emailRules ?? [defaultEmailRule()]);
   const [followups, setFollowups] = useState<Followup[]>(initial?.followups ?? []);
+  const [contactRetryMinutes, setContactRetryMinutes] = useState(initial?.contactRetryMinutes ?? 60);
+  const [contactRetryMaxDays, setContactRetryMaxDays] = useState(initial?.contactRetryMaxDays ?? 7);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [expandedRule, setExpandedRule] = useState(0);
@@ -450,7 +520,7 @@ function EmailForm({ accounts, initial, onSubmit, submitLabel }: {
     }
     setSaving(true);
     try {
-      await onSubmit({ name: name.trim(), sendingAccountId: sendingAccountId === "_none" ? "" : sendingAccountId, dailyCap, emailRules, followups });
+      await onSubmit({ name: name.trim(), sendingAccountId: sendingAccountId === "_none" ? "" : sendingAccountId, dailyCap, emailRules, followups, contactRetryMinutes, contactRetryMaxDays });
     } catch (err: any) { setError(err.message || "Failed to save"); } finally { setSaving(false); }
   }
 
@@ -502,6 +572,12 @@ function EmailForm({ accounts, initial, onSubmit, submitLabel }: {
       <Separator />
       <FollowupList followups={followups} onChange={setFollowups} showSubject />
 
+      <Separator />
+      <ContactRetryFields
+        retryMinutes={contactRetryMinutes} setRetryMinutes={setContactRetryMinutes}
+        maxDays={contactRetryMaxDays} setMaxDays={setContactRetryMaxDays}
+      />
+
       {error && <p className="text-xs text-destructive">{error}</p>}
       <div className="flex justify-end">
         <Button type="submit" size="sm" disabled={saving} className="gap-1.5 min-w-28">
@@ -530,6 +606,8 @@ function WAForm({ accounts, initial, onSubmit, submitLabel }: {
   const [followups, setFollowups] = useState<Followup[]>(initial?.followups ?? []);
   const [quietHoursEnabled, setQuietHoursEnabled] = useState(initial?.quietHoursEnabled ?? true);
   const [quietHours, setQuietHours] = useState<QuietHours>(initial?.quietHours ?? { startHour: 21, endHour: 8, tz: "Asia/Kolkata" });
+  const [contactRetryMinutes, setContactRetryMinutes] = useState(initial?.contactRetryMinutes ?? 60);
+  const [contactRetryMaxDays, setContactRetryMaxDays] = useState(initial?.contactRetryMaxDays ?? 7);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [expandedRule, setExpandedRule] = useState(0);
@@ -552,6 +630,7 @@ function WAForm({ accounts, initial, onSubmit, submitLabel }: {
         name: name.trim(), sendingAccountId: sendingAccountId === "_none" ? "" : sendingAccountId,
         dailyCap, waRules, followups, quietHoursEnabled,
         quietHours: quietHoursEnabled ? quietHours : { startHour: 21, endHour: 8, tz: "UTC" },
+        contactRetryMinutes, contactRetryMaxDays,
       });
     } catch (err: any) { setError(err.message || "Failed to save"); } finally { setSaving(false); }
   }
@@ -597,6 +676,12 @@ function WAForm({ accounts, initial, onSubmit, submitLabel }: {
 
       <Separator />
       <FollowupList followups={followups} onChange={setFollowups} />
+
+      <Separator />
+      <ContactRetryFields
+        retryMinutes={contactRetryMinutes} setRetryMinutes={setContactRetryMinutes}
+        maxDays={contactRetryMaxDays} setMaxDays={setContactRetryMaxDays}
+      />
 
       <Separator />
       {/* Quiet hours */}

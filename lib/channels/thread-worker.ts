@@ -175,13 +175,28 @@ async function processLinkedIn(
     }
 
     const text = renderTemplate(firstDmTemplate.template, vars);
-    const { chatId, messageId } = await startChat({
-      accountId: account.accountId,
-      providerUserId,
-      text,
-      accountDsn: account.dsn ?? undefined,
-      accountApiKey: account.apiKey ?? undefined,
-    });
+    let chatId: string;
+    let messageId: string;
+    try {
+      ({ chatId, messageId } = await startChat({
+        accountId: account.accountId,
+        providerUserId,
+        text,
+        accountDsn: account.dsn ?? undefined,
+        accountApiKey: account.apiKey ?? undefined,
+      }));
+    } catch (err: any) {
+      // Not actually connected yet — reset to PENDING so the invite gets sent
+      if ((err.message ?? "").toLowerCase().includes("no_connection_with_recipient")) {
+        console.log(`${tag} DM failed: not connected yet — resetting to PENDING to send invite`);
+        await prisma.channelThread.update({
+          where: { id: thread.id },
+          data: { status: "PENDING", providerState: {}, nextActionAt: new Date() },
+        });
+        return;
+      }
+      throw err;
+    }
 
     const nextFollowup = config.followups?.[1];
     const nextAt = nextFollowup ? daysFromNow(nextFollowup.afterDays) : null;
@@ -190,6 +205,7 @@ async function processLinkedIn(
       prisma.channelThread.update({
         where: { id: thread.id },
         data: {
+          providerState: { phase: "MESSAGED" }, // moves task rollup off of CONNECTED
           providerChatId: chatId,
           lastMessageAt: new Date(),
           followupsSent: 1,
@@ -279,13 +295,60 @@ async function sendLinkedInInvite(
     ? renderTemplate(rule.noteTemplate, vars).slice(0, 300)
     : undefined;
 
-  const { invitationId } = await sendInvitation({
-    accountId: account.accountId,
-    providerUserId,
-    message: note,
-    accountDsn: account.dsn ?? undefined,
-    accountApiKey: account.apiKey ?? undefined,
-  });
+  let invitationId: string;
+  try {
+    const res = await sendInvitation({
+      accountId: account.accountId,
+      providerUserId,
+      message: note,
+      accountDsn: account.dsn ?? undefined,
+      accountApiKey: account.apiKey ?? undefined,
+    });
+    invitationId = res.invitationId;
+  } catch (err: any) {
+    const body: string = (err.message ?? "").toLowerCase();
+
+    // Invite already pending (cannot_resend_yet) — treat as INVITE_PENDING, wait for acceptance
+    if (body.includes("cannot_resend_yet") || body.includes("invitation_already")) {
+      console.log(`${tag} Invite already pending — reverting to INVITE_PENDING to wait`);
+      await prisma.channelThread.update({
+        where: { id: thread.id },
+        data: {
+          status: "ACTIVE",
+          providerState: { phase: "INVITE_PENDING" },
+          inviteSentAt: thread.inviteSentAt ?? new Date(),
+          nextActionAt: daysFromNow(config.archiveAfterInviteDays ?? 14),
+        },
+      });
+      return;
+    }
+
+    // Already a first-degree connection — skip invite, go straight to DM
+    // Only match errors that unambiguously mean "you ARE already connected"
+    const alreadyConnected =
+      body.includes("already_connected") ||
+      body.includes("already_in_relation") ||
+      body.includes("action_already_performed") ||
+      body.includes("is_already") ||
+      err.statusCode === 409;
+
+    if (alreadyConnected) {
+      console.log(`${tag} Already connected — skipping invite, sending DM now`);
+      await prisma.channelThread.update({
+        where: { id: thread.id },
+        data: {
+          status: "ACTIVE",
+          providerState: { phase: "CONNECTED" },
+          nextActionAt: null,
+        },
+      });
+      await processThread(thread.id);
+      return;
+    }
+
+    console.warn(`${tag} sendInvitation failed: status=${err.statusCode} msg=${err.message}`);
+    throw err;
+  }
 
   // nextActionAt = invite sent + archiveAfterInviteDays (invite timeout deadline)
   const timeoutAt = daysFromNow(config.archiveAfterInviteDays ?? 14);
@@ -383,7 +446,19 @@ async function processEmail(
 ): Promise<void> {
   const recipientEmail = contact?.workEmail || contact?.email || contact?.personalEmail || null;
   if (!recipientEmail) {
-    await archiveThread(thread.id, "No email address found for candidate — check CandidateContact");
+    const retryMinutes = config.contactRetryMinutes ?? 60;
+    const maxDays = config.contactRetryMaxDays ?? 7;
+    const threadCreatedAt = thread.inviteSentAt ?? new Date(Date.now() - 60_000);
+    const gaveUp = (Date.now() - threadCreatedAt.getTime()) > maxDays * 24 * 60 * 60 * 1000;
+    if (!gaveUp) {
+      await prisma.channelThread.update({
+        where: { id: thread.id },
+        data: { nextActionAt: minutesFromNow(retryMinutes) },
+      });
+      console.log(`${tag} No email yet — retrying in ${retryMinutes}min (max ${maxDays}d)`);
+    } else {
+      await archiveThread(thread.id, `No email found after ${maxDays}-day wait`);
+    }
     return;
   }
 
@@ -513,7 +588,19 @@ async function processWhatsApp(
   // Phone number in E.164 format from CandidateContact
   const phone = contact?.phone ?? null;
   if (!phone) {
-    await archiveThread(thread.id, "No phone number found for candidate — check CandidateContact");
+    const retryMinutes = config.contactRetryMinutes ?? 60;
+    const maxDays = config.contactRetryMaxDays ?? 7;
+    const threadCreatedAt = thread.inviteSentAt ?? new Date(Date.now() - 60_000);
+    const gaveUp = (Date.now() - threadCreatedAt.getTime()) > maxDays * 24 * 60 * 60 * 1000;
+    if (!gaveUp) {
+      await prisma.channelThread.update({
+        where: { id: thread.id },
+        data: { nextActionAt: minutesFromNow(retryMinutes) },
+      });
+      console.log(`${tag} No phone yet — retrying in ${retryMinutes}min (max ${maxDays}d)`);
+    } else {
+      await archiveThread(thread.id, `No phone found after ${maxDays}-day wait`);
+    }
     return;
   }
 
@@ -727,6 +814,10 @@ async function isDailyInMailCapReached(channelId: string, cap: number): Promise<
 }
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
+
+function minutesFromNow(minutes: number): Date {
+  return new Date(Date.now() + minutes * 60 * 1000);
+}
 
 function daysFromNow(days: number): Date {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000);

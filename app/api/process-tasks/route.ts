@@ -565,7 +565,7 @@ async function runProcessingCycle(): Promise<{
 
   console.log(`[Process] Found ${pendingTasks.length} PENDING tasks. Acquiring accounts...`);
 
-  const accounts = await acquireAccounts(pendingTasks.length);
+  const accounts = await acquireAccounts(pendingTasks.length, "LINKEDIN");
 
   await logAccountPoolState("after-acquire");
 

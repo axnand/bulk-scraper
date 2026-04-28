@@ -18,9 +18,6 @@ export const CONFIG = {
   // Stale task threshold (2 minutes — cron fires every 1 min, so recovery happens within ~2 ticks)
   STALE_TASK_MS: 2 * 60 * 1000,
 
-  // Task/Job cleanup after completion (48 hours)
-  TASK_CLEANUP_MS: 48 * 60 * 60 * 1000,
-
   // Raw profile retention — 0 means keep forever (set via DATA_RETENTION_DAYS env var)
   get DATA_RETENTION_DAYS(): number {
     return parseInt(process.env.DATA_RETENTION_DAYS || "0", 10);

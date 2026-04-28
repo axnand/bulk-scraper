@@ -34,13 +34,14 @@ async function resetExpiredWindows() {
  * Acquire up to `count` accounts from the pool.
  * Uses optimistic locking — only claims accounts still marked ACTIVE.
  */
-export async function acquireAccounts(count: number = 1): Promise<Account[]> {
+export async function acquireAccounts(count: number = 1, accountType?: import("@prisma/client").AccountType): Promise<Account[]> {
   await resetExpiredWindows();
 
   const now = new Date();
   const candidates = await prisma.account.findMany({
     where: {
       status: "ACTIVE",
+      ...(accountType ? { type: accountType } : {}),
       dailyCount: { lt: CONFIG.DAILY_SAFE_LIMIT },
       minuteCount: { lt: CONFIG.MAX_REQUESTS_PER_MINUTE },
       OR: [
@@ -76,8 +77,8 @@ export async function acquireAccounts(count: number = 1): Promise<Account[]> {
 /**
  * Convenience wrapper: acquire a single account or null.
  */
-export async function acquireAccount(): Promise<Account | null> {
-  const accounts = await acquireAccounts(1);
+export async function acquireAccount(accountType?: import("@prisma/client").AccountType): Promise<Account | null> {
+  const accounts = await acquireAccounts(1, accountType);
   return accounts[0] ?? null;
 }
 

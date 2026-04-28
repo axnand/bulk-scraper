@@ -93,7 +93,7 @@ function combine(
   requisition: RequisitionDetail,
   tasks: TaskResult[]
 ): CombinedView {
-  const successCount = tasks.filter(t => t.status === "DONE" && t.result && t.analysisResult).length;
+  const successCount = tasks.filter(t => t.status !== "FAILED").length;
   const failedCount = tasks.filter(t => t.status === "FAILED").length;
   const activeRun = requisition.runs.find(r => ACTIVE_RUN_STATUSES.has(r.status)) || null;
 
