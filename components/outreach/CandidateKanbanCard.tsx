@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { toast } from "sonner";
-import { Briefcase, Building2, ExternalLink, MoreHorizontal, Send, Loader2, Mail, Link2Icon } from "lucide-react";
+import { Briefcase, Building2, ExternalLink, MoreHorizontal, Send, Loader2, Mail, Link2Icon, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -89,6 +89,7 @@ export function CandidateKanbanCard({
   showCheckbox = false,
 }: Props) {
   const [sendingInvite, setSendingInvite] = useState(false);
+  const [sendingDm, setSendingDm] = useState(false);
   const name = task.name || "Unknown";
   const gradient = pickGradient(name);
   const moveTargets = PIPELINE_STAGES.filter(s => s !== task.stage);
@@ -122,6 +123,25 @@ export function CandidateKanbanCard({
       toast.error(err.message || "Failed to send LinkedIn request");
     } finally {
       setSendingInvite(false);
+    }
+  }
+
+  async function handleSendDm(e: React.MouseEvent) {
+    e.stopPropagation();
+    setSendingDm(true);
+    try {
+      const res = await fetch(
+        `/api/requisitions/${requisitionId}/candidates/${task.id}/send-dm`,
+        { method: "POST" },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to send DM");
+      onStageChange(task.id, "MESSAGED");
+      toast.success("LinkedIn DM sent");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to send LinkedIn DM");
+    } finally {
+      setSendingDm(false);
     }
   }
 
@@ -291,6 +311,23 @@ export function CandidateKanbanCard({
               <Send className="h-3 w-3" />
             )}
             {sendingInvite ? "Sending…" : "Send LinkedIn request"}
+          </Button>
+        )}
+
+        {/* Connected CTA */}
+        {task.stage === "CONNECTED" && (
+          <Button
+            size="sm"
+            className="mt-2.5 w-full h-7 text-xs gap-1.5"
+            disabled={sendingDm}
+            onClick={handleSendDm}
+          >
+            {sendingDm ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <MessageSquare className="h-3 w-3" />
+            )}
+            {sendingDm ? "Sending…" : "Send DM"}
           </Button>
         )}
       </div>

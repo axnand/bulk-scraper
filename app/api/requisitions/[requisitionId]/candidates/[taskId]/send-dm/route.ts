@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { sendInvitation, extractIdentifier } from "@/lib/services/unipile.service";
+import { startChat, extractIdentifier } from "@/lib/services/unipile.service";
+import { buildVars, renderTemplate } from "@/lib/outreach/render-template";
 import { resolveRequisitionId } from "@/lib/resolve-requisition";
 
 export const dynamic = "force-dynamic";
@@ -15,21 +16,22 @@ export async function POST(
 
     const task = await prisma.task.findUnique({
       where: { id: taskId },
-      select: { id: true, url: true, stage: true, result: true },
+      select: { id: true, url: true, stage: true, result: true, analysisResult: true },
     });
 
     if (!task) {
       return NextResponse.json({ error: "Task not found" }, { status: 404 });
     }
 
-    if (task.stage !== "SHORTLISTED") {
+    if (task.stage !== "CONNECTED") {
       return NextResponse.json(
-        { error: `Expected stage SHORTLISTED, got ${task.stage}` },
+        { error: `Expected stage CONNECTED, got ${task.stage}` },
         { status: 409 },
       );
     }
 
     const profile = task.result ? JSON.parse(task.result) : null;
+    const analysis = task.analysisResult ? JSON.parse(task.analysisResult) : null;
     const providerUserId: string | null =
       profile?.provider_id ||
       profile?.public_identifier ||
@@ -63,20 +65,22 @@ export async function POST(
       );
     }
 
-    // Pull invite note from channel config (first invite rule, if any)
-    let inviteNote: string | undefined;
-    try {
-      const cfg = channel.config as any;
-      const firstRule = cfg?.inviteRules?.[0];
-      if (firstRule?.noteTemplate) {
-        inviteNote = firstRule.noteTemplate.slice(0, 300);
-      }
-    } catch { /* skip */ }
+    const cfg = channel.config as any;
+    const firstFollowup = cfg?.followups?.[0];
+    if (!firstFollowup?.template) {
+      return NextResponse.json(
+        { error: "No follow-up template configured on the LinkedIn channel" },
+        { status: 400 },
+      );
+    }
 
-    const { invitationId } = await sendInvitation({
+    const vars = buildVars(profile ?? {}, analysis ?? {});
+    const text = renderTemplate(firstFollowup.template, vars);
+
+    const { chatId, messageId } = await startChat({
       accountId: account.accountId,
       providerUserId,
-      message: inviteNote,
+      text,
       accountDsn: account.dsn ?? undefined,
       accountApiKey: account.apiKey ?? undefined,
     });
@@ -86,34 +90,35 @@ export async function POST(
     await prisma.$transaction([
       prisma.task.update({
         where: { id: taskId },
-        data: { stage: "CONTACT_REQUESTED", stageUpdatedAt: now },
+        data: { stage: "MESSAGED", stageUpdatedAt: now },
       }),
       prisma.outreachMessage.create({
         data: {
-          campaignId: channel.id,
+          campaignId: `${channel.id}:dm`,
           taskId,
-          channel: "LINKEDIN_INVITE",
+          channel: "LINKEDIN_DM",
           status: "SENT",
-          renderedBody: inviteNote ?? "",
+          renderedBody: text,
           approvedAt: now,
           sentAt: now,
-          providerMessageId: invitationId || null,
+          providerMessageId: messageId || null,
+          providerChatId: chatId || null,
         },
       }),
       prisma.stageEvent.create({
         data: {
           taskId,
-          fromStage: "SHORTLISTED",
-          toStage: "CONTACT_REQUESTED",
+          fromStage: "CONNECTED",
+          toStage: "MESSAGED",
           actor: "USER",
-          reason: "LinkedIn invitation sent",
+          reason: "LinkedIn first DM sent",
         },
       }),
     ]);
 
-    return NextResponse.json({ ok: true, invitationId });
+    return NextResponse.json({ ok: true, chatId, messageId });
   } catch (error: any) {
-    console.error("[send-invite] failed:", error);
+    console.error("[send-dm] failed:", error);
     const message = error?.message || "Internal server error";
     const status = error?.statusCode && error.statusCode < 500 ? error.statusCode : 500;
     return NextResponse.json({ error: message }, { status });
