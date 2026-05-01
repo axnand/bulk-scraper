@@ -112,6 +112,7 @@ export function ScoringRulesTab({ requisitionId, initialConfig, onSaved }: Props
   const [savedRuleKey, setSavedRuleKey] = useState<string | null>(null);
   const [savingEnvelope, setSavingEnvelope] = useState(false);
   const [savedEnvelope, setSavedEnvelope] = useState(false);
+  const [recalculating, setRecalculating] = useState(false);
 
   // Score parameter inline-edit state per rule (built-in)
   const [editingParam, setEditingParam] = useState<{ ruleKey: string; idx: number } | null>(null);
@@ -154,7 +155,9 @@ export function ScoringRulesTab({ requisitionId, initialConfig, onSaved }: Props
   async function toggleBuiltIn(key: string) {
     const next = { ...scoringRules, [key]: !scoringRules[key] };
     setScoringRules(next);
+    setRecalculating(true);
     const ok = await saveConfig({ scoringRules: next });
+    setRecalculating(false);
     if (ok) {
       setSavedRuleKey(key);
       setTimeout(() => setSavedRuleKey(k => (k === key ? null : k)), 1500);
@@ -248,10 +251,12 @@ export function ScoringRulesTab({ requisitionId, initialConfig, onSaved }: Props
   }
 
   // ── Custom rules ──
-  function toggleCustom(id: string) {
+  async function toggleCustom(id: string) {
     const next = customScoringRules.map(r => r.id === id ? { ...r, enabled: !r.enabled } : r);
     setCustomScoringRules(next);
-    saveConfig({ customScoringRules: next });
+    setRecalculating(true);
+    await saveConfig({ customScoringRules: next });
+    setRecalculating(false);
   }
 
   function deleteCustom(id: string) {
@@ -328,6 +333,15 @@ export function ScoringRulesTab({ requisitionId, initialConfig, onSaved }: Props
 
   return (
     <div className="space-y-6 max-w-4xl">
+      {recalculating && (
+        <div className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-blue-500/30 bg-blue-500/5 text-sm text-blue-600 dark:text-blue-400">
+          <svg className="h-4 w-4 shrink-0 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          Recalculating scores for all candidates…
+        </div>
+      )}
       {saveError && (
         <div className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-destructive/30 bg-destructive/5 text-sm text-destructive">
           <X className="h-4 w-4 shrink-0" />
@@ -361,7 +375,7 @@ export function ScoringRulesTab({ requisitionId, initialConfig, onSaved }: Props
             return (
               <div key={rule.key} className={cn("rounded-lg border transition-all", enabled ? "border-border bg-card" : "border-border bg-muted/30 opacity-60")}>
                 <div className="flex items-center gap-3 p-3">
-                  <Switch checked={enabled} onCheckedChange={() => toggleBuiltIn(rule.key)} />
+                  <Switch checked={enabled} disabled={recalculating} onCheckedChange={() => toggleBuiltIn(rule.key)} />
                   <div className="flex-1 min-w-0">
                     <p className={cn("text-sm font-medium", enabled ? "text-foreground" : "text-muted-foreground")}>{rule.label}</p>
                     {!isExpanded && enabled && (
@@ -566,7 +580,7 @@ export function ScoringRulesTab({ requisitionId, initialConfig, onSaved }: Props
                 return (
                   <div key={rule.id} className={cn("rounded-lg border transition-all", isEditing ? "border-primary/40 bg-card" : rule.enabled ? "border-border bg-card" : "border-border bg-muted/30 opacity-60")}>
                     <div className="flex items-center gap-3 p-3">
-                      <Switch checked={rule.enabled} onCheckedChange={() => toggleCustom(rule.id)} />
+                      <Switch checked={rule.enabled} disabled={recalculating} onCheckedChange={() => toggleCustom(rule.id)} />
                       <div className="flex-1 min-w-0">
                         <p className={cn("text-sm font-medium", rule.enabled ? "text-foreground" : "text-muted-foreground")}>{rule.name}</p>
                         {!isEditing && <p className="text-[11px] text-muted-foreground truncate">{rule.criteria}</p>}

@@ -1,116 +1,157 @@
 import { prisma } from "@/lib/prisma";
 import { getEffectiveRules } from "@/lib/analyzer";
 
+// ─── Shared score computation ───────────────────────────────────────────────
+
+export interface RecomputeResult {
+  totalScore: number;
+  maxScore: number;
+  scorePercent: number;
+  recommendation: string;
+  unscoredRules: Array<{ key: string; label: string }>;
+}
+
+/**
+ * Recomputes totals from raw analysisData.scoring using the current enabled rules.
+ * Applies HR overrides on top of AI scores.
+ * Rules whose parameter keys are absent from analysisData.scoring are excluded from
+ * maxScore and flagged in unscoredRules (avoids penalising old candidates for new rules).
+ */
+export function recomputeTaskScore(
+  analysisData: any,
+  effectiveRules: Array<{ key: string; label: string; enabled: boolean; scoreParameters: Array<{ key: string; maxPoints: number }> }>,
+  overrideMap: Map<string, number> = new Map()
+): RecomputeResult {
+  const scoring: Record<string, number> = analysisData?.scoring || {};
+  const activeRules = effectiveRules.filter(r => r.enabled);
+
+  let totalScore = 0;
+  let maxScore = 0;
+  const unscoredRules: Array<{ key: string; label: string }> = [];
+
+  for (const rule of activeRules) {
+    const hasData = rule.scoreParameters.some(p => p.key in scoring || overrideMap.has(p.key));
+    if (!hasData) {
+      unscoredRules.push({ key: rule.key, label: rule.label });
+      continue;
+    }
+
+    const ruleMax = Math.max(0, ...rule.scoreParameters.map(p => p.maxPoints));
+    maxScore += ruleMax;
+
+    let bestRuleScore = 0;
+    for (const p of rule.scoreParameters) {
+      const val = overrideMap.has(p.key) ? overrideMap.get(p.key)! : (scoring[p.key] ?? 0);
+      if (typeof val === "number" && val > bestRuleScore) {
+        bestRuleScore = val;
+      }
+    }
+    totalScore += bestRuleScore;
+  }
+
+  const scorePercent = maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 0;
+  let recommendation = "Not a Fit";
+  if (scorePercent >= 70) recommendation = "Strong Fit";
+  else if (scorePercent >= 40) recommendation = "Moderate Fit";
+
+  return { totalScore, maxScore, scorePercent, recommendation, unscoredRules };
+}
+
+// ─── Requisition-level batch recalculation ──────────────────────────────────
+
 export async function recalculateScoresForRequisition(requisitionId: string, config: any) {
-  try {
-    console.log(`[RecalculateScores] Starting for requisition ${requisitionId}`);
-    
-    // 1. Fetch all AnalysisRecords for the jobs under this requisition
-    // Wait, AnalysisRecord is linked to CandidateProfile, not Requisition or Job.
-    // However, it has a jobTitle/jobDescription. Or we can find CandidateProfiles that have Tasks for Jobs of this Requisition?
-    // Let's trace from Requisition -> Job -> Task -> CandidateProfile -> AnalysisRecord
-    
-    // Find all Tasks for this Requisition
-    const tasks = await prisma.task.findMany({
-      where: {
-        job: { requisitionId },
-        status: "DONE",
-      },
-      select: {
-        url: true, // We can match linkedinUrl
-      }
-    });
+  console.log(`[RecalculateScores] Starting for requisition ${requisitionId}`);
 
-    if (tasks.length === 0) return;
+  const tasks = await prisma.task.findMany({
+    where: {
+      job: { requisitionId },
+      status: "DONE",
+      analysisResult: { not: null },
+    },
+    select: {
+      id: true,
+      url: true,
+      analysisResult: true,
+      job: { select: { config: true } },
+      overrides: { select: { paramKey: true, override: true } },
+    },
+  });
 
-    const urls = Array.from(new Set(tasks.map(t => t.url)));
+  if (tasks.length === 0) {
+    console.log(`[RecalculateScores] No completed tasks found`);
+    return;
+  }
 
-    // Fetch AnalysisRecords matching these URLs and the requisition's jobDescription/jobTitle? 
-    // Wait, a candidate might be in multiple requisitions, but AnalysisRecord is created *per analysis*.
-    // And AnalysisRecord doesn't have a requisitionId. 
-    // Let's just find AnalysisRecords that have `scoringConfig` containing the same job rules?
-    // Actually, AnalysisRecord has `jobDescription` and `jobTitle`.
-    // It's safer to match by `linkedinUrl` AND `jobDescription` (or `jobTitle`) since those are unique to the requisition/job run.
-    
-    const records = await prisma.analysisRecord.findMany({
-      where: {
-        linkedinUrl: { in: urls },
-        // To be safe, we can match jobDescription to Requisition's JD
-        jobDescription: config.jobDescription,
-      }
-    });
+  console.log(`[RecalculateScores] Processing ${tasks.length} tasks`);
 
-    console.log(`[RecalculateScores] Found ${records.length} records to update`);
+  for (const task of tasks) {
+    let analysisData: any;
+    try {
+      analysisData = JSON.parse(task.analysisResult!);
+    } catch {
+      continue;
+    }
 
+    // Resolve rules from the job's config snapshot (defines the scoring universe),
+    // then apply the live enabled/disabled flags from the current requisition config.
+    const jobConfig = task.job.config ? JSON.parse(task.job.config) : {};
     const effectiveRules = getEffectiveRules({
       scoringRules: config.scoringRules,
       customScoringRules: config.customScoringRules,
-      builtInRuleDescriptions: config.builtInRuleDescriptions,
-      ruleDefinitions: config.ruleDefinitions,
+      builtInRuleDescriptions: jobConfig.builtInRuleDescriptions,
+      ruleDefinitions: jobConfig.ruleDefinitions,
     });
 
-    const activeRules = effectiveRules.filter(r => r.enabled);
-    const maxScore = activeRules.reduce((sum, rule) => {
-      const maxP = Math.max(0, ...rule.scoreParameters.map(p => p.maxPoints));
-      return sum + maxP;
-    }, 0);
+    const overrideMap = new Map(task.overrides.map(o => [o.paramKey, o.override]));
+    const result = recomputeTaskScore(analysisData, effectiveRules, overrideMap);
 
-    for (const record of records) {
-      if (!record.analysisData) continue;
-      
-      let data: any;
-      try {
-        data = JSON.parse(record.analysisData);
-      } catch {
-        continue;
-      }
+    analysisData.totalScore = result.totalScore;
+    analysisData.maxScore = result.maxScore;
+    analysisData.scorePercent = result.scorePercent;
+    analysisData.recommendation = result.recommendation;
+    analysisData.unscoredRules = result.unscoredRules;
+    analysisData.hasOverrides = task.overrides.length > 0;
 
-      const scoring = data.scoring || {};
-      
-      let totalScore = 0;
-      for (const rule of activeRules) {
-        let bestRuleScore = 0;
-        for (const p of rule.scoreParameters) {
-          const val = scoring[p.key];
-          if (typeof val === "number" && val > bestRuleScore) {
-            bestRuleScore = val;
-          }
+    const updatedJson = JSON.stringify(analysisData);
+
+    // Task.analysisResult is the primary source of truth for the UI
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { analysisResult: updatedJson },
+    });
+
+    // Best-effort AnalysisRecord sync — not read by the UI, failures are non-fatal
+    try {
+      const jobDescription = config.jobDescription || jobConfig.jobDescription;
+      if (task.url && jobDescription) {
+        const record = await prisma.analysisRecord.findFirst({
+          where: { linkedinUrl: task.url, jobDescription },
+          orderBy: { id: "desc" },
+          select: { id: true },
+        });
+        if (record) {
+          await prisma.analysisRecord.update({
+            where: { id: record.id },
+            data: {
+              totalScore: result.totalScore,
+              maxScore: result.maxScore,
+              scorePercent: result.scorePercent,
+              recommendation: result.recommendation,
+              analysisData: updatedJson,
+              scoringConfig: JSON.stringify({
+                scoringRules: config.scoringRules,
+                customScoringRules: config.customScoringRules,
+                aiModel: config.aiModel,
+                customPrompt: config.customPrompt,
+              }),
+            },
+          });
         }
-        totalScore += bestRuleScore;
       }
-
-      const scorePercent = maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 0;
-      let recommendation = "Not a Fit";
-      if (scorePercent >= 70) recommendation = "Strong Fit";
-      else if (scorePercent >= 40) recommendation = "Moderate Fit";
-
-      // Update the analysisData JSON to reflect new totals (so the UI reads it correctly)
-      data.totalScore = totalScore;
-      data.maxScore = maxScore;
-      data.scorePercent = scorePercent;
-      data.recommendation = recommendation;
-      data.enabledRules = config.scoringRules; // Sync the rules back so UI shows what was active
-
-      await prisma.analysisRecord.update({
-        where: { id: record.id },
-        data: {
-          totalScore,
-          maxScore,
-          scorePercent,
-          recommendation,
-          analysisData: JSON.stringify(data),
-          scoringConfig: JSON.stringify({
-            scoringRules: config.scoringRules,
-            customScoringRules: config.customScoringRules,
-            aiModel: config.aiModel,
-            customPrompt: config.customPrompt,
-          }),
-        }
-      });
+    } catch {
+      // AnalysisRecord update failed — Task already updated, so UI is consistent
     }
-
-    console.log(`[RecalculateScores] Completed for ${requisitionId}`);
-  } catch (error) {
-    console.error(`[RecalculateScores] Error:`, error);
   }
+
+  console.log(`[RecalculateScores] Completed for requisition ${requisitionId}`);
 }

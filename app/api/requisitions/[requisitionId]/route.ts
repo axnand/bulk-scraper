@@ -97,14 +97,16 @@ export async function PUT(
       data: patch,
     });
 
-    if (configChanged && (body.scoringRules || body.customScoringRules || body.builtInRuleDescriptions || body.ruleDefinitions)) {
-      // Fire and forget score recalculation
-      import("@/lib/recalculate-scores").then((m) => {
-        m.recalculateScoresForRequisition(requisitionId, currentConfig).catch(console.error);
-      });
+    const rulesChanged = configChanged && (
+      "scoringRules" in body || "customScoringRules" in body ||
+      "builtInRuleDescriptions" in body || "ruleDefinitions" in body
+    );
+    if (rulesChanged) {
+      const { recalculateScoresForRequisition } = await import("@/lib/recalculate-scores");
+      await recalculateScoresForRequisition(requisitionId, currentConfig);
     }
 
-    return NextResponse.json(updated);
+    return NextResponse.json({ ...updated, recalculated: rulesChanged });
   } catch (error) {
     console.error("[Requisitions] PUT failed:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

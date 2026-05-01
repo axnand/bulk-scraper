@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getEffectiveRules } from "@/lib/analyzer";
+import { recomputeTaskScore } from "@/lib/recalculate-scores";
 
 export const dynamic = "force-dynamic";
 
@@ -43,18 +44,15 @@ export async function PUT(
     }
 
     const analysis = JSON.parse(task.analysisResult);
-    const original = typeof analysis.scoring[paramKey] === "number" ? analysis.scoring[paramKey] : 0;
+    const original = typeof analysis.scoring?.[paramKey] === "number" ? analysis.scoring[paramKey] : 0;
 
-    // Upsert the override
     await prisma.scoreOverride.upsert({
       where: { taskId_paramKey: { taskId, paramKey } },
       update: { override, reason, author: author || "HR", original },
       create: { taskId, paramKey, ruleKey, override, reason, author: author || "HR", original },
     });
 
-    // Recalculate scores
-    const updatedAnalysis = await recalculateTaskScore(taskId, task, analysis);
-
+    const updatedAnalysis = await applyOverridesAndSave(taskId, task, analysis);
     return NextResponse.json({ ok: true, analysisResult: updatedAnalysis });
   } catch (error) {
     console.error("[Overrides] PUT failed:", error);
@@ -89,8 +87,7 @@ export async function DELETE(
     });
 
     const analysis = JSON.parse(task.analysisResult);
-    const updatedAnalysis = await recalculateTaskScore(taskId, task, analysis);
-
+    const updatedAnalysis = await applyOverridesAndSave(taskId, task, analysis);
     return NextResponse.json({ ok: true, analysisResult: updatedAnalysis });
   } catch (error) {
     console.error("[Overrides] DELETE failed:", error);
@@ -98,8 +95,7 @@ export async function DELETE(
   }
 }
 
-async function recalculateTaskScore(taskId: string, task: any, analysis: any) {
-  // Get all current overrides
+async function applyOverridesAndSave(taskId: string, task: any, analysis: any) {
   const overrides = await prisma.scoreOverride.findMany({ where: { taskId } });
   const overrideMap = new Map(overrides.map(o => [o.paramKey, o.override]));
 
@@ -111,58 +107,36 @@ async function recalculateTaskScore(taskId: string, task: any, analysis: any) {
     ruleDefinitions: config.ruleDefinitions,
   });
 
-  const activeRules = effectiveRules.filter(r => r.enabled);
-  const maxScore = activeRules.reduce((sum, rule) => {
-    return sum + Math.max(0, ...rule.scoreParameters.map(p => p.maxPoints));
-  }, 0);
+  const result = recomputeTaskScore(analysis, effectiveRules, overrideMap);
 
-  let totalScore = 0;
-  for (const rule of activeRules) {
-    let bestRuleScore = 0;
-    for (const p of rule.scoreParameters) {
-      // Use override if exists, else original
-      const val = overrideMap.has(p.key) ? overrideMap.get(p.key)! : (analysis.scoring[p.key] || 0);
-      if (typeof val === "number" && val > bestRuleScore) {
-        bestRuleScore = val;
-      }
-    }
-    totalScore += bestRuleScore;
-  }
-
-  const scorePercent = maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 0;
-  let recommendation = "Not a Fit";
-  if (scorePercent >= 70) recommendation = "Strong Fit";
-  else if (scorePercent >= 40) recommendation = "Moderate Fit";
-
-  analysis.totalScore = totalScore;
-  analysis.maxScore = maxScore;
-  analysis.scorePercent = scorePercent;
-  analysis.recommendation = recommendation;
+  analysis.totalScore = result.totalScore;
+  analysis.maxScore = result.maxScore;
+  analysis.scorePercent = result.scorePercent;
+  analysis.recommendation = result.recommendation;
+  analysis.unscoredRules = result.unscoredRules;
   analysis.hasOverrides = overrides.length > 0;
 
-  // Save back to Task and AnalysisRecord (if exists)
   await prisma.task.update({
     where: { id: taskId },
-    data: { analysisResult: JSON.stringify(analysis) }
+    data: { analysisResult: JSON.stringify(analysis) },
   });
 
-  // Note: we also need to update CandidateProfile -> AnalysisRecord if it exists
-  // For the UI, updating the task is enough, but to be safe we update AnalysisRecord too if possible.
   if (task.url) {
     const record = await prisma.analysisRecord.findFirst({
       where: { linkedinUrl: task.url, jobDescription: config.jobDescription },
-      orderBy: { id: 'desc' }
+      orderBy: { id: "desc" },
+      select: { id: true },
     });
     if (record) {
       await prisma.analysisRecord.update({
         where: { id: record.id },
         data: {
-          totalScore,
-          maxScore,
-          scorePercent,
-          recommendation,
-          analysisData: JSON.stringify(analysis)
-        }
+          totalScore: result.totalScore,
+          maxScore: result.maxScore,
+          scorePercent: result.scorePercent,
+          recommendation: result.recommendation,
+          analysisData: JSON.stringify(analysis),
+        },
       });
     }
   }
