@@ -10,7 +10,15 @@ export const dynamic = "force-dynamic";
 
 async function verifySignature(req: NextRequest, rawBody: string): Promise<boolean> {
   const secret = process.env.UNIPILE_WEBHOOK_SECRET;
-  if (!secret) return true; // skip in dev if not configured
+  if (!secret) {
+    // Fail-closed in production: a missing secret in prod is a misconfiguration,
+    // not a license to accept unsigned traffic. Allow only in non-prod env.
+    if (process.env.NODE_ENV === "production") {
+      console.error("[Webhook/Unipile] UNIPILE_WEBHOOK_SECRET unset in production — rejecting");
+      return false;
+    }
+    return true;
+  }
 
   const sig = req.headers.get("x-unipile-signature") ?? "";
   if (!sig.startsWith("sha256=")) return false;
@@ -28,7 +36,17 @@ async function verifySignature(req: NextRequest, rawBody: string): Promise<boole
     .map(b => b.toString(16).padStart(2, "0"))
     .join("");
 
-  return sig === `sha256=${hex}`;
+  return timingSafeEqual(sig, `sha256=${hex}`);
+}
+
+// Constant-time string comparison to prevent timing-attack signature leakage.
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
 }
 
 // ─── Webhook event deduplication ─────────────────────────────────────────────
@@ -155,18 +173,30 @@ async function handleThreadInviteAccepted(threadId: string): Promise<void> {
   });
   if (!thread) return;
 
+  // EC-3.1 — refuse to mutate threads that are no longer in an actionable state.
+  // Without this, a delayed invite-accept webhook for a thread we already
+  // archived (timeout) would resurrect providerState/nextActionAt onto an
+  // ARCHIVED row, which the cron CTE wouldn't pick up but which corrupts
+  // dashboards and analytics.
+  if (thread.status !== "ACTIVE" && thread.status !== "PENDING") {
+    return;
+  }
+
   const ps = (thread.providerState as Record<string, string> | null) ?? {};
   if (ps.phase !== "INVITE_PENDING") {
     return;
   }
 
-  await prisma.channelThread.update({
-    where: { id: threadId },
+  // Status-guarded update: a sibling-reply that flipped this thread to PAUSED
+  // between the read above and the update below should not be clobbered.
+  const res = await prisma.channelThread.updateMany({
+    where: { id: threadId, status: { in: ["ACTIVE", "PENDING"] } },
     data: {
       providerState: { phase: "CONNECTED" },
       nextActionAt: new Date(),
     },
   });
+  if (res.count === 0) return;
 
   await recomputeTaskStage(thread.taskId);
   console.log(`[Webhook/Unipile] Thread ${threadId.slice(-6)} → CONNECTED`);
@@ -204,6 +234,7 @@ async function handleNewMessage(data: any) {
   // is_from_me/from_me can be absent (treat as inbound), true (outbound echo), or false (inbound)
   const fromMeRaw = data?.is_from_me ?? data?.from_me ?? data?.sender?.is_me;
   const isInbound = fromMeRaw !== true; // absent = inbound; explicit true = outbound
+  const accountIdFromPayload: string | undefined = data?.account_id;
 
   if (!chatId) {
     console.warn("[Webhook/Unipile] new_message: no chat_id in payload — full data:", JSON.stringify(data));
@@ -214,22 +245,36 @@ async function handleNewMessage(data: any) {
     return;
   }
 
-  const thread = await prisma.channelThread.findFirst({
+  // Phase 3 #16 / EC-3.7 / EC-10.2 — when the same Unipile account messages
+  // the same person from two different requisitions, LinkedIn returns the
+  // SAME chat_id. A naive findFirst would mark a random one of those threads
+  // as REPLIED. Scope by (providerChatId, account.id) to disambiguate, then
+  // update *every* matching thread so all relevant requisitions see the
+  // reply. (markThreadReplied is idempotent — see lib/channels/thread-worker.ts.)
+  const threads = await prisma.channelThread.findMany({
     where: {
       providerChatId: chatId,
       status: { in: ["ACTIVE", "PENDING"] },
+      ...(accountIdFromPayload
+        ? { channel: { sendingAccount: { accountId: accountIdFromPayload } } }
+        : {}),
     },
     select: { id: true, taskId: true },
   });
 
-  if (thread) {
-    await markThreadReplied(thread.id, thread.taskId);
-    await recomputeTaskStage(thread.taskId);
-    console.log(`[Webhook/Unipile] Thread ${thread.id.slice(-6)} → REPLIED`);
+  if (threads.length === 0) {
+    console.log(`[Webhook/Unipile] new_message: no active thread for chatId=${chatId} (account=${accountIdFromPayload ?? "unknown"}) — ignoring`);
     return;
   }
 
-  console.log(`[Webhook/Unipile] new_message: no active thread for chatId=${chatId} — ignoring`);
+  for (const t of threads) {
+    await markThreadReplied(t.id, t.taskId);
+    await recomputeTaskStage(t.taskId);
+    console.log(`[Webhook/Unipile] Thread ${t.id.slice(-6)} → REPLIED (chatId=${chatId})`);
+  }
+  if (threads.length > 1) {
+    console.log(`[Webhook/Unipile] new_message: ${threads.length} threads matched chatId=${chatId} — all marked REPLIED`);
+  }
 }
 
 // ─── Inbound email received (Gmail / Outlook) ─────────────────────────────────
@@ -245,21 +290,29 @@ async function handleMailReceived(data: any) {
     return;
   }
 
-  // providerThreadId holds the provider_id of the email we sent (stored at send time)
-  const thread = await prisma.channelThread.findFirst({
+  const accountIdFromPayload: string | undefined = data?.account_id;
+
+  // Same multi-thread / account-scoping treatment as handleNewMessage.
+  // providerThreadId holds the provider_id of the email we sent (stored at send time).
+  const threads = await prisma.channelThread.findMany({
     where: {
       providerThreadId: inReplyToId,
       status: { in: ["ACTIVE", "PENDING"] },
+      ...(accountIdFromPayload
+        ? { channel: { sendingAccount: { accountId: accountIdFromPayload } } }
+        : {}),
     },
     select: { id: true, taskId: true },
   });
 
-  if (thread) {
-    await markThreadReplied(thread.id, thread.taskId);
-    await recomputeTaskStage(thread.taskId);
-    console.log(`[Webhook/Unipile] Email thread ${thread.id.slice(-6)} → REPLIED`);
+  if (threads.length === 0) {
+    console.log(`[Webhook/Unipile] mail_received: no active email thread for in_reply_to=${inReplyToId} (account=${accountIdFromPayload ?? "unknown"}) — ignoring`);
     return;
   }
 
-  console.log(`[Webhook/Unipile] mail_received: no active email thread for in_reply_to=${inReplyToId} — ignoring`);
+  for (const t of threads) {
+    await markThreadReplied(t.id, t.taskId);
+    await recomputeTaskStage(t.taskId);
+    console.log(`[Webhook/Unipile] Email thread ${t.id.slice(-6)} → REPLIED`);
+  }
 }

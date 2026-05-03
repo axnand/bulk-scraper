@@ -24,11 +24,7 @@ export async function GET(
     const tasks = await prisma.task.findMany({
       where: {
         jobId: { in: runs.map(r => r.id) },
-        OR: [
-          { status: "DONE" },
-          { status: "CANCELLED", result: { not: null } },
-          { status: "CANCELLED", analysisResult: { not: null } },
-        ],
+        status: "DONE",
       },
       select: {
         id: true,

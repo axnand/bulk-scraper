@@ -23,6 +23,10 @@ export async function runOutreachTick(): Promise<{
 
   let claimedIds: string[] = [];
   try {
+    // Phase 3 #14 / EC-4.5 — exclude threads belonging to a non-ACTIVE Channel.
+    // Subquery rather than JOIN keeps FOR UPDATE SKIP LOCKED scoped to
+    // "ChannelThread" rows only; locking "Channel" rows here would block
+    // recruiter UI edits to the channel config.
     const claimed = await prisma.$queryRaw<{ id: string }[]>`
       WITH claimed AS (
         UPDATE "ChannelThread"
@@ -33,6 +37,9 @@ export async function runOutreachTick(): Promise<{
           WHERE  status IN ('PENDING', 'ACTIVE')
             AND  "nextActionAt" IS NOT NULL
             AND  "nextActionAt" <= ${now}
+            AND  "channelId" IN (
+                   SELECT id FROM "Channel" WHERE status = 'ACTIVE'
+                 )
           ORDER  BY "nextActionAt" ASC
           LIMIT  ${MAX_PER_TICK}
           FOR UPDATE SKIP LOCKED

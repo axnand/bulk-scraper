@@ -37,20 +37,20 @@ enum ChannelStatus {
 
 // Generic thread lifecycle — channel-specific sub-states live in providerState JSON
 enum ThreadStatus {
-  PENDING   // created, initial send not yet attempted
-  ACTIVE    // initial send done, follow-ups may be in flight
-  REPLIED   // candidate responded — terminal-good
-  PAUSED    // another thread on the same task got a reply
-  ARCHIVED  // timeout / exhausted / manually closed — terminal-bad
+  PENDING // created, initial send not yet attempted
+  ACTIVE // initial send done, follow-ups may be in flight
+  REPLIED // candidate responded — terminal-good
+  PAUSED // another thread on the same task got a reply
+  ARCHIVED // timeout / exhausted / manually closed — terminal-bad
 }
 
 enum OutreachType {
-  INVITE      // LinkedIn connection request
-  INMAIL      // LinkedIn InMail (direct, no connection required)
-  FIRST_DM    // first DM after LinkedIn connection accepted
-  EMAIL       // email message (any position in sequence)
-  FOLLOWUP    // any follow-up message on any channel
-  WHATSAPP    // WhatsApp message
+  INVITE // LinkedIn connection request
+  INMAIL // LinkedIn InMail (direct, no connection required)
+  FIRST_DM // first DM after LinkedIn connection accepted
+  EMAIL // email message (any position in sequence)
+  FOLLOWUP // any follow-up message on any channel
+  WHATSAPP // WhatsApp message
 }
 
 enum AccountType {
@@ -59,86 +59,155 @@ enum AccountType {
   WHATSAPP
 }
 
+enum DuplicateKind {
+  LINKEDIN_URL
+  RESUME_HASH
+}
+
+enum DuplicateStatus {
+  PENDING
+  RESOLVED_DELETED_A
+  RESOLVED_DELETED_B
+  RESOLVED_KEPT_BOTH
+}
+
+enum AccountStatus {
+  ACTIVE
+  BUSY
+  COOLDOWN
+  DISABLED
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+  PAUSED
+}
+
+enum TaskStatus {
+  PENDING
+  PROCESSING
+  DONE
+  FAILED
+}
+
+enum ThreadMessageStatus {
+  SENT
+  FAILED
+}
+
 model Account {
-  id            String      @id @default(cuid())
-  accountId     String      @unique          // Unipile account_id
-  name          String      @default("")     // Friendly label
-  type          AccountType @default(LINKEDIN) // Which channel this account belongs to
-  dsn           String?                    // Optional per-account override
-  apiKey        String?                    // Optional per-account override
-  status        String      @default("ACTIVE") // ACTIVE | BUSY | COOLDOWN | DISABLED
-  lastUsedAt    DateTime?
-  requestCount  Int         @default(0)      // rolling counter
-  dailyCount    Int         @default(0)      // daily usage counter
-  dailyResetAt  DateTime?                  // when to reset dailyCount
-  minuteCount   Int         @default(0)      // requests in current minute window
-  minuteResetAt DateTime?                  // when the current minute window expires
-  cooldownUntil DateTime?                  // null = not in cooldown
-  createdAt     DateTime    @default(now())
-  tasks         Task[]
-  channels      Channel[]
+  id             String          @id @default(cuid())
+  accountId      String          @unique // Unipile account_id
+  name           String          @default("") // Friendly label
+  type           AccountType     @default(LINKEDIN) // Which channel this account belongs to
+  dsn            String? // Optional per-account override
+  apiKey         String? // Optional per-account override
+  status         AccountStatus   @default(ACTIVE)
+  lastUsedAt     DateTime?
+  requestCount   Int             @default(0) // rolling counter
+  dailyCount     Int             @default(0) // daily usage counter
+  dailyResetAt   DateTime? // when to reset dailyCount
+  minuteCount    Int             @default(0) // requests in current minute window
+  minuteResetAt  DateTime? // when the current minute window expires
+  cooldownUntil  DateTime? // null = not in cooldown
+  // EC-9.6 — soft delete. Deleted accounts are excluded from selection but
+  // referenced rows (channels, threads, messages) keep the FK so historical
+  // attribution survives. A heal job warns admins when channels lose their
+  // sender via this column.
+  deletedAt      DateTime?
+  createdAt      DateTime        @default(now())
+  tasks          Task[]
+  channels       Channel[]
+  threadsBound   ChannelThread[]
+  threadMessages ThreadMessage[]
+
+  @@index([deletedAt])
 }
 
 model Requisition {
-  id            String    @id @default(cuid())
-  title         String    @default("Untitled Role")
-  department    String    @default("")
-  recruiterName String    @default("")
-  startDate     DateTime?
-  config        String?   @db.Text // JSON: JD, scoring rules, AI model, sheet target — the long-lived role config
-  archived      Boolean   @default(false)
-  isActive      Boolean   @default(true)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  jobs          Job[]
-  channels      Channel[]
+  id             String          @id @default(cuid())
+  title          String          @default("Untitled Role")
+  department     String          @default("")
+  recruiterName  String          @default("")
+  startDate      DateTime?
+  config         String?         @db.Text // JSON: JD, scoring rules, AI model, sheet target — the long-lived role config
+  archived       Boolean         @default(false)
+  isActive       Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  jobs           Job[]
+  channels       Channel[]
   duplicatePairs DuplicatePair[]
 
   @@index([archived])
 }
 
 model Job {
-  id             String   @id @default(cuid())
-  requisitionId  String?  // FK to the role this run belongs to (nullable for legacy rows)
-  status         String   @default("PENDING") // PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED
+  id             String    @id @default(cuid())
+  requisitionId  String? // FK to the role this run belongs to (nullable for legacy rows)
+  status         JobStatus @default(PENDING)
   totalTasks     Int
-  processedCount Int      @default(0)
-  successCount   Int      @default(0)
-  failedCount    Int      @default(0)
-  config         String?  @db.Text // JSON snapshot of the requisition config at run time
-  createdAt      DateTime @default(now())
+  processedCount Int       @default(0)
+  successCount   Int       @default(0)
+  failedCount    Int       @default(0)
+  config         String?   @db.Text // JSON snapshot of the requisition config at run time
+  createdAt      DateTime  @default(now())
   tasks          Task[]
-  title          String   @default("Untitled Requisition")
-  department     String   @default("")
+  title          String    @default("Untitled Requisition")
+  department     String    @default("")
 
-  requisition    Requisition? @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  requisition Requisition? @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
 
   @@index([requisitionId])
 }
 
+// ─── Append-only policy ───────────────────────────────────────────────────────
+// Task rows are append-only. Hard-deletion is forbidden except for GDPR erasure
+// (separate codepath with audit log). The cleanup cron is permanently retired —
+// see commit 2646e58. Soft-deleted rows are kept forever; they're cheap and
+// preserve audit history. Never add a "purge soft-deleted" cron — write a
+// one-off script with backups if that ever becomes necessary.
+// The prisma client in lib/prisma.ts auto-filters deletedAt IS NULL on all
+// findMany / findFirst / count operations. findUnique bypasses this filter
+// intentionally (PK lookups are explicit). To see deleted tasks (admin only),
+// pass `where: { deletedAt: { not: null } }` to override the default.
+// ─────────────────────────────────────────────────────────────────────────────
 model Task {
-  id             String   @id @default(cuid())
+  id             String          @id @default(cuid())
   jobId          String
-  url            String   @db.Text
-  source         String   @default("linkedin_url") // "linkedin_url" | "resume" | "zip_import"
-  sourceFileName String?  // original filename for resume/zip imports
-  sourceFileUrl  String?  // S3 object key for the original PDF (resume/zip_import tasks)
-  status         String   @default("PENDING") // PENDING, PROCESSING, DONE, FAILED
-  result         String?  @db.Text // JSON string (raw Unipile profile data)
-  analysisResult String?  @db.Text // JSON string (AI scoring output)
-  errorMessage   String?  @db.Text // failure reason
-  retryCount     Int      @default(0)
-  accountId      String?  // assigned at processing time
-  contentHash    String?  // SHA-256 of resume text — dedup detection for resume/zip_import tasks
+  url            String          @db.Text
+  source         String          @default("linkedin_url") // "linkedin_url" | "resume" | "zip_import"
+  sourceFileName String? // original filename for resume/zip imports
+  sourceFileUrl  String? // S3 object key for the original PDF (resume/zip_import tasks)
+  status         TaskStatus      @default(PENDING)
+  result         String?         @db.Text // JSON string (raw Unipile profile data)
+  analysisResult String?         @db.Text // JSON string (AI scoring output)
+  errorMessage   String?         @db.Text // failure reason
+  retryCount     Int             @default(0)
+  accountId      String? // assigned at processing time
+  contentHash    String? // SHA-256 of resume text — dedup detection for resume/zip_import tasks
   stage          CandidateStage  @default(SOURCED)
   // manualStage wins over the auto-derived rollup for terminal recruiter decisions
   manualStage    CandidateStage?
-  stageUpdatedAt DateTime @default(now())
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  stageUpdatedAt DateTime        @default(now())
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  deletedAt      DateTime?
+  deletedReason  String?
+
+  // Phase 6 / EC-10.1 — canonical candidate identity. Multiple Tasks may
+  // share the same candidateProfileId across requisitions; this is the
+  // join key for cross-task reply propagation. Nullable for backwards
+  // compatibility (legacy Tasks have no link until backfilled).
+  candidateProfileId String?
 
   job              Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
   account          Account?          @relation(fields: [accountId], references: [id])
+  candidateProfile CandidateProfile? @relation(fields: [candidateProfileId], references: [id])
   outreachMessages OutreachMessage[]
   channelThreads   ChannelThread[]
   stageEvents      StageEvent[]
@@ -152,19 +221,21 @@ model Task {
   @@index([accountId])
   @@index([stage])
   @@index([contentHash])
+  @@index([deletedAt])
+  @@index([candidateProfileId])
 }
 
 model DuplicatePair {
-  id            String    @id @default(cuid())
+  id            String          @id @default(cuid())
   requisitionId String
   taskAId       String
   taskBId       String
-  kind          String    // "LINKEDIN_URL" | "RESUME_HASH"
-  matchValue    String    @db.Text
-  status        String    @default("PENDING") // PENDING | RESOLVED_DELETED_A | RESOLVED_DELETED_B | RESOLVED_KEPT_BOTH
+  kind          DuplicateKind
+  matchValue    String          @db.Text
+  status        DuplicateStatus @default(PENDING)
   resolvedAt    DateTime?
   resolvedBy    String?
-  createdAt     DateTime  @default(now())
+  createdAt     DateTime        @default(now())
 
   taskA       Task        @relation("DuplicatePairA", fields: [taskAId], references: [id], onDelete: Cascade)
   taskB       Task        @relation("DuplicatePairB", fields: [taskBId], references: [id], onDelete: Cascade)
@@ -180,7 +251,7 @@ model DuplicatePair {
 // campaignId is now a plain string with no FK — campaigns have been removed.
 model OutreachMessage {
   id                String    @id @default(cuid())
-  campaignId        String    // historical — no longer a FK
+  campaignId        String // historical — no longer a FK
   taskId            String
   channel           String
   status            String    @default("AWAITING_REVIEW")
@@ -197,7 +268,7 @@ model OutreachMessage {
   retryCount        Int       @default(0)
   createdAt         DateTime  @default(now())
 
-  task              Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   @@index([status, scheduledFor])
   @@index([taskId])
@@ -219,67 +290,93 @@ model Channel {
   config           Json
   sendingAccountId String?
   dailyCap         Int           @default(20)
-  dailyInMailCap   Int           @default(5)    // LinkedIn InMail credits are limited
+  dailyInMailCap   Int           @default(5) // LinkedIn InMail credits are limited
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
-  requisition      Requisition   @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
-  sendingAccount   Account?      @relation(fields: [sendingAccountId], references: [id])
-  threads          ChannelThread[]
+  requisition    Requisition     @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  sendingAccount Account?        @relation(fields: [sendingAccountId], references: [id])
+  threads        ChannelThread[]
 
   @@index([requisitionId, type, status])
+  @@index([sendingAccountId])
 }
 
 // One ChannelThread per (task, channel) — tracks the full per-candidate lifecycle
 // for that channel. nextActionAt is the sole scheduling key used by the cron tick.
 model ChannelThread {
-  id               String       @id @default(cuid())
-  taskId           String
-  channelId        String
-  channelType      ChannelType                   // denormalized so cron can filter without joining
-  status           ThreadStatus @default(PENDING)
+  id                   String       @id @default(cuid())
+  taskId               String
+  channelId            String
+  channelType          ChannelType // denormalized so cron can filter without joining
+  status               ThreadStatus @default(PENDING)
   // Channel-specific sub-state (e.g. { phase: "INVITE_PENDING" | "CONNECTED" | "INMAIL_SENT" })
-  providerState    Json?
-  matchedRuleKey   String?                        // which inviteRule/emailRule/waRule fired
-  nextActionAt     DateTime?                      // THE scheduling key — cron scans this
-  inviteSentAt     DateTime?                      // set when LinkedIn invite is dispatched
-  lastMessageAt    DateTime?                      // most recent outbound message timestamp
-  followupsSent    Int          @default(0)       // count of followups sent so far
-  followupsTotal   Int          @default(0)       // snapshot from config at thread creation
-  providerChatId   String?                        // Unipile chat_id (LinkedIn DM / WA)
-  providerThreadId String?                        // email thread id
-  archivedAt       DateTime?
-  archivedReason   String?
-  createdAt        DateTime     @default(now())
+  providerState        Json?
+  matchedRuleKey       String? // which inviteRule/emailRule/waRule fired
+  nextActionAt         DateTime? // THE scheduling key — cron scans this
+  inviteSentAt         DateTime? // set when LinkedIn invite is dispatched
+  lastMessageAt        DateTime? // most recent outbound message timestamp
+  followupsSent        Int          @default(0) // count of followups sent so far
+  followupsTotal       Int          @default(0) // snapshot from config at thread creation
+  providerChatId       String? // Unipile chat_id (LinkedIn DM / WA)
+  providerThreadId     String? // email thread id
+  archivedAt           DateTime?
+  archivedReason       String?
+  // EC-4.1 — write a UUID before the provider API call; clear it on commit.
+  // If the worker crashes between API success and DB commit, a heal job can
+  // detect (pendingSendKey IS NOT NULL AND pendingSendStartedAt < now-10min)
+  // and recover. Nullable; not yet enforced as required.
+  pendingSendKey       String?
+  pendingSendStartedAt DateTime?
+  // EC-9.3 — sticky per-thread account binding. Set at first send; immutable
+  // thereafter. The conversation history (LinkedIn chat, WhatsApp number,
+  // email Message-ID chain) lives on this account; switching mid-sequence
+  // breaks reply tracking and leaks identity to recipients. The worker reads
+  // this field if set; otherwise falls back to channel.sendingAccount.
+  accountId            String?
+  createdAt            DateTime     @default(now())
 
-  task             Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  channel          Channel      @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  messages         ThreadMessage[]
+  task     Task            @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  channel  Channel         @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  account  Account?        @relation(fields: [accountId], references: [id])
+  messages ThreadMessage[]
 
   @@unique([taskId, channelId])
-  @@index([status, nextActionAt])             // hot path: scheduler tick
-  @@index([channelType, status])              // analytics + channel-level dashboards
-  @@index([taskId])                           // stage rollup lookup
+  @@index([status, nextActionAt]) // hot path: scheduler tick
+  @@index([channelType, status]) // analytics + channel-level dashboards
+  @@index([taskId]) // stage rollup lookup
 }
 
 // Outreach messages belonging to a ChannelThread (new system).
 // The existing OutreachMessage model belongs to the Campaign (old system) and is
 // kept untouched. These two models coexist during migration.
 model ThreadMessage {
-  id                String       @id @default(cuid())
+  id                String              @id @default(cuid())
   threadId          String
   type              OutreachType
-  status            String       @default("SENT") // SENT | FAILED
-  renderedBody      String       @db.Text
+  status            ThreadMessageStatus @default(SENT)
+  renderedBody      String              @db.Text
   renderedSubject   String?
   sentAt            DateTime?
   providerMessageId String?
   providerChatId    String?
-  errorMessage      String?      @db.Text
-  createdAt         DateTime     @default(now())
+  errorMessage      String?             @db.Text
+  // EC-9.3 — frozen-at-send forensic record of which account sent this
+  // message. Set when the row is created; never updated. Survives even if
+  // Channel.sendingAccountId changes later, so support / audit can answer
+  // "which account sent this DM?"
+  accountId         String?
+  createdAt         DateTime            @default(now())
 
-  thread            ChannelThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  thread  ChannelThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  account Account?      @relation(fields: [accountId], references: [id])
 
+  // EC-6.1 — refuse duplicate rows when the provider returns the same
+  // message ID twice (e.g., a retry that completed once successfully). Note:
+  // Postgres treats NULL as distinct in unique indexes, so threads with
+  // multiple NULL providerMessageId rows are unaffected (we couldn't
+  // disambiguate them anyway).
+  @@unique([threadId, providerMessageId], name: "ThreadMessage_threadId_providerMessageId_key")
   @@index([threadId, type])
   @@index([threadId, createdAt])
 }
@@ -287,10 +384,10 @@ model ThreadMessage {
 // Deduplication table for incoming Unipile (and future) webhooks.
 // Insert-on-conflict-ignore at the top of every webhook handler.
 model WebhookEvent {
-  id          String   @id                    // provider's own event/message id
-  provider    String                           // "unipile"
+  id          String    @id // provider's own event/message id
+  provider    String // "unipile"
   eventType   String
-  receivedAt  DateTime @default(now())
+  receivedAt  DateTime  @default(now())
   processedAt DateTime?
 
   @@index([provider, eventType, receivedAt])
@@ -299,15 +396,15 @@ model WebhookEvent {
 // ──────────────────────────────────────────────────────────────────────────────
 
 model StageEvent {
-  id        String         @id @default(cuid())
+  id        String          @id @default(cuid())
   taskId    String
   fromStage CandidateStage?
   toStage   CandidateStage
-  actor     String         @default("USER") // USER | SYSTEM | RULE | WEBHOOK
+  actor     String          @default("USER") // USER | SYSTEM | RULE | WEBHOOK
   reason    String?
-  createdAt DateTime       @default(now())
+  createdAt DateTime        @default(now())
 
-  task      Task           @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   @@index([taskId, createdAt])
 }
@@ -319,7 +416,7 @@ model Note {
   body        String   @db.Text
   createdAt   DateTime @default(now())
 
-  task        Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   @@index([taskId, createdAt])
 }
@@ -332,69 +429,76 @@ model CandidateContact {
   personalEmail String?
   workEmail     String?
   phone         String?
-  salary        String?   // Extracted from notes or profile
-  source        String?   // UNIPILE | WIZA | APOLLO | AIRSCALE | MANUAL
+  salary        String? // Extracted from notes or profile
+  source        String? // UNIPILE | WIZA | APOLLO | AIRSCALE | MANUAL
   confidence    Float?
   enrichedAt    DateTime?
 
-  task       Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
 }
 
 model ScoreOverride {
   id        String   @id @default(cuid())
   taskId    String
-  ruleKey   String   // e.g. "stability", "growth", "custom_abc123"
-  paramKey  String   // e.g. "promotionSameCompany"
-  original  Int      // AI's original score
-  override  Int      // HR's new score
+  ruleKey   String // e.g. "stability", "growth", "custom_abc123"
+  paramKey  String // e.g. "promotionSameCompany"
+  original  Int // AI's original score
+  override  Int // HR's new score
   reason    String   @db.Text
   author    String   @default("")
   createdAt DateTime @default(now())
 
-  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   @@unique([taskId, paramKey])
   @@index([taskId])
 }
 
 model CandidateProfile {
-  id          String    @id @default(cuid())
-  linkedinUrl String    // full LinkedIn URL
-  name        String    @default("")
-  headline    String    @default("")
-  location    String    @default("")
-  rawProfile  String?   @db.Text // full Unipile JSON (nullable — cleared on free tier to save space)
-  scrapedAt   DateTime  @default(now())
+  id                   String   @id @default(cuid())
+  linkedinUrl          String // full LinkedIn URL (verbatim)
+  // Phase 6 — canonical join key for cross-task identity. Computed from
+  // linkedinUrl via lib/canonicalize-url.ts at insert/update time. Multiple
+  // legacy rows may share the same canonical key (no unique constraint yet);
+  // a follow-up dedup migration will collapse them and add @unique.
+  canonicalLinkedinUrl String?
+  name                 String   @default("")
+  headline             String   @default("")
+  location             String   @default("")
+  rawProfile           String?  @db.Text // full Unipile JSON (nullable — cleared on free tier to save space)
+  scrapedAt            DateTime @default(now())
 
-  analyses    AnalysisRecord[]
+  analyses AnalysisRecord[]
+  tasks    Task[]
 
   @@index([linkedinUrl])
+  @@index([canonicalLinkedinUrl])
   @@index([scrapedAt])
 }
 
 model AnalysisRecord {
-  id             String   @id @default(cuid())
-  candidateId    String
-  linkedinUrl    String   // denormalized for fast queries
-  candidateName  String   @default("")
+  id            String @id @default(cuid())
+  candidateId   String
+  linkedinUrl   String // denormalized for fast queries
+  candidateName String @default("")
 
   // Job context — WHY this analysis happened
   jobTitle       String
-  jobDescription String   @db.Text
-  scoringConfig  String   @db.Text // JSON: rules, custom rules, model, prompt
+  jobDescription String @db.Text
+  scoringConfig  String @db.Text // JSON: rules, custom rules, model, prompt
 
   // Analysis output with all reasoning
-  analysisData   String   @db.Text // full AnalysisResult JSON
+  analysisData String @db.Text // full AnalysisResult JSON
 
   // Denormalized for sorting/filtering/dashboards
   totalScore     Int
   maxScore       Int
   scorePercent   Float
-  recommendation String   // "Strong Fit" / "Moderate Fit" / "Not a Fit"
+  recommendation String // "Strong Fit" / "Moderate Fit" / "Not a Fit"
 
-  analyzedAt     DateTime @default(now())
+  analyzedAt DateTime @default(now())
 
-  candidate      CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  candidate CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
 
   @@index([linkedinUrl])
   @@index([analyzedAt])
@@ -403,14 +507,14 @@ model AnalysisRecord {
 }
 
 model JdTemplate {
-  id                       String   @id @default(cuid())
-  title                    String
-  content                  String   @db.Text
-  scoringRules             String   @db.Text   // JSON: {"stability":true,"growth":false,...}
-  customScoringRules       String   @db.Text   // JSON: [{id,name,maxPoints,criteria,enabled}]
-  builtInRuleDescriptions  String   @db.Text   @default("{}") // JSON: {"growth":"...","mba":"..."}
-  createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
+  id                      String   @id @default(cuid())
+  title                   String
+  content                 String   @db.Text
+  scoringRules            String   @db.Text // JSON: {"stability":true,"growth":false,...}
+  customScoringRules      String   @db.Text // JSON: [{id,name,maxPoints,criteria,enabled}]
+  builtInRuleDescriptions String   @default("{}") @db.Text // JSON: {"growth":"...","mba":"..."}
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
 }
 
 model PromptTemplate {
@@ -429,33 +533,33 @@ model EvaluationConfig {
   promptRole              String?  @db.Text
   criticalInstructions    String?  @db.Text
   promptGuidelines        String?  @db.Text
-  builtInRuleDescriptions String?  @db.Text  // JSON: {"growth":"...","mba":"...",...}
-  scoringRules            String?  @db.Text  // JSON: {"stability":true,"growth":false,...}
-  customScoringRules      String?  @db.Text  // JSON: [{id,name,maxPoints,criteria,enabled}]
-  ruleDefinitions         String?  @db.Text  // JSON: Record<ruleKey, Partial<RuleDefinition>> — per-rule overrides for scoreParameters + logFormat
-  promptEnvelope          String?  @db.Text  // JSON: Partial<PromptEnvelope> — overrides for identity, section headers, JSON schema wrapper, footer
+  builtInRuleDescriptions String?  @db.Text // JSON: {"growth":"...","mba":"...",...}
+  scoringRules            String?  @db.Text // JSON: {"stability":true,"growth":false,...}
+  customScoringRules      String?  @db.Text // JSON: [{id,name,maxPoints,criteria,enabled}]
+  ruleDefinitions         String?  @db.Text // JSON: Record<ruleKey, Partial<RuleDefinition>> — per-rule overrides for scoreParameters + logFormat
+  promptEnvelope          String?  @db.Text // JSON: Partial<PromptEnvelope> — overrides for identity, section headers, JSON schema wrapper, footer
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
 }
 
 model AppSettings {
-  id                    String   @id @default("global")
-  aiModel               String   @default("gpt-4.1")
-  aiProviderId          String?  // FK to AiProvider — the default provider
-  sheetWebAppUrl        String   @default("")
-  minScoreThreshold     Int      @default(0)
-  promptRole            String?  @db.Text // Custom AI evaluator identity — null = default
-  promptGuidelines      String?  @db.Text // Custom evaluation guidelines — null = default
-  criticalInstructions  String?  @db.Text // Custom behavioral rules — null = default
-  updatedAt             DateTime @updatedAt
+  id                   String   @id @default("global")
+  aiModel              String   @default("gpt-4.1")
+  aiProviderId         String? // FK to AiProvider — the default provider
+  sheetWebAppUrl       String   @default("")
+  minScoreThreshold    Int      @default(0)
+  promptRole           String?  @db.Text // Custom AI evaluator identity — null = default
+  promptGuidelines     String?  @db.Text // Custom evaluation guidelines — null = default
+  criticalInstructions String?  @db.Text // Custom behavioral rules — null = default
+  updatedAt            DateTime @updatedAt
 }
 
 model AiProvider {
   id        String   @id @default(cuid())
-  name      String           // User-friendly label, e.g. "My Gemini"
-  provider  String           // "openai-compatible" | "anthropic" | "bedrock"
-  baseUrl   String           // API base URL — for Bedrock: AWS region (e.g. "us-east-1")
-  apiKey    String           // API key — for Bedrock: AWS Access Key ID
+  name      String // User-friendly label, e.g. "My Gemini"
+  provider  String // "openai-compatible" | "anthropic" | "bedrock"
+  baseUrl   String // API base URL — for Bedrock: AWS region (e.g. "us-east-1")
+  apiKey    String // API key — for Bedrock: AWS Access Key ID
   secretKey String?  @db.Text // AWS Secret Access Key (Bedrock only; null for all other providers)
   models    String   @db.Text // JSON array: ["gpt-4.1","gpt-4.1-mini"]
   isDefault Boolean  @default(false)

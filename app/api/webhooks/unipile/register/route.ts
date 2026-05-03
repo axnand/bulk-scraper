@@ -15,7 +15,12 @@ async function getUnipile() {
 
   // 2. Fall back to first active account in DB that has dsn + apiKey set
   const account = await prisma.account.findFirst({
-    where: { status: { not: "DISABLED" }, dsn: { not: null }, apiKey: { not: null } },
+    where: {
+      status: { not: "DISABLED" },
+      deletedAt: null,
+      dsn: { not: null },
+      apiKey: { not: null },
+    },
     orderBy: { lastUsedAt: "desc" },
   });
 

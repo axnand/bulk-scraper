@@ -5,10 +5,16 @@
 // It respects manualStage (set by the recruiter for INTERVIEW / HIRED / REJECTED).
 
 import { prisma } from "@/lib/prisma";
-import { CandidateStage, type Prisma } from "@prisma/client";
+import { CandidateStage } from "@prisma/client";
+import { markStageEventExplicit } from "@/lib/channels/stage-event-context";
 
-// Stages a recruiter sets manually — these always win over any derived state
-const MANUAL_WINS = new Set<CandidateStage>(["INTERVIEW", "HIRED", "REJECTED"]);
+// Stages a recruiter sets manually — these always win over any derived state.
+// ARCHIVED is included so that a recruiter dragging a candidate to ARCHIVED
+// is honored even if some thread is still PENDING (the side-effect of that
+// drag, in the candidate PATCH route, is to archive every thread, but the
+// rollup must still respect the recruiter's intent during the brief window
+// before those archives commit).
+const MANUAL_WINS = new Set<CandidateStage>(["INTERVIEW", "HIRED", "REJECTED", "ARCHIVED"]);
 
 // Priority order for derived rollup (higher index = higher priority)
 const STAGE_PRIORITY: Record<CandidateStage, number> = {
@@ -63,18 +69,24 @@ export async function recomputeTaskStage(
   // All threads archived → task is archived
   if (threads.every(t => t.status === "ARCHIVED")) {
     if (task.stage !== "ARCHIVED") {
-      await tx.task.update({
-        where: { id: taskId },
-        data: { stage: "ARCHIVED", stageUpdatedAt: new Date() },
-      });
-      await tx.stageEvent.create({
-        data: {
-          taskId,
-          fromStage: task.stage,
-          toStage: "ARCHIVED",
-          actor: "SYSTEM",
-          reason: "All channel threads exhausted or timed out",
-        },
+      // Wrap writes in a transaction so set_config(... is_local=true) inside
+      // markStageEventExplicit persists across the task.update + stageEvent.create.
+      // Without this, the audit trigger task_stage_audit would emit a duplicate row.
+      await prisma.$transaction(async (innerTx) => {
+        await markStageEventExplicit(innerTx);
+        await innerTx.task.update({
+          where: { id: taskId },
+          data: { stage: "ARCHIVED", stageUpdatedAt: new Date() },
+        });
+        await innerTx.stageEvent.create({
+          data: {
+            taskId,
+            fromStage: task.stage,
+            toStage: "ARCHIVED",
+            actor: "SYSTEM",
+            reason: "All channel threads exhausted or timed out",
+          },
+        });
       });
     }
     return "ARCHIVED";
@@ -115,18 +127,22 @@ export async function recomputeTaskStage(
   }
 
   if (derived !== task.stage) {
-    await tx.task.update({
-      where: { id: taskId },
-      data: { stage: derived, stageUpdatedAt: new Date() },
-    });
-    await tx.stageEvent.create({
-      data: {
-        taskId,
-        fromStage: task.stage,
-        toStage: derived,
-        actor: "SYSTEM",
-        reason: "Stage recomputed from channel thread states",
-      },
+    // Wrap writes in a transaction (see comment above on the ARCHIVED branch).
+    await prisma.$transaction(async (innerTx) => {
+      await markStageEventExplicit(innerTx);
+      await innerTx.task.update({
+        where: { id: taskId },
+        data: { stage: derived, stageUpdatedAt: new Date() },
+      });
+      await innerTx.stageEvent.create({
+        data: {
+          taskId,
+          fromStage: task.stage,
+          toStage: derived,
+          actor: "SYSTEM",
+          reason: "Stage recomputed from channel thread states",
+        },
+      });
     });
   }
 

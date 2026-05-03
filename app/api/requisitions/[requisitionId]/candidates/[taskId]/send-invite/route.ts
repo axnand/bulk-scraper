@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { sendInvitation, extractIdentifier } from "@/lib/services/unipile.service";
 import { resolveRequisitionId } from "@/lib/resolve-requisition";
+import { stageEventExplicit } from "@/lib/channels/stage-event-context";
 
 export const dynamic = "force-dynamic";
 
@@ -84,6 +85,7 @@ export async function POST(
     const now = new Date();
 
     await prisma.$transaction([
+      stageEventExplicit(),
       prisma.task.update({
         where: { id: taskId },
         data: { stage: "CONTACT_REQUESTED", stageUpdatedAt: now },

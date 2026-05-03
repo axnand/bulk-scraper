@@ -1,4 +1,11 @@
-import { chatCompletion } from "@/lib/ai-adapter";
+// IMPORTANT: do NOT statically import "@/lib/ai-adapter" here. It pulls
+// "@/lib/prisma" at module-eval time, and this file (lib/analyzer.ts) is
+// imported by client components for the type exports + pure helpers
+// (DEFAULT_CRITICAL_INSTRUCTIONS, getEffectiveRules, etc.). A static import
+// would cause Prisma to be bundled for the browser, throwing
+// "PrismaClient is unable to run in this browser environment" at module
+// evaluation. The dynamic import below loads ai-adapter only when
+// analyzeProfile actually runs, which is server-side only.
 
 /**
  * Profile Analyzer — Ported from linkedInScraper Chrome Extension
@@ -996,6 +1003,10 @@ export async function analyzeProfile(
 
   console.log(`[Analyzer] Calling AI (${model}), prompt: ${userPrompt.length} chars`);
 
+  // Dynamic import keeps ai-adapter (and the Prisma client it uses to read
+  // AiProvider rows) out of the module-eval chain that client components
+  // hit when they import types/helpers from this file.
+  const { chatCompletion } = await import("@/lib/ai-adapter");
   const aiResult = await chatCompletion(
     [
       { role: "system", content: systemPrompt },

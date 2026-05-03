@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { startChat, extractIdentifier } from "@/lib/services/unipile.service";
 import { buildVars, renderTemplate } from "@/lib/outreach/render-template";
 import { resolveRequisitionId } from "@/lib/resolve-requisition";
+import { stageEventExplicit } from "@/lib/channels/stage-event-context";
 
 export const dynamic = "force-dynamic";
 
@@ -88,6 +89,7 @@ export async function POST(
     const now = new Date();
 
     await prisma.$transaction([
+      stageEventExplicit(),
       prisma.task.update({
         where: { id: taskId },
         data: { stage: "MESSAGED", stageUpdatedAt: now },

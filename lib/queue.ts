@@ -84,7 +84,7 @@ export function getQueueName(source: string): "process-task" | "process-resume-t
 import { prisma } from "@/lib/prisma";
 
 async function enqueueToQueue(
-  queueName: string,
+  queueName: "process-task" | "process-resume-task",
   jobs: Array<{ data: Record<string, unknown> }>,
 ): Promise<void> {
   if (jobs.length === 0) return;
@@ -101,7 +101,7 @@ async function enqueueToQueue(
     )
     SELECT
       gen_random_uuid(),
-      '${queueName}',
+      $2,
       j.data,
       0,
       now(),
@@ -116,8 +116,8 @@ async function enqueueToQueue(
       q.dead_letter,
       q.heartbeat_seconds
     FROM json_to_recordset($1::json) AS j (data jsonb)
-    JOIN pgboss.queue q ON q.name = '${queueName}'
-  `, jobArray);
+    JOIN pgboss.queue q ON q.name = $2
+  `, jobArray, queueName);
 }
 
 export async function enqueueTaskBatch(

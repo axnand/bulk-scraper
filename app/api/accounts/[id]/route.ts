@@ -92,8 +92,20 @@ export async function DELETE(
         { status: 409 }
       );
     }
+    if (existing.deletedAt) {
+      // Already soft-deleted — return idempotently. (Don't hard-delete here
+      // either; we never hard-delete accounts so historical attribution on
+      // ThreadMessage / ChannelThread is preserved.)
+      return NextResponse.json({ message: "Account already deleted" });
+    }
 
-    await prisma.account.delete({ where: { id } });
+    // EC-9.6 — soft delete. Setting status=DISABLED also short-circuits the
+    // worker's account-health check for any code path that doesn't yet check
+    // deletedAt directly.
+    await prisma.account.update({
+      where: { id },
+      data: { deletedAt: new Date(), status: "DISABLED" },
+    });
 
     return NextResponse.json({ message: "Account deleted successfully" });
   } catch (error) {

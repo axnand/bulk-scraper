@@ -13,7 +13,7 @@
 // during the brief UPDATE that claims the thread in the cron query.
 
 import { prisma } from "@/lib/prisma";
-import { ChannelType, OutreachType } from "@prisma/client";
+import { ChannelType, OutreachType, CandidateStage, type Prisma } from "@prisma/client";
 import {
   sendInvitation,
   sendInMail,
@@ -36,6 +36,147 @@ import {
   type QuietHours,
 } from "./types";
 
+// ─── Race protection ──────────────────────────────────────────────────────────
+//
+// Between the moment processThread reads its row and the moment we commit a
+// closing transaction, several events can race us:
+//   1. A reply webhook flips this thread to REPLIED.
+//   2. A reply on a sibling thread flips this one to PAUSED.
+//   3. A timeout sweep flips it to ARCHIVED.
+//   4. A recruiter sets task.manualStage to INTERVIEW / HIRED / REJECTED.
+//
+// In all four cases the right answer is "do not send (or, if the API call
+// already left the building, do not record the send as a state advance)."
+//
+// `verifyThreadStillSendable` is the pre-API guard: re-read status + manual
+// stage one more time just before the (slow) provider HTTP call.
+//
+// Closing transactions further use updateMany with a status filter so an
+// in-flight webhook that lands DURING the API call still cannot overwrite
+// the REPLIED state with our outdated MESSAGED. If updateMany matches 0
+// rows, we skip the ThreadMessage insert too — the row would point at a
+// thread state that the rest of the system has already decided is over.
+
+const MANUAL_WINS_FOR_STAGE = new Set<CandidateStage>([
+  CandidateStage.INTERVIEW,
+  CandidateStage.HIRED,
+  CandidateStage.REJECTED,
+]);
+
+type SendableCheck =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+async function verifyThreadStillSendable(threadId: string): Promise<SendableCheck> {
+  const cur = await prisma.channelThread.findUnique({
+    where: { id: threadId },
+    select: {
+      status: true,
+      task: { select: { manualStage: true } },
+    },
+  });
+  if (!cur) return { ok: false, reason: "thread not found" };
+  if (cur.status !== "PENDING" && cur.status !== "ACTIVE") {
+    return { ok: false, reason: `status flipped to ${cur.status}` };
+  }
+  const ms = cur.task.manualStage;
+  if (ms && MANUAL_WINS_FOR_STAGE.has(ms)) {
+    return { ok: false, reason: `task.manualStage=${ms}` };
+  }
+  return { ok: true };
+}
+
+// Closing-transaction status guard: the where clause includes status filter so
+// a webhook that flipped the thread to REPLIED/PAUSED/ARCHIVED in the meantime
+// cannot be clobbered by our update. Returns true if the update landed.
+type GuardedThreadUpdateData = Parameters<typeof prisma.channelThread.updateMany>[0]["data"];
+// Use the unchecked variant so call sites can pass flat foreign-key fields
+// (threadId, accountId) rather than nested connect objects.
+type ThreadMessageCreateData = Prisma.ThreadMessageUncheckedCreateInput;
+
+async function commitSentMessage(
+  threadId: string,
+  accountId: string,
+  threadData: GuardedThreadUpdateData,
+  messageData: ThreadMessageCreateData,
+  tag: string,
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    // Always clear the pending-send marker on a successful commit (idempotent),
+    // and bind the sending account stickily to the thread (EC-9.3). For
+    // pre-existing threads the first commit sets accountId; subsequent commits
+    // write the same value (worker always reads thread.account first, then
+    // falls back to channel.sendingAccount).
+    const dataWithMarkerCleared: GuardedThreadUpdateData = {
+      ...threadData,
+      accountId,
+      pendingSendKey: null,
+      pendingSendStartedAt: null,
+    };
+    const res = await tx.channelThread.updateMany({
+      where: { id: threadId, status: { in: ["PENDING", "ACTIVE"] } },
+      data: dataWithMarkerCleared,
+    });
+    if (res.count === 0) {
+      // A webhook (REPLIED) or sibling-pause / archive flipped this thread
+      // while the provider API call was in flight. The message has already
+      // been sent — we can't unsend it — but we DO NOT advance our local
+      // state, so subsequent ticks won't try to send another follow-up to
+      // a candidate who has already replied.
+      console.warn(`${tag} Status changed during send — outbound message has left, but local state preserved`);
+      return false;
+    }
+    try {
+      await tx.threadMessage.create({
+        // EC-9.3 — frozen-at-send forensic record of which account sent this.
+        data: { ...messageData, accountId },
+      });
+    } catch (err: any) {
+      if (err.code === "P2002") {
+        // EC-6.1 — duplicate (threadId, providerMessageId). The provider
+        // returned the same message ID twice (likely a transparent retry
+        // succeeded earlier). The thread row is already updated with the
+        // latest counters; just swallow the duplicate row.
+        console.warn(`${tag} Duplicate ThreadMessage suppressed by unique constraint`);
+        return true;
+      }
+      throw err;
+    }
+    return true;
+  });
+}
+
+// Phase 3 #11 / EC-4.1 — write a marker BEFORE the provider API call so a
+// crash between the API success and the DB commit leaves a forensic trail
+// (pendingSendKey IS NOT NULL AND pendingSendStartedAt < now-10min). The
+// commit clears the marker; a future heal job will find stale ones and
+// reset them rather than silently re-sending.
+//
+// Returns the key on success, or null if the thread is no longer sendable
+// (caller should bail and skip the API call).
+async function markPendingSend(threadId: string): Promise<string | null> {
+  const key = crypto.randomUUID();
+  const res = await prisma.channelThread.updateMany({
+    where: { id: threadId, status: { in: ["PENDING", "ACTIVE"] } },
+    data: { pendingSendKey: key, pendingSendStartedAt: new Date() },
+  });
+  return res.count > 0 ? key : null;
+}
+
+// Same pattern but for state-only transitions where the only update is on the
+// thread row itself (no ThreadMessage write). E.g., quiet-hour reschedules,
+// daily-cap reschedules, retry waits.
+async function guardedThreadUpdate(
+  threadId: string,
+  data: GuardedThreadUpdateData,
+): Promise<boolean> {
+  const res = await prisma.channelThread.updateMany({
+    where: { id: threadId, status: { in: ["PENDING", "ACTIVE"] } },
+    data,
+  });
+  return res.count > 0;
+}
+
 // ─── Public entry point ───────────────────────────────────────────────────────
 
 export async function processThread(threadId: string): Promise<void> {
@@ -45,6 +186,10 @@ export async function processThread(threadId: string): Promise<void> {
       channel: {
         include: { sendingAccount: true },
       },
+      // EC-9.3 — sticky thread.account binding takes precedence over
+      // channel.sendingAccount. Once set on the first send, follow-ups always
+      // come from this exact account regardless of channel-level config edits.
+      account: true,
       task: {
         select: {
           id: true,
@@ -64,10 +209,39 @@ export async function processThread(threadId: string): Promise<void> {
   // Terminal states — nothing to do
   if (thread.status === "ARCHIVED" || thread.status === "REPLIED" || thread.status === "PAUSED") return;
 
-  const account = thread.channel.sendingAccount;
+  // EC-9.3 — prefer the bound account; fall back to channel.sendingAccount
+  // for threads created before sticky binding shipped. The first send will
+  // backfill thread.accountId so subsequent ticks pick the bound account.
+  const account = thread.account ?? thread.channel.sendingAccount;
   if (!account) {
     console.warn(`[ThreadWorker] Thread ${threadId}: no sending account on channel ${thread.channelId} — archiving`);
     await archiveThread(thread.id, "No sending account configured");
+    return;
+  }
+
+  // EC-9.6 — soft-deleted accounts are unusable; treat exactly like DISABLED.
+  if (account.deletedAt) {
+    console.warn(`[ThreadWorker] Thread ${threadId}: sending account ${account.accountId} soft-deleted — archiving`);
+    await archiveThread(thread.id, `Sending account deleted (${account.accountId})`);
+    return;
+  }
+
+  // Phase 3 #13 / EC-9.4 / EC-9.5 — gate on account health BEFORE any provider
+  // call. A DISABLED account never recovers; archive cleanly with a structured
+  // reason. COOLDOWN / BUSY are transient; reschedule until they recover so we
+  // don't re-trigger the same rate-limit error on the next tick.
+  if (account.status === "DISABLED") {
+    console.warn(`[ThreadWorker] Thread ${threadId}: sending account ${account.accountId} DISABLED — archiving`);
+    await archiveThread(thread.id, `Sending account disabled (${account.accountId})`);
+    return;
+  }
+  if (account.status === "COOLDOWN" || account.status === "BUSY") {
+    const minWait = new Date(Date.now() + 5 * 60 * 1000); // at least 5 min
+    const nextAt = account.cooldownUntil && account.cooldownUntil > minWait
+      ? account.cooldownUntil
+      : minWait;
+    await guardedThreadUpdate(thread.id, { nextActionAt: nextAt });
+    console.log(`[ThreadWorker] Thread ${threadId}: account ${account.accountId} ${account.status} — rescheduled to ${nextAt.toISOString()}`);
     return;
   }
 
@@ -124,10 +298,7 @@ async function processLinkedIn(
   if (capReached) {
     // Push to tomorrow 00:01 so it's picked up after reset
     const tomorrow = startOfNextDay();
-    await prisma.channelThread.update({
-      where: { id: thread.id },
-      data: { nextActionAt: tomorrow },
-    });
+    await guardedThreadUpdate(thread.id, { nextActionAt: tomorrow });
     console.log(`${tag} Daily cap reached — rescheduled to ${tomorrow.toISOString()}`);
     return;
   }
@@ -167,10 +338,20 @@ async function processLinkedIn(
     const firstDmTemplate = config.followups?.[0];
     if (!firstDmTemplate) {
       // No DM configured — thread is done (connected but no messages to send)
-      await prisma.channelThread.update({
-        where: { id: thread.id },
-        data: { nextActionAt: null },
-      });
+      await guardedThreadUpdate(thread.id, { nextActionAt: null });
+      return;
+    }
+
+    // Pre-API race check: re-read status + manualStage immediately before the
+    // (slow) Unipile call. If a webhook or recruiter flipped the thread, skip.
+    const sendable = await verifyThreadStillSendable(thread.id);
+    if (!sendable.ok) {
+      console.log(`${tag} Skipping first DM: ${sendable.reason}`);
+      return;
+    }
+    const pendingKey = await markPendingSend(thread.id);
+    if (!pendingKey) {
+      console.log(`${tag} Status flipped between verify and pending-mark — skipping first DM`);
       return;
     }
 
@@ -189,9 +370,10 @@ async function processLinkedIn(
       // Not actually connected yet — reset to PENDING so the invite gets sent
       if ((err.message ?? "").toLowerCase().includes("no_connection_with_recipient")) {
         console.log(`${tag} DM failed: not connected yet — resetting to PENDING to send invite`);
-        await prisma.channelThread.update({
-          where: { id: thread.id },
-          data: { status: "PENDING", providerState: {}, nextActionAt: new Date() },
+        await guardedThreadUpdate(thread.id, {
+          status: "PENDING",
+          providerState: {},
+          nextActionAt: new Date(),
         });
         return;
       }
@@ -201,29 +383,26 @@ async function processLinkedIn(
     const nextFollowup = config.followups?.[1];
     const nextAt = nextFollowup ? daysFromNow(nextFollowup.afterDays) : null;
 
-    await prisma.$transaction([
-      prisma.channelThread.update({
-        where: { id: thread.id },
-        data: {
-          providerState: { phase: "MESSAGED" }, // moves task rollup off of CONNECTED
-          providerChatId: chatId,
-          lastMessageAt: new Date(),
-          followupsSent: 1,
-          nextActionAt: nextAt,
-        },
-      }),
-      prisma.threadMessage.create({
-        data: {
-          threadId: thread.id,
-          type: OutreachType.FIRST_DM,
-          renderedBody: text,
-          sentAt: new Date(),
-          providerChatId: chatId,
-          providerMessageId: messageId || null,
-        },
-      }),
-    ]);
-    console.log(`${tag} First DM sent — chatId=${chatId}`);
+    const ok = await commitSentMessage(
+      thread.id, account.id,
+      {
+        providerState: { phase: "MESSAGED" }, // moves task rollup off of CONNECTED
+        providerChatId: chatId,
+        lastMessageAt: new Date(),
+        followupsSent: 1,
+        nextActionAt: nextAt,
+      },
+      {
+        threadId: thread.id,
+        type: OutreachType.FIRST_DM,
+        renderedBody: text,
+        sentAt: new Date(),
+        providerChatId: chatId,
+        providerMessageId: messageId || null,
+      },
+      tag,
+    );
+    if (ok) console.log(`${tag} First DM sent — chatId=${chatId}`);
     return;
   }
 
@@ -232,6 +411,17 @@ async function processLinkedIn(
     const followup = config.followups?.[thread.followupsSent];
     if (!followup || !thread.providerChatId) {
       await archiveThread(thread.id, "Missing followup config or chat ID");
+      return;
+    }
+
+    const sendable = await verifyThreadStillSendable(thread.id);
+    if (!sendable.ok) {
+      console.log(`${tag} Skipping follow-up: ${sendable.reason}`);
+      return;
+    }
+    const pendingKey = await markPendingSend(thread.id);
+    if (!pendingKey) {
+      console.log(`${tag} Status flipped between verify and pending-mark — skipping follow-up`);
       return;
     }
 
@@ -248,30 +438,28 @@ async function processLinkedIn(
     const nextAt = nextFollowup ? daysFromNow(nextFollowup.afterDays) : null;
     const newSent = thread.followupsSent + 1;
 
-    await prisma.$transaction([
-      prisma.channelThread.update({
-        where: { id: thread.id },
-        data: {
-          lastMessageAt: new Date(),
-          followupsSent: newSent,
-          nextActionAt: nextAt,
-        },
-      }),
-      prisma.threadMessage.create({
-        data: {
-          threadId: thread.id,
-          type: OutreachType.FOLLOWUP,
-          renderedBody: text,
-          sentAt: new Date(),
-          providerChatId: thread.providerChatId,
-          providerMessageId: messageId || null,
-        },
-      }),
-    ]);
-    console.log(`${tag} Follow-up ${newSent}/${thread.followupsTotal} sent`);
-
-    if (!nextAt) {
-      await archiveThread(thread.id, "All follow-ups exhausted — no reply received");
+    const ok = await commitSentMessage(
+      thread.id, account.id,
+      {
+        lastMessageAt: new Date(),
+        followupsSent: newSent,
+        nextActionAt: nextAt,
+      },
+      {
+        threadId: thread.id,
+        type: OutreachType.FOLLOWUP,
+        renderedBody: text,
+        sentAt: new Date(),
+        providerChatId: thread.providerChatId,
+        providerMessageId: messageId || null,
+      },
+      tag,
+    );
+    if (ok) {
+      console.log(`${tag} Follow-up ${newSent}/${thread.followupsTotal} sent`);
+      if (!nextAt) {
+        await archiveThread(thread.id, "All follow-ups exhausted — no reply received");
+      }
     }
     return;
   }
@@ -295,6 +483,17 @@ async function sendLinkedInInvite(
     ? renderTemplate(rule.noteTemplate, vars).slice(0, 300)
     : undefined;
 
+  const sendable = await verifyThreadStillSendable(thread.id);
+  if (!sendable.ok) {
+    console.log(`${tag} Skipping invite: ${sendable.reason}`);
+    return;
+  }
+  const pendingKey = await markPendingSend(thread.id);
+  if (!pendingKey) {
+    console.log(`${tag} Status flipped between verify and pending-mark — skipping invite`);
+    return;
+  }
+
   let invitationId: string;
   try {
     const res = await sendInvitation({
@@ -311,14 +510,11 @@ async function sendLinkedInInvite(
     // Invite already pending (cannot_resend_yet) — treat as INVITE_PENDING, wait for acceptance
     if (body.includes("cannot_resend_yet") || body.includes("invitation_already")) {
       console.log(`${tag} Invite already pending — reverting to INVITE_PENDING to wait`);
-      await prisma.channelThread.update({
-        where: { id: thread.id },
-        data: {
-          status: "ACTIVE",
-          providerState: { phase: "INVITE_PENDING" },
-          inviteSentAt: thread.inviteSentAt ?? new Date(),
-          nextActionAt: daysFromNow(config.archiveAfterInviteDays ?? 14),
-        },
+      await guardedThreadUpdate(thread.id, {
+        status: "ACTIVE",
+        providerState: { phase: "INVITE_PENDING" },
+        inviteSentAt: thread.inviteSentAt ?? new Date(),
+        nextActionAt: daysFromNow(config.archiveAfterInviteDays ?? 14),
       });
       return;
     }
@@ -334,15 +530,14 @@ async function sendLinkedInInvite(
 
     if (alreadyConnected) {
       console.log(`${tag} Already connected — skipping invite, sending DM now`);
-      await prisma.channelThread.update({
-        where: { id: thread.id },
-        data: {
-          status: "ACTIVE",
-          providerState: { phase: "CONNECTED" },
-          nextActionAt: null,
-        },
+      const reschedOk = await guardedThreadUpdate(thread.id, {
+        status: "ACTIVE",
+        providerState: { phase: "CONNECTED" },
+        nextActionAt: null,
       });
-      await processThread(thread.id);
+      // Only recurse if we actually re-pointed the row; otherwise a webhook
+      // beat us and the thread is already in a terminal state.
+      if (reschedOk) await processThread(thread.id);
       return;
     }
 
@@ -353,27 +548,24 @@ async function sendLinkedInInvite(
   // nextActionAt = invite sent + archiveAfterInviteDays (invite timeout deadline)
   const timeoutAt = daysFromNow(config.archiveAfterInviteDays ?? 14);
 
-  await prisma.$transaction([
-    prisma.channelThread.update({
-      where: { id: thread.id },
-      data: {
-        status: "ACTIVE",
-        providerState: { phase: "INVITE_PENDING", inviteSentAt: new Date().toISOString() },
-        inviteSentAt: new Date(),
-        nextActionAt: timeoutAt,
-      },
-    }),
-    prisma.threadMessage.create({
-      data: {
-        threadId: thread.id,
-        type: OutreachType.INVITE,
-        renderedBody: note ?? "",
-        sentAt: new Date(),
-        providerMessageId: invitationId || null,
-      },
-    }),
-  ]);
-  console.log(`${tag} Invite sent — invitationId=${invitationId}`);
+  const ok = await commitSentMessage(
+      thread.id, account.id,
+    {
+      status: "ACTIVE",
+      providerState: { phase: "INVITE_PENDING", inviteSentAt: new Date().toISOString() },
+      inviteSentAt: new Date(),
+      nextActionAt: timeoutAt,
+    },
+    {
+      threadId: thread.id,
+      type: OutreachType.INVITE,
+      renderedBody: note ?? "",
+      sentAt: new Date(),
+      providerMessageId: invitationId || null,
+    },
+    tag,
+  );
+  if (ok) console.log(`${tag} Invite sent — invitationId=${invitationId}`);
 }
 
 async function sendLinkedInInMail(
@@ -389,11 +581,19 @@ async function sendLinkedInInMail(
   const inmailCapReached = await isDailyInMailCapReached(thread.channelId, thread.channel.dailyInMailCap);
   if (inmailCapReached) {
     const tomorrow = startOfNextDay();
-    await prisma.channelThread.update({
-      where: { id: thread.id },
-      data: { nextActionAt: tomorrow },
-    });
+    await guardedThreadUpdate(thread.id, { nextActionAt: tomorrow });
     console.log(`${tag} InMail daily cap reached — rescheduled to ${tomorrow.toISOString()}`);
+    return;
+  }
+
+  const sendable = await verifyThreadStillSendable(thread.id);
+  if (!sendable.ok) {
+    console.log(`${tag} Skipping InMail: ${sendable.reason}`);
+    return;
+  }
+  const pendingKey = await markPendingSend(thread.id);
+  if (!pendingKey) {
+    console.log(`${tag} Status flipped between verify and pending-mark — skipping InMail`);
     return;
   }
 
@@ -409,29 +609,26 @@ async function sendLinkedInInMail(
   const nextFollowup = config.followups?.[0];
   const nextAt = nextFollowup ? daysFromNow(nextFollowup.afterDays) : null;
 
-  await prisma.$transaction([
-    prisma.channelThread.update({
-      where: { id: thread.id },
-      data: {
-        status: "ACTIVE",
-        providerState: { phase: "INMAIL_SENT" },
-        providerChatId: chatId,
-        lastMessageAt: new Date(),
-        nextActionAt: nextAt,
-      },
-    }),
-    prisma.threadMessage.create({
-      data: {
-        threadId: thread.id,
-        type: OutreachType.INMAIL,
-        renderedBody: message,
-        sentAt: new Date(),
-        providerChatId: chatId,
-        providerMessageId: messageId || null,
-      },
-    }),
-  ]);
-  console.log(`${tag} InMail sent — chatId=${chatId}`);
+  const ok = await commitSentMessage(
+      thread.id, account.id,
+    {
+      status: "ACTIVE",
+      providerState: { phase: "INMAIL_SENT" },
+      providerChatId: chatId,
+      lastMessageAt: new Date(),
+      nextActionAt: nextAt,
+    },
+    {
+      threadId: thread.id,
+      type: OutreachType.INMAIL,
+      renderedBody: message,
+      sentAt: new Date(),
+      providerChatId: chatId,
+      providerMessageId: messageId || null,
+    },
+    tag,
+  );
+  if (ok) console.log(`${tag} InMail sent — chatId=${chatId}`);
 }
 
 // ─── Email ────────────────────────────────────────────────────────────────────
@@ -451,10 +648,7 @@ async function processEmail(
     const threadCreatedAt = thread.inviteSentAt ?? new Date(Date.now() - 60_000);
     const gaveUp = (Date.now() - threadCreatedAt.getTime()) > maxDays * 24 * 60 * 60 * 1000;
     if (!gaveUp) {
-      await prisma.channelThread.update({
-        where: { id: thread.id },
-        data: { nextActionAt: minutesFromNow(retryMinutes) },
-      });
+      await guardedThreadUpdate(thread.id, { nextActionAt: minutesFromNow(retryMinutes) });
       console.log(`${tag} No email yet — retrying in ${retryMinutes}min (max ${maxDays}d)`);
     } else {
       await archiveThread(thread.id, `No email found after ${maxDays}-day wait`);
@@ -465,7 +659,7 @@ async function processEmail(
   // Enforce daily cap
   const capReached = await isDailyCapReached(thread.channelId, thread.channel.dailyCap);
   if (capReached) {
-    await prisma.channelThread.update({ where: { id: thread.id }, data: { nextActionAt: startOfNextDay() } });
+    await guardedThreadUpdate(thread.id, { nextActionAt: startOfNextDay() });
     return;
   }
 
@@ -474,6 +668,17 @@ async function processEmail(
       config.emailRules.find(r => r.key === thread.matchedRuleKey);
     if (!rule) {
       await archiveThread(thread.id, "Email rule not found");
+      return;
+    }
+
+    const sendable = await verifyThreadStillSendable(thread.id);
+    if (!sendable.ok) {
+      console.log(`${tag} Skipping email: ${sendable.reason}`);
+      return;
+    }
+    const pendingKey = await markPendingSend(thread.id);
+    if (!pendingKey) {
+      console.log(`${tag} Status flipped between verify and pending-mark — skipping email`);
       return;
     }
 
@@ -496,30 +701,27 @@ async function processEmail(
     const nextFollowup = config.followups?.[0];
     const nextAt = nextFollowup ? daysFromNow(nextFollowup.afterDays) : null;
 
-    await prisma.$transaction([
-      prisma.channelThread.update({
-        where: { id: thread.id },
-        data: {
-          status: "ACTIVE",
-          providerState: { phase: "SENT" },
-          // Store the sent email's provider_id so follow-ups can thread via reply_to
-          providerThreadId: result.replyToId ?? null,
-          lastMessageAt: new Date(),
-          nextActionAt: nextAt,
-        },
-      }),
-      prisma.threadMessage.create({
-        data: {
-          threadId: thread.id,
-          type: OutreachType.EMAIL,
-          renderedSubject: subject,
-          renderedBody: body,
-          sentAt: new Date(),
-          providerMessageId: result.messageId ?? null,
-        },
-      }),
-    ]);
-    console.log(`${tag} Email sent to ${recipientEmail}`);
+    const ok = await commitSentMessage(
+      thread.id, account.id,
+      {
+        status: "ACTIVE",
+        providerState: { phase: "SENT" },
+        // Store the sent email's provider_id so follow-ups can thread via reply_to
+        providerThreadId: result.replyToId ?? null,
+        lastMessageAt: new Date(),
+        nextActionAt: nextAt,
+      },
+      {
+        threadId: thread.id,
+        type: OutreachType.EMAIL,
+        renderedSubject: subject,
+        renderedBody: body,
+        sentAt: new Date(),
+        providerMessageId: result.messageId ?? null,
+      },
+      tag,
+    );
+    if (ok) console.log(`${tag} Email sent to ${recipientEmail}`);
     return;
   }
 
@@ -530,6 +732,18 @@ async function processEmail(
       await archiveThread(thread.id, "Missing followup config");
       return;
     }
+
+    const sendable = await verifyThreadStillSendable(thread.id);
+    if (!sendable.ok) {
+      console.log(`${tag} Skipping email followup: ${sendable.reason}`);
+      return;
+    }
+    const pendingKey = await markPendingSend(thread.id);
+    if (!pendingKey) {
+      console.log(`${tag} Status flipped between verify and pending-mark — skipping email followup`);
+      return;
+    }
+
     const subject = renderTemplate(followup.subjectTemplate ?? "", vars);
     const body = renderTemplate(followup.template, vars);
 
@@ -551,26 +765,24 @@ async function processEmail(
     const nextAt = nextFollowup ? daysFromNow(nextFollowup.afterDays) : null;
     const newSent = thread.followupsSent + 1;
 
-    await prisma.$transaction([
-      prisma.channelThread.update({
-        where: { id: thread.id },
-        data: { lastMessageAt: new Date(), followupsSent: newSent, nextActionAt: nextAt },
-      }),
-      prisma.threadMessage.create({
-        data: {
-          threadId: thread.id,
-          type: OutreachType.FOLLOWUP,
-          renderedSubject: subject,
-          renderedBody: body,
-          sentAt: new Date(),
-          providerMessageId: result.messageId ?? null,
-        },
-      }),
-    ]);
-    console.log(`${tag} Email follow-up ${newSent}/${thread.followupsTotal} sent`);
-
-    if (!nextAt) {
-      await archiveThread(thread.id, "All email follow-ups exhausted");
+    const ok = await commitSentMessage(
+      thread.id, account.id,
+      { lastMessageAt: new Date(), followupsSent: newSent, nextActionAt: nextAt },
+      {
+        threadId: thread.id,
+        type: OutreachType.FOLLOWUP,
+        renderedSubject: subject,
+        renderedBody: body,
+        sentAt: new Date(),
+        providerMessageId: result.messageId ?? null,
+      },
+      tag,
+    );
+    if (ok) {
+      console.log(`${tag} Email follow-up ${newSent}/${thread.followupsTotal} sent`);
+      if (!nextAt) {
+        await archiveThread(thread.id, "All email follow-ups exhausted");
+      }
     }
   }
 }
@@ -593,10 +805,7 @@ async function processWhatsApp(
     const threadCreatedAt = thread.inviteSentAt ?? new Date(Date.now() - 60_000);
     const gaveUp = (Date.now() - threadCreatedAt.getTime()) > maxDays * 24 * 60 * 60 * 1000;
     if (!gaveUp) {
-      await prisma.channelThread.update({
-        where: { id: thread.id },
-        data: { nextActionAt: minutesFromNow(retryMinutes) },
-      });
+      await guardedThreadUpdate(thread.id, { nextActionAt: minutesFromNow(retryMinutes) });
       console.log(`${tag} No phone yet — retrying in ${retryMinutes}min (max ${maxDays}d)`);
     } else {
       await archiveThread(thread.id, `No phone found after ${maxDays}-day wait`);
@@ -608,7 +817,7 @@ async function processWhatsApp(
   if (config.quietHours) {
     const endsAt = quietHoursEnd(config.quietHours as QuietHours);
     if (endsAt) {
-      await prisma.channelThread.update({ where: { id: thread.id }, data: { nextActionAt: endsAt } });
+      await guardedThreadUpdate(thread.id, { nextActionAt: endsAt });
       console.log(`${tag} In quiet hours — rescheduled to ${endsAt.toISOString()}`);
       return;
     }
@@ -617,7 +826,7 @@ async function processWhatsApp(
   // Enforce daily cap
   const capReached = await isDailyCapReached(thread.channelId, thread.channel.dailyCap);
   if (capReached) {
-    await prisma.channelThread.update({ where: { id: thread.id }, data: { nextActionAt: startOfNextDay() } });
+    await guardedThreadUpdate(thread.id, { nextActionAt: startOfNextDay() });
     return;
   }
 
@@ -626,6 +835,17 @@ async function processWhatsApp(
       config.waRules.find(r => r.key === thread.matchedRuleKey);
     if (!rule) {
       await archiveThread(thread.id, "WhatsApp rule not found");
+      return;
+    }
+
+    const sendable = await verifyThreadStillSendable(thread.id);
+    if (!sendable.ok) {
+      console.log(`${tag} Skipping WhatsApp: ${sendable.reason}`);
+      return;
+    }
+    const pendingKey = await markPendingSend(thread.id);
+    if (!pendingKey) {
+      console.log(`${tag} Status flipped between verify and pending-mark — skipping WhatsApp`);
       return;
     }
 
@@ -639,29 +859,26 @@ async function processWhatsApp(
     const nextFollowup = config.followups?.[0];
     const nextAt = nextFollowup ? daysFromNow(nextFollowup.afterDays) : null;
 
-    await prisma.$transaction([
-      prisma.channelThread.update({
-        where: { id: thread.id },
-        data: {
-          status: "ACTIVE",
-          providerState: { phase: "DELIVERED" },
-          providerChatId: result.chatId ?? null,
-          lastMessageAt: new Date(),
-          nextActionAt: nextAt,
-        },
-      }),
-      prisma.threadMessage.create({
-        data: {
-          threadId: thread.id,
-          type: OutreachType.WHATSAPP,
-          renderedBody: message,
-          sentAt: new Date(),
-          providerChatId: result.chatId ?? null,
-          providerMessageId: result.messageId ?? null,
-        },
-      }),
-    ]);
-    console.log(`${tag} WhatsApp sent to ${phone}`);
+    const ok = await commitSentMessage(
+      thread.id, account.id,
+      {
+        status: "ACTIVE",
+        providerState: { phase: "DELIVERED" },
+        providerChatId: result.chatId ?? null,
+        lastMessageAt: new Date(),
+        nextActionAt: nextAt,
+      },
+      {
+        threadId: thread.id,
+        type: OutreachType.WHATSAPP,
+        renderedBody: message,
+        sentAt: new Date(),
+        providerChatId: result.chatId ?? null,
+        providerMessageId: result.messageId ?? null,
+      },
+      tag,
+    );
+    if (ok) console.log(`${tag} WhatsApp sent to ${phone}`);
     return;
   }
 
@@ -672,6 +889,18 @@ async function processWhatsApp(
       await archiveThread(thread.id, "Missing followup config or chat ID");
       return;
     }
+
+    const sendable = await verifyThreadStillSendable(thread.id);
+    if (!sendable.ok) {
+      console.log(`${tag} Skipping WhatsApp followup: ${sendable.reason}`);
+      return;
+    }
+    const pendingKey = await markPendingSend(thread.id);
+    if (!pendingKey) {
+      console.log(`${tag} Status flipped between verify and pending-mark — skipping WhatsApp followup`);
+      return;
+    }
+
     const message = renderTemplate(followup.template, vars);
     const result = await sendWhatsApp({ account, message, phone, chatId: thread.providerChatId, tag });
     if (!result.ok) {
@@ -683,26 +912,24 @@ async function processWhatsApp(
     const nextAt = nextFollowup ? daysFromNow(nextFollowup.afterDays) : null;
     const newSent = thread.followupsSent + 1;
 
-    await prisma.$transaction([
-      prisma.channelThread.update({
-        where: { id: thread.id },
-        data: { lastMessageAt: new Date(), followupsSent: newSent, nextActionAt: nextAt },
-      }),
-      prisma.threadMessage.create({
-        data: {
-          threadId: thread.id,
-          type: OutreachType.WHATSAPP,
-          renderedBody: message,
-          sentAt: new Date(),
-          providerChatId: thread.providerChatId,
-          providerMessageId: result.messageId ?? null,
-        },
-      }),
-    ]);
-    console.log(`${tag} WhatsApp follow-up ${newSent}/${thread.followupsTotal} sent`);
-
-    if (!nextAt) {
-      await archiveThread(thread.id, "All WhatsApp follow-ups exhausted");
+    const ok = await commitSentMessage(
+      thread.id, account.id,
+      { lastMessageAt: new Date(), followupsSent: newSent, nextActionAt: nextAt },
+      {
+        threadId: thread.id,
+        type: OutreachType.WHATSAPP,
+        renderedBody: message,
+        sentAt: new Date(),
+        providerChatId: thread.providerChatId,
+        providerMessageId: result.messageId ?? null,
+      },
+      tag,
+    );
+    if (ok) {
+      console.log(`${tag} WhatsApp follow-up ${newSent}/${thread.followupsTotal} sent`);
+      if (!nextAt) {
+        await archiveThread(thread.id, "All WhatsApp follow-ups exhausted");
+      }
     }
   }
 }
@@ -738,9 +965,12 @@ async function cancelPendingInvite(
   }
 }
 
+// Idempotent: only writes if the thread is not already ARCHIVED. A second call
+// (e.g., concurrent timeout sweep) is a no-op and preserves the original
+// archivedAt / archivedReason.
 export async function archiveThread(threadId: string, reason: string): Promise<void> {
-  await prisma.channelThread.update({
-    where: { id: threadId },
+  await prisma.channelThread.updateMany({
+    where: { id: threadId, status: { not: "ARCHIVED" } },
     data: {
       status: "ARCHIVED",
       archivedAt: new Date(),
@@ -750,23 +980,55 @@ export async function archiveThread(threadId: string, reason: string): Promise<v
   });
 }
 
-// Mark a thread REPLIED and pause all sibling threads on the same task
+// Mark a thread REPLIED and pause sibling threads:
+//   1. Same-Task siblings on other channels (always)
+//   2. Cross-Task siblings on the SAME candidate (Phase 6 #28 / EC-10.1) —
+//      threads belonging to other Tasks that share this Task's
+//      candidateProfileId. This is the cross-requisition pause: a candidate
+//      who replied on R1's email shouldn't keep getting messaged on R2's
+//      WhatsApp.
+//
+// Idempotent: if the thread is already REPLIED (or terminal in any other way),
+// no rows are updated and sibling-pause is skipped — a second concurrent
+// webhook or poll-fallback for the same reply does not re-write state or
+// generate extra StageEvents.
 export async function markThreadReplied(threadId: string, taskId: string): Promise<void> {
-  await prisma.$transaction([
-    prisma.channelThread.update({
-      where: { id: threadId },
+  await prisma.$transaction(async (tx) => {
+    const flip = await tx.channelThread.updateMany({
+      where: { id: threadId, status: { in: ["PENDING", "ACTIVE"] } },
       data: { status: "REPLIED", nextActionAt: null },
-    }),
-    // Pause every other active thread on the same task
-    prisma.channelThread.updateMany({
+    });
+    if (flip.count === 0) return; // already REPLIED / PAUSED / ARCHIVED — nothing to do
+
+    // 1. Pause every other active thread on the same task
+    await tx.channelThread.updateMany({
       where: {
         taskId,
         id: { not: threadId },
         status: { in: ["PENDING", "ACTIVE"] },
       },
       data: { status: "PAUSED", nextActionAt: null },
-    }),
-  ]);
+    });
+
+    // 2. Cross-task pause: pause active threads on every other Task that
+    //    shares this Task's candidateProfileId (i.e., the same physical
+    //    candidate sourced into multiple requisitions). Only fires when
+    //    candidateProfileId is set — legacy Tasks without it stay isolated.
+    const taskRow = await tx.task.findUnique({
+      where: { id: taskId },
+      select: { candidateProfileId: true },
+    });
+    if (taskRow?.candidateProfileId) {
+      await tx.channelThread.updateMany({
+        where: {
+          taskId: { not: taskId },
+          status: { in: ["PENDING", "ACTIVE"] },
+          task: { candidateProfileId: taskRow.candidateProfileId },
+        },
+        data: { status: "PAUSED", nextActionAt: null },
+      });
+    }
+  });
 }
 
 // Resume paused sibling threads (e.g. recruiter dismissed an off-topic reply)
@@ -844,6 +1106,8 @@ type AccountRow = {
   accountId: string;
   dsn: string | null;
   apiKey: string | null;
+  status: import("@prisma/client").AccountStatus;
+  cooldownUntil: Date | null;
 };
 
 type ContactRow = {

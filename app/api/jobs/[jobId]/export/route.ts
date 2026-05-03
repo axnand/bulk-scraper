@@ -46,7 +46,11 @@ export async function POST(
     const jdTitle = config.jdTitle || `Job ${jobId.slice(0, 8)}`;
 
     // ── 2. Fetch DONE tasks with analysis ─────────────────────────────
-    const where: any = { jobId, status: "DONE", analysisResult: { not: null } };
+    const where: any = {
+      jobId,
+      analysisResult: { not: null },
+      OR: [{ status: "DONE" }, { status: "CANCELLED" }],
+    };
     if (taskIds && taskIds.length > 0) where.id = { in: taskIds };
 
     const tasks = await prisma.task.findMany({
@@ -65,7 +69,7 @@ export async function POST(
     const parsed = tasks
       .map((t) => ({
         url: t.url,
-        analysisResult: JSON.parse(t.analysisResult!),
+        analysisResult: JSON.parse(t.analysisResult as string),
       }))
       // Skip threshold when user explicitly selected profiles — only apply for bulk "export all"
       .filter((t) => taskIds && taskIds.length > 0 ? true : (t.analysisResult.scorePercent ?? 0) >= threshold);

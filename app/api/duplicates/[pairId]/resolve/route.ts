@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { canonicalizeLinkedinUrl } from "@/lib/canonicalize-url";
 
 export const dynamic = "force-dynamic";
 
@@ -42,6 +43,13 @@ export async function POST(
 
     await prisma.$transaction(async (tx) => {
       if (action === "KEEP_BOTH") {
+        // Phase 6 #29 / EC-10.3 — when a recruiter confirms two Tasks are
+        // the same candidate kept across requisitions, ensure they share a
+        // single CandidateProfile so cross-task reply propagation works.
+        // For LINKEDIN_URL pairs we can canonicalize and find/create; for
+        // RESUME_HASH pairs we link to whichever profile already exists.
+        await linkTasksToSharedCandidateProfile(tx, pair);
+
         await tx.duplicatePair.update({
           where: { id: pairId },
           data: { status: "RESOLVED_KEPT_BOTH", resolvedAt: new Date(), resolvedBy },
@@ -51,11 +59,27 @@ export async function POST(
 
       const taskToDelete = action === "DELETE_A" ? pair.taskA : pair.taskB;
       const job = taskToDelete.job;
+      const now = new Date();
 
-      // Deleting the task cascade-deletes all DuplicatePair rows referencing it (including pairId).
-      await tx.task.delete({ where: { id: taskToDelete.id } });
+      // Soft-delete the task — preserves all audit history and relations
+      await tx.task.update({
+        where: { id: taskToDelete.id },
+        data: { deletedAt: now, deletedReason: "duplicate_resolved" },
+      });
 
-      // Recalculate job counters from remaining tasks
+      // Resolve all pending pairs where the deleted task is task A or task B.
+      // Previously these were cascade-deleted when the task was hard-deleted.
+      await tx.duplicatePair.updateMany({
+        where: { status: "PENDING", taskAId: taskToDelete.id },
+        data: { status: "RESOLVED_DELETED_A", resolvedAt: now, resolvedBy },
+      });
+      await tx.duplicatePair.updateMany({
+        where: { status: "PENDING", taskBId: taskToDelete.id },
+        data: { status: "RESOLVED_DELETED_B", resolvedAt: now, resolvedBy },
+      });
+
+      // Recalculate job counters from remaining non-deleted tasks.
+      // The soft-delete middleware on tx automatically excludes deletedAt IS NOT NULL.
       const remaining = await tx.task.findMany({
         where: { jobId: job.id },
         select: { status: true },
@@ -72,7 +96,7 @@ export async function POST(
           successCount,
           failedCount,
           processedCount: successCount + failedCount,
-          status: total === 0 || (!hasActive) ? "COMPLETED" : job.status,
+          status: !hasActive ? "COMPLETED" : job.status,
         },
       });
     });
@@ -82,4 +106,80 @@ export async function POST(
     console.error("[Duplicates] resolve failed:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+type ResolvePair = {
+  kind: string;
+  taskAId: string;
+  taskBId: string;
+  taskA: { id: string; url: string; candidateProfileId: string | null };
+  taskB: { id: string; url: string; candidateProfileId: string | null };
+};
+
+async function linkTasksToSharedCandidateProfile(
+  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  pair: ResolvePair,
+): Promise<void> {
+  const a = pair.taskA;
+  const b = pair.taskB;
+
+  // Already linked to the same profile — nothing to do.
+  if (a.candidateProfileId && b.candidateProfileId && a.candidateProfileId === b.candidateProfileId) {
+    return;
+  }
+
+  // Reuse whichever side already has a profile, then attach the other side.
+  let sharedId: string | null = a.candidateProfileId ?? b.candidateProfileId ?? null;
+
+  if (!sharedId && pair.kind === "LINKEDIN_URL") {
+    // Look up by canonical URL of either task; fall back to creating a fresh
+    // canonical row if neither resolves.
+    const canonical =
+      canonicalizeLinkedinUrl(a.url) ?? canonicalizeLinkedinUrl(b.url);
+    if (canonical) {
+      const existing = await tx.candidateProfile.findFirst({
+        where: { canonicalLinkedinUrl: canonical },
+        orderBy: { scrapedAt: "desc" },
+        select: { id: true },
+      });
+      if (existing) {
+        sharedId = existing.id;
+      } else {
+        const created = await tx.candidateProfile.create({
+          data: {
+            linkedinUrl: a.url,
+            canonicalLinkedinUrl: canonical,
+          },
+          select: { id: true },
+        });
+        sharedId = created.id;
+      }
+    }
+  }
+
+  // For RESUME_HASH pairs without a pre-existing profile we cannot synthesize
+  // identity here (no canonical URL). Leave as-is — recruiter resolved the
+  // duplicate but cross-requisition propagation simply won't fire for these.
+  if (!sharedId) return;
+
+  const updates: Promise<unknown>[] = [];
+  if (a.candidateProfileId !== sharedId) {
+    updates.push(
+      tx.task.update({
+        where: { id: a.id },
+        data: { candidateProfileId: sharedId },
+      }),
+    );
+  }
+  if (b.candidateProfileId !== sharedId) {
+    updates.push(
+      tx.task.update({
+        where: { id: b.id },
+        data: { candidateProfileId: sharedId },
+      }),
+    );
+  }
+  await Promise.all(updates);
 }

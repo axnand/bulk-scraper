@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { DuplicateKind } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { parseAndValidateUrls } from "@/lib/validators";
 import { enqueueTaskBatch } from "@/lib/queue";
@@ -6,14 +7,14 @@ import { resolveRequisitionId } from "@/lib/resolve-requisition";
 
 export const dynamic = "force-dynamic";
 
-type PairInput = { requisitionId: string; taskAId: string; taskBId: string; kind: string; matchValue: string };
+type PairInput = { requisitionId: string; taskAId: string; taskBId: string; kind: DuplicateKind; matchValue: string };
 
 function withinBatchPairs(urlToTaskIds: Map<string, string[]>, requisitionId: string): PairInput[] {
   const pairs: PairInput[] = [];
   for (const [url, ids] of urlToTaskIds.entries()) {
     for (let i = 0; i < ids.length - 1; i++) {
       for (let j = i + 1; j < ids.length; j++) {
-        pairs.push({ requisitionId, taskAId: ids[i], taskBId: ids[j], kind: "LINKEDIN_URL", matchValue: url });
+        pairs.push({ requisitionId, taskAId: ids[i], taskBId: ids[j], kind: DuplicateKind.LINKEDIN_URL, matchValue: url });
       }
     }
   }
@@ -28,7 +29,7 @@ async function crossRunPairs(
   valid: string[],
 ): Promise<PairInput[]> {
   const keptBoth = await prismaClient.duplicatePair.findMany({
-    where: { requisitionId, status: "RESOLVED_KEPT_BOTH", kind: "LINKEDIN_URL" },
+    where: { requisitionId, status: "RESOLVED_KEPT_BOTH", kind: DuplicateKind.LINKEDIN_URL },
     include: { taskA: { select: { url: true } }, taskB: { select: { url: true } } },
   });
   const suppressed = new Set(keptBoth.flatMap((p) => [p.taskA.url, p.taskB.url]));
@@ -36,13 +37,17 @@ async function crossRunPairs(
   if (urlsToCheck.length === 0) return [];
 
   const prevDone = await prismaClient.task.findMany({
-    where: { jobId: { in: previousJobIds }, url: { in: urlsToCheck }, status: "DONE" },
+    where: {
+      jobId: { in: previousJobIds },
+      url: { in: urlsToCheck },
+      status: "DONE",
+    },
     select: { id: true, url: true },
   });
   const pairs: PairInput[] = [];
   for (const prev of prevDone) {
     for (const newId of urlToTaskIds.get(prev.url) ?? []) {
-      pairs.push({ requisitionId, taskAId: newId, taskBId: prev.id, kind: "LINKEDIN_URL", matchValue: prev.url });
+      pairs.push({ requisitionId, taskAId: newId, taskBId: prev.id, kind: DuplicateKind.LINKEDIN_URL, matchValue: prev.url });
     }
   }
   return pairs;

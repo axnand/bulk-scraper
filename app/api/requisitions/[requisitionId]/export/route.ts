@@ -43,8 +43,8 @@ export async function POST(
 
     const where: any = {
       job: { requisitionId },
-      status: "DONE",
       analysisResult: { not: null },
+      OR: [{ status: "DONE" }, { status: "CANCELLED" }],
     };
     if (taskIds && taskIds.length > 0) where.id = { in: taskIds };
 
@@ -64,7 +64,7 @@ export async function POST(
     const parsed = tasks
       .map((t) => ({
         url: t.url,
-        analysisResult: JSON.parse(t.analysisResult!),
+        analysisResult: JSON.parse(t.analysisResult as string),
       }))
       .filter((t) =>
         taskIds && taskIds.length > 0

@@ -66,7 +66,7 @@ export async function POST(
       prisma.job.update({
         where: { id: task.job.id },
         data: {
-          successCount: task.job.successCount + 1,
+          successCount: { increment: 1 },
           failedCount: Math.max(0, task.job.failedCount - 1),
         },
       }),

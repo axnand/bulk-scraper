@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveRequisitionId } from "@/lib/resolve-requisition";
-import { ChannelType } from "@prisma/client";
+import { AccountType, ChannelType } from "@prisma/client";
 import {
   validateLinkedInConfig,
   validateEmailConfig,
@@ -80,6 +80,35 @@ export async function POST(
 
     if (!validation.ok) {
       return NextResponse.json({ error: validation.error }, { status: 400 });
+    }
+
+    // EC-9.10 / Phase 3 #12 — refuse a sending account whose type doesn't
+    // match the channel type (e.g., assigning an EMAIL account to a LINKEDIN
+    // channel would loop forever in the worker because the runtime API
+    // calls would 4xx with the wrong credentials).
+    if (sendingAccountId) {
+      const acct = await prisma.account.findUnique({
+        where: { id: sendingAccountId },
+        select: { id: true, type: true, status: true, deletedAt: true },
+      });
+      if (!acct || acct.deletedAt) {
+        return NextResponse.json(
+          { error: `sendingAccountId ${sendingAccountId} not found` },
+          { status: 400 },
+        );
+      }
+      if ((acct.type as AccountType) !== (type as AccountType)) {
+        return NextResponse.json(
+          { error: `Account type ${acct.type} does not match channel type ${type}` },
+          { status: 400 },
+        );
+      }
+      if (acct.status === "DISABLED") {
+        return NextResponse.json(
+          { error: `Sending account is DISABLED — pick a different account` },
+          { status: 400 },
+        );
+      }
     }
 
     const channel = await prisma.channel.create({

@@ -43,6 +43,8 @@ export async function acquireAccounts(count: number = 1, type: AccountType = Acc
     where: {
       type,
       status: "ACTIVE",
+      // EC-9.6 — exclude soft-deleted accounts from the pool.
+      deletedAt: null,
       dailyCount: { lt: CONFIG.DAILY_SAFE_LIMIT },
       minuteCount: { lt: CONFIG.MAX_REQUESTS_PER_MINUTE },
       OR: [
@@ -185,6 +187,7 @@ export async function recoverStaleState(): Promise<{ recoveredTasks: number; che
  */
 export async function getAccountStats() {
   return prisma.account.findMany({
+    where: { deletedAt: null }, // exclude soft-deleted from monitoring views
     select: {
       id: true,
       accountId: true,

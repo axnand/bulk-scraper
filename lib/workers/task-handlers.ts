@@ -17,6 +17,8 @@ import {
 import { analyzeProfile, type AnalysisConfig } from "@/lib/analyzer";
 import { exportToSheet, buildSheetPayload } from "@/lib/sheets";
 import { fanOutToChannels } from "@/lib/channels/fan-out";
+import { stageEventExplicit } from "@/lib/channels/stage-event-context";
+import { persistLinkedInResult } from "@/lib/workers/persist-linkedin-result";
 
 // ─── Shared Helpers ────────────────────────────────────────────────
 
@@ -100,6 +102,7 @@ async function maybeAutoShortlist(
 
     const now = new Date();
     await prisma.$transaction([
+      stageEventExplicit(),
       prisma.task.update({
         where: { id: taskId },
         data: { stage: "SHORTLISTED", stageUpdatedAt: now },
@@ -204,84 +207,18 @@ async function processLinkedInTask(
       throw fetchErr;
     }
 
-    // ── Persist candidate ──
-    const candidateProfile = await prisma.candidateProfile.create({
-      data: {
-        linkedinUrl: task.url,
-        name: `${profileData.first_name || ""} ${profileData.last_name || ""}`.trim(),
-        headline: profileData.headline || "",
-        location: profileData.location || "",
-        rawProfile: JSON.stringify(profileData),
-      },
-    });
-
-    // ── AI analysis ──
-    let analysisResultJson: string | null = null;
     const jobConfig = await getJobConfig(task.jobId);
-
-    if (jobConfig?.jobDescription) {
-      const analysisStart = Date.now();
-      console.log(`${tag} [2/3] Running AI analysis...`);
-      try {
-        const analysisResult = await analyzeProfile(profileData, jobConfig);
-        analysisResultJson = JSON.stringify(analysisResult);
-        console.log(`${tag} [2/3] Analysis OK — ${Date.now() - analysisStart}ms. score=${analysisResult.scorePercent}% → ${analysisResult.recommendation}`);
-
-        await prisma.analysisRecord.create({
-          data: {
-            candidateId: candidateProfile.id,
-            linkedinUrl: task.url,
-            candidateName: analysisResult.candidateInfo?.name || candidateProfile.name,
-            jobTitle: (jobConfig as any).jdTitle || "Untitled",
-            jobDescription: jobConfig.jobDescription,
-            scoringConfig: JSON.stringify({
-              scoringRules: jobConfig.scoringRules,
-              customScoringRules: jobConfig.customScoringRules,
-              aiModel: (jobConfig as any).aiModel,
-              customPrompt: jobConfig.customPrompt,
-            }),
-            analysisData: analysisResultJson,
-            totalScore: analysisResult.totalScore,
-            maxScore: analysisResult.maxScore,
-            scorePercent: analysisResult.scorePercent,
-            recommendation: analysisResult.recommendation,
-          },
-        });
-
-        // ── Sheet export ──
-        const sheetUrl = (jobConfig as any).sheetWebAppUrl;
-        if (sheetUrl) {
-          const minThreshold = (jobConfig as any).minScoreThreshold ?? 0;
-          if (analysisResult.scorePercent >= minThreshold) {
-            const sheetStart = Date.now();
-            console.log(`${tag} [3/3] Exporting to sheet...`);
-            const payload = buildSheetPayload(
-              task.url,
-              analysisResult,
-              (jobConfig as any).jdTitle || "Bulk Analysis",
-              jobConfig.scoringRules as Record<string, boolean | undefined>,
-              jobConfig
-            );
-            await exportToSheet(sheetUrl, payload).catch((sheetErr: any) => {
-              console.warn(`${tag} [3/3] Sheet export FAILED: ${sheetErr.message}`);
-            });
-            console.log(`${tag} [3/3] Sheet export OK — ${Date.now() - sheetStart}ms`);
-          } else {
-            console.log(`${tag} [3/3] Sheet export SKIPPED — score ${analysisResult.scorePercent}% < threshold ${minThreshold}%`);
-          }
-        }
-      } catch (analysisErr: any) {
-        console.warn(`${tag} [2/3] Analysis FAILED: ${analysisErr.message}`);
-      }
-    }
-
-    await prisma.task.update({
-      where: { id: task.id },
-      data: { status: "DONE", result: JSON.stringify(profileData), analysisResult: analysisResultJson, accountId: account.id },
+    const { analysisResult } = await persistLinkedInResult({
+      taskId: task.id,
+      taskUrl: task.url,
+      accountId: account.id,
+      profileData,
+      jobConfig,
+      tag,
     });
 
-    if (analysisResultJson) {
-      await maybeAutoShortlist(task.id, task.jobId, profileData, JSON.parse(analysisResultJson));
+    if (analysisResult) {
+      await maybeAutoShortlist(task.id, task.jobId, profileData, analysisResult);
     }
 
     const updatedJob = await prisma.job.update({
