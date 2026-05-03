@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { CONFIG } from "@/lib/config";
+import { AccountType } from "@prisma/client";
 
 type Account = Awaited<ReturnType<typeof prisma.account.update>>;
 
@@ -34,12 +35,13 @@ async function resetExpiredWindows() {
  * Acquire up to `count` accounts from the pool.
  * Uses optimistic locking — only claims accounts still marked ACTIVE.
  */
-export async function acquireAccounts(count: number = 1): Promise<Account[]> {
+export async function acquireAccounts(count: number = 1, type: AccountType = AccountType.LINKEDIN): Promise<Account[]> {
   await resetExpiredWindows();
 
   const now = new Date();
   const candidates = await prisma.account.findMany({
     where: {
+      type,
       status: "ACTIVE",
       dailyCount: { lt: CONFIG.DAILY_SAFE_LIMIT },
       minuteCount: { lt: CONFIG.MAX_REQUESTS_PER_MINUTE },

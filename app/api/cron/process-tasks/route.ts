@@ -56,21 +56,10 @@ export async function GET(req: NextRequest) {
     // 2. Refresh expired cooldowns
     await refreshCooldowns();
 
-    // 3. Clean up completed/failed jobs older than 48 hours
-    const cutoff = new Date(Date.now() - CONFIG.TASK_CLEANUP_MS);
-    const staleJobs = await prisma.job.findMany({
-      where: { status: { in: ["COMPLETED", "FAILED"] }, createdAt: { lt: cutoff } },
-      select: { id: true },
-    });
-
-    let cleanedTasks = 0;
-    if (staleJobs.length > 0) {
-      const jobIds = staleJobs.map((j) => j.id);
-      const deleted = await prisma.task.deleteMany({ where: { jobId: { in: jobIds } } });
-      cleanedTasks = deleted.count;
-      await prisma.job.deleteMany({ where: { id: { in: jobIds } } });
-      console.log(`[Cron] Cleaned ${staleJobs.length} old jobs, ${cleanedTasks} tasks`);
-    }
+    // 3. Auto-delete of stale jobs/tasks DISABLED — analysis data is valuable, storage is cheap.
+    //    Re-enable here if a soft-delete/archival strategy is added.
+    const staleJobs: { id: string }[] = [];
+    const cleanedTasks = 0;
 
     // 4. Clear raw profiles older than DATA_RETENTION_DAYS
     let clearedProfiles = 0;

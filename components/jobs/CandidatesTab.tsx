@@ -158,7 +158,7 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
   }
 
   const completedTasks = useMemo(
-    () => data.tasks.filter(t => t.result && t.analysisResult),
+    () => data.tasks.filter(t => t.result || t.analysisResult),
     [data.tasks]
   );
   
@@ -534,18 +534,18 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
 function ProfileCard({ task, jobConfig, expanded, onToggle, isDuplicate, onOpenDuplicates, selectMode, isSelected }: { task: TaskResult; jobConfig?: any; expanded: boolean; onToggle: () => void; isDuplicate?: boolean; onOpenDuplicates?: () => void; selectMode?: boolean; isSelected?: boolean; }) {
   const profile = task.result;
   const analysis = task.analysisResult;
-  if (!profile) return null;
+  if (!profile && !analysis) return null;
 
-  const extracted = profile.extractedInfo || {};
-  const scrapedName = [profile.first_name, profile.last_name].filter(Boolean).join(" ");
+  const extracted = profile?.extractedInfo || {};
+  const scrapedName = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ");
   const name =
     scrapedName ||
     extracted.name ||
     analysis?.candidateInfo?.name ||
     "Unknown";
-  const headline = profile.headline || profile.occupation || extracted.currentDesignation || "";
-  const location = analysis?.candidateInfo?.currentLocation || profile.location || extracted.currentLocation || "";
-  const publicId = profile.public_identifier || "";
+  const headline = profile?.headline || profile?.occupation || extracted.currentDesignation || analysis?.candidateInfo?.currentDesignation || "";
+  const location = analysis?.candidateInfo?.currentLocation || profile?.location || extracted.currentLocation || "";
+  const publicId = profile?.public_identifier || "";
   const info = analysis?.candidateInfo;
 
   return (
@@ -555,7 +555,7 @@ function ProfileCard({ task, jobConfig, expanded, onToggle, isDuplicate, onOpenD
         className="w-full text-left p-4 flex items-center gap-4 hover:bg-accent/30 transition-colors"
       >
         <div className="h-12 w-12 rounded-full bg-gradient-to-br from-primary to-cyan-400 flex items-center justify-center text-primary-foreground font-bold text-lg shrink-0 overflow-hidden">
-          {profile.profile_picture_url ? (
+          {profile?.profile_picture_url ? (
             <img
               src={`/api/proxy-image?url=${encodeURIComponent(profile.profile_picture_url)}`}
               alt={name}
@@ -898,47 +898,51 @@ function ProfileCard({ task, jobConfig, expanded, onToggle, isDuplicate, onOpenD
             </div>
           )}
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {publicId && <Field label="Profile ID" value={publicId} />}
-            {profile.provider_id && <Field label="Provider ID" value={profile.provider_id} />}
-            {profile.industry && <Field label="Industry" value={profile.industry} />}
-            {profile.connections_count && <Field label="Connections" value={String(profile.connections_count)} />}
-          </div>
+          {profile && (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {publicId && <Field label="Profile ID" value={publicId} />}
+                {profile.provider_id && <Field label="Provider ID" value={profile.provider_id} />}
+                {profile.industry && <Field label="Industry" value={profile.industry} />}
+                {profile.connections_count && <Field label="Connections" value={String(profile.connections_count)} />}
+              </div>
 
-          {profile.summary && (
-            <div>
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">About</p>
-              <p className="text-sm text-foreground whitespace-pre-wrap line-clamp-4">{profile.summary}</p>
-            </div>
-          )}
-
-          {profile.work_experience?.length > 0 && (
-            <ExpandableList
-              title="Experience"
-              items={profile.work_experience}
-              initialCount={3}
-              renderItem={(exp: any, i: number) => (
-                <div key={i} className="bg-background/50 rounded-lg p-3">
-                  <p className="text-sm font-medium text-foreground">{exp.position || "Untitled Role"}</p>
-                  <p className="text-xs text-muted-foreground">{exp.company || ""}</p>
-                  {exp.start && <p className="text-xs text-muted-foreground/70 mt-0.5">{exp.start} – {exp.end || "Present"}</p>}
+              {profile.summary && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">About</p>
+                  <p className="text-sm text-foreground whitespace-pre-wrap line-clamp-4">{profile.summary}</p>
                 </div>
               )}
-            />
-          )}
 
-          {profile.education?.length > 0 && (
-            <ExpandableList
-              title="Education"
-              items={profile.education}
-              initialCount={2}
-              renderItem={(edu: any, i: number) => (
-                <div key={i} className="bg-background/50 rounded-lg p-3">
-                  <p className="text-sm font-medium text-foreground">{edu.school || "Unknown School"}</p>
-                  <p className="text-xs text-muted-foreground">{edu.degree || ""}</p>
-                </div>
+              {profile.work_experience?.length > 0 && (
+                <ExpandableList
+                  title="Experience"
+                  items={profile.work_experience}
+                  initialCount={3}
+                  renderItem={(exp: any, i: number) => (
+                    <div key={i} className="bg-background/50 rounded-lg p-3">
+                      <p className="text-sm font-medium text-foreground">{exp.position || "Untitled Role"}</p>
+                      <p className="text-xs text-muted-foreground">{exp.company || ""}</p>
+                      {exp.start && <p className="text-xs text-muted-foreground/70 mt-0.5">{exp.start} – {exp.end || "Present"}</p>}
+                    </div>
+                  )}
+                />
               )}
-            />
+
+              {profile.education?.length > 0 && (
+                <ExpandableList
+                  title="Education"
+                  items={profile.education}
+                  initialCount={2}
+                  renderItem={(edu: any, i: number) => (
+                    <div key={i} className="bg-background/50 rounded-lg p-3">
+                      <p className="text-sm font-medium text-foreground">{edu.school || "Unknown School"}</p>
+                      <p className="text-xs text-muted-foreground">{edu.degree || ""}</p>
+                    </div>
+                  )}
+                />
+              )}
+            </>
           )}
 
           <details className="mt-2">
