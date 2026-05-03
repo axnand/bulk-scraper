@@ -182,6 +182,10 @@ export async function fetchProfile(
       const body = await response.text().catch(() => "");
       throw new ServerError(`Unipile server error: ${response.status} - ${body}`, response.status);
     }
+    if (response.status >= 400) {
+      const body = await response.text().catch(() => "");
+      throw new ClientError(`Unipile client error: ${response.status} - ${body}`, response.status);
+    }
 
     return await response.json();
   } catch (error) {
@@ -301,10 +305,13 @@ type SendResult = { ok: true; messageId?: string; replyToId?: string } | { ok: f
 
 /**
  * Send an email via Unipile's email API.
- * Endpoint: POST /api/v1/emails (JSON)
+ * Endpoint: POST /api/v1/emails (multipart/form-data)
+ *
+ * Unipile requires form-data with bracket-notation for the `to` array:
+ *   to[0][identifier] = "email@example.com"
+ *   to[0][display_name] = "Name"
  *
  * For reply threading, pass replyToId = the provider_id of the email being replied to.
- * This sets the correct In-Reply-To / References headers so Gmail/Outlook threads it.
  */
 export async function sendEmail(params: {
   account: AccountLike;
@@ -317,16 +324,14 @@ export async function sendEmail(params: {
 }): Promise<SendResult> {
   const { dsn, apiKey } = resolveDsnAndKey(params.account.dsn ?? undefined, params.account.apiKey ?? undefined);
 
-  const emailBody: Record<string, unknown> = {
-    account_id: params.account.accountId,
-    to: [{ display_name: params.toName ?? params.to, identifier: params.to }],
-    subject: params.subject,
-    body: params.body,
-  };
-
-  // reply_to takes the provider_id of the parent email to create a proper thread
+  const form = new FormData();
+  form.append("account_id", params.account.accountId);
+  form.append("to[0][identifier]", params.to);
+  form.append("to[0][display_name]", params.toName ?? params.to);
+  form.append("subject", params.subject);
+  form.append("body", params.body);
   if (params.replyToId) {
-    emailBody.reply_to = params.replyToId;
+    form.append("reply_to", params.replyToId);
   }
 
   try {
@@ -335,9 +340,9 @@ export async function sendEmail(params: {
       headers: {
         "X-API-KEY": apiKey,
         "Accept": "application/json",
-        "Content-Type": "application/json",
+        // Do NOT set Content-Type — let runtime set it with the boundary
       },
-      body: JSON.stringify(emailBody),
+      body: form,
       signal: AbortSignal.timeout(30000),
     });
 
@@ -354,12 +359,12 @@ export async function sendEmail(params: {
       return { ok: false, error: `Email rejected (${response.status}): ${text}` };
     }
 
+    // Response: { object: "EmailSent", tracking_id: "...", provider_id: "..." }
     const data = await response.json();
-    // Return the email's provider_id as replyToId — used by follow-up emails for threading
     return {
       ok: true,
-      messageId: data.id ?? data.message_id ?? undefined,
-      replyToId: data.id ?? data.provider_id ?? undefined,
+      messageId: data.tracking_id ?? undefined,
+      replyToId: data.provider_id ?? undefined,
     };
   } catch (err: any) {
     if (err instanceof RateLimitError || err instanceof ServerError) throw err;
@@ -504,5 +509,38 @@ export async function sendWhatsApp(params: {
   } catch (err: any) {
     if (err instanceof RateLimitError || err instanceof ServerError) throw err;
     return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * Fetch recent messages in a chat. Used to poll for inbound replies.
+ * Returns messages newest-first. `limit` defaults to 10.
+ */
+export async function listChatMessages(params: {
+  chatId: string;
+  accountId: string;
+  limit?: number;
+  accountDsn?: string;
+  accountApiKey?: string;
+}): Promise<Array<{ id: string; fromMe: boolean; text: string; date: string }>> {
+  try {
+    const { dsn, apiKey } = resolveDsnAndKey(params.accountDsn, params.accountApiKey);
+    const limit = params.limit ?? 10;
+    const url = `${dsn}/api/v1/chats/${encodeURIComponent(params.chatId)}/messages?account_id=${encodeURIComponent(params.accountId)}&limit=${limit}`;
+    const res = await fetch(url, {
+      headers: { "X-API-KEY": apiKey, "Accept": "application/json" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const items: any[] = data?.items ?? data?.messages ?? (Array.isArray(data) ? data : []);
+    return items.map(m => ({
+      id: m.id ?? "",
+      fromMe: m.from_me === true || m.is_from_me === true,
+      text: m.text ?? m.body ?? "",
+      date: m.date ?? m.created_at ?? "",
+    }));
+  } catch {
+    return [];
   }
 }

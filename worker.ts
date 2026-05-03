@@ -1,24 +1,43 @@
 import { startBoss, stopBoss, getBoss } from "@/lib/queue";
 import { handleLinkedInJobs, handleResumeJobs } from "@/lib/workers/task-handlers";
+import { runOutreachTick } from "@/lib/channels/outreach-tick";
 
 async function main() {
   console.log("[Worker] Starting...");
 
   const boss = await startBoss();
 
+  // localConcurrency is capped to stay within Supabase PgBouncer Session-mode limits.
+  // pg-boss pool=3 + 3 LinkedIn + 2 resume = 8 total connections (pool_size ≤ 15 on free tier).
   await boss.work<{ taskId: string }>(
     "process-task",
-    { localConcurrency: 10, includeMetadata: true },
+    { localConcurrency: 3, includeMetadata: true },
     handleLinkedInJobs as any
   );
 
   await boss.work<{ taskId: string }>(
     "process-resume-task",
-    { localConcurrency: 5, includeMetadata: true },
+    { localConcurrency: 2, includeMetadata: true },
     handleResumeJobs as any
   );
 
   console.log("[Worker] Ready. Listening for jobs...");
+
+  // ── Outreach tick: process due ChannelThreads every 30s ─────────────────────
+  // Runs in-process so it doesn't depend on NEXT_PUBLIC_APP_URL or external cron.
+  // Reentrancy-safe: skip if a previous tick is still running.
+  let tickRunning = false;
+  setInterval(async () => {
+    if (tickRunning) return;
+    tickRunning = true;
+    try {
+      await runOutreachTick();
+    } catch (err: any) {
+      console.error("[Worker] Outreach tick error:", err.message);
+    } finally {
+      tickRunning = false;
+    }
+  }, 30_000);
 
   // Log queue depth every 60 seconds
   setInterval(async () => {

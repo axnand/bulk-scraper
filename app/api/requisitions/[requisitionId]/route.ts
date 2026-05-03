@@ -79,6 +79,7 @@ export async function PUT(
     const CONFIG_KEYS = [
       "jobDescription", "jdTitle", "scoringRules", "customScoringRules",
       "aiModel", "aiProviderId", "sheetWebAppUrl", "minScoreThreshold",
+      "autoShortlistThreshold",
       "promptRole", "promptGuidelines", "criticalInstructions",
       "builtInRuleDescriptions", "ruleDefinitions", "promptEnvelope",
     ];

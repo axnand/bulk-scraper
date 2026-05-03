@@ -79,8 +79,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       message: "Maintenance complete",
       resetAccounts,
-      cleanedJobs: staleJobs.length,
-      cleanedTasks,
       clearedProfiles,
     });
   } catch (error) {

@@ -33,14 +33,13 @@ export async function triggerProcessing(): Promise<void> {
 
 export async function triggerOutreach(): Promise<void> {
   const base = getBaseUrl();
-  const url = `${base}/api/process-outreach`;
+  const url = `${base}/api/cron/outreach-tick`;
   console.log(`[Trigger] Calling ${url} (CRON_SECRET set: ${!!process.env.CRON_SECRET})`);
   try {
     fetch(url, {
-      method: "POST",
+      method: "GET",
       headers: {
         Authorization: `Bearer ${process.env.CRON_SECRET}`,
-        "Content-Type": "application/json",
       },
     }).catch((err) => console.error("[Trigger] Outreach fetch failed:", err));
   } catch (err) {

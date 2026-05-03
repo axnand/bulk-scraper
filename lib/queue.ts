@@ -26,9 +26,10 @@ export async function startBoss(): Promise<PgBoss> {
   instance = new PgBoss({
     connectionString: cleanedUrl,
     ssl: { rejectUnauthorized: false },
-    // Dedicated pool for pg-boss internals — keeps it from competing with Prisma connections.
-    // Set Prisma connection_limit=10 in DATABASE_URL to cap Prisma's side.
-    max: 5,
+    // Dedicated pool for pg-boss internals — separate from Prisma's pool.
+    // Keep this low: Supabase PgBouncer Session mode has a hard pool_size limit
+    // (15 on free tier). Budget: pg-boss=3 + Prisma worker slots=5 → total 8.
+    max: 3,
   });
 
   instance.on("error", (err: Error) => console.error("[pg-boss] Error:", err));
@@ -68,11 +69,61 @@ export function getQueueName(source: string): "process-task" | "process-resume-t
   return source === "linkedin_url" ? "process-task" : "process-resume-task";
 }
 
+// ─── Web-process enqueue via Prisma raw SQL ────────────────────────
+//
+// Instead of starting a full pg-boss instance (which opens its own
+// connection pool and supervisor loop), we insert jobs directly into
+// the pgboss.job table using Prisma's existing connection.
+//
+// This mirrors pg-boss v12's insertJobs() query: it joins against
+// pgboss.queue to inherit retry/expiry/deletion config set by
+// startBoss() in the worker process.
+//
+// The worker's pg-boss instance picks up these rows automatically.
+
+import { prisma } from "@/lib/prisma";
+
+async function enqueueToQueue(
+  queueName: string,
+  jobs: Array<{ data: Record<string, unknown> }>,
+): Promise<void> {
+  if (jobs.length === 0) return;
+
+  // Build the JSON array that pg-boss's json_to_recordset expects
+  const jobArray = JSON.stringify(jobs.map(j => ({ data: j.data })));
+
+  await prisma.$executeRawUnsafe(`
+    INSERT INTO pgboss.job (
+      id, name, data, priority, start_after,
+      expire_seconds, deletion_seconds, keep_until,
+      retry_limit, retry_delay, retry_backoff, retry_delay_max,
+      policy, dead_letter, heartbeat_seconds
+    )
+    SELECT
+      gen_random_uuid(),
+      '${queueName}',
+      j.data,
+      0,
+      now(),
+      q.expire_seconds,
+      q.deletion_seconds,
+      now() + (q.retention_seconds * interval '1s'),
+      q.retry_limit,
+      q.retry_delay,
+      COALESCE(q.retry_backoff, false),
+      q.retry_delay_max,
+      q.policy,
+      q.dead_letter,
+      q.heartbeat_seconds
+    FROM json_to_recordset($1::json) AS j (data jsonb)
+    JOIN pgboss.queue q ON q.name = '${queueName}'
+  `, jobArray);
+}
+
 export async function enqueueTaskBatch(
   tasks: Array<{ id: string; source: string }>
 ): Promise<void> {
   if (tasks.length === 0) return;
-  const b = await startBoss(); // lazy init — works in both web and worker processes
 
   const linkedIn = tasks
     .filter((t) => t.source === "linkedin_url")
@@ -83,7 +134,7 @@ export async function enqueueTaskBatch(
     .map((t) => ({ data: { taskId: t.id } }));
 
   await Promise.all([
-    linkedIn.length > 0 ? b.insert("process-task", linkedIn) : Promise.resolve(),
-    resume.length > 0 ? b.insert("process-resume-task", resume) : Promise.resolve(),
+    linkedIn.length > 0 ? enqueueToQueue("process-task", linkedIn) : Promise.resolve(),
+    resume.length > 0 ? enqueueToQueue("process-resume-task", resume) : Promise.resolve(),
   ]);
 }

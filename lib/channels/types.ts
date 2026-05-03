@@ -44,8 +44,10 @@ export interface EmailRule {
 export interface EmailConfig {
   emailRules: EmailRule[];
   followups: FollowupRule[];
-  fromName?: string;  // display name override
+  fromName?: string;           // display name override
   replyTo?: string;
+  contactRetryMinutes?: number; // how long to wait before retrying when no email found (default 60)
+  contactRetryMaxDays?: number; // give up after N days of retrying (default 7)
 }
 
 // ─── WhatsApp ─────────────────────────────────────────────────────────────────
@@ -68,6 +70,8 @@ export interface WAConfig {
   waRules: WARule[];
   followups: FollowupRule[];
   quietHours?: QuietHours;
+  contactRetryMinutes?: number; // how long to wait before retrying when no phone found (default 60)
+  contactRetryMaxDays?: number; // give up after N days of retrying (default 7)
 }
 
 export type ChannelConfig = LinkedInConfig | EmailConfig | WAConfig;
@@ -169,6 +173,16 @@ export function validateEmailConfig(c: unknown): ValidationResult {
     const r = validateFollowup(config.followups[i], i);
     if (!r.ok) return r;
   }
+  if (config.contactRetryMinutes !== undefined) {
+    if (typeof config.contactRetryMinutes !== "number" || config.contactRetryMinutes < 1) {
+      return { ok: false, error: "contactRetryMinutes must be a positive number (e.g. 30, 60, 120)" };
+    }
+  }
+  if (config.contactRetryMaxDays !== undefined) {
+    if (typeof config.contactRetryMaxDays !== "number" || config.contactRetryMaxDays < 1) {
+      return { ok: false, error: "contactRetryMaxDays must be a positive number" };
+    }
+  }
   return { ok: true };
 }
 
@@ -192,6 +206,16 @@ export function validateWAConfig(c: unknown): ValidationResult {
   for (let i = 0; i < config.followups.length; i++) {
     const r = validateFollowup(config.followups[i], i);
     if (!r.ok) return r;
+  }
+  if (config.contactRetryMinutes !== undefined) {
+    if (typeof config.contactRetryMinutes !== "number" || config.contactRetryMinutes < 1) {
+      return { ok: false, error: "contactRetryMinutes must be a positive number (e.g. 30, 60, 120)" };
+    }
+  }
+  if (config.contactRetryMaxDays !== undefined) {
+    if (typeof config.contactRetryMaxDays !== "number" || config.contactRetryMaxDays < 1) {
+      return { ok: false, error: "contactRetryMaxDays must be a positive number" };
+    }
   }
   if (config.quietHours !== undefined) {
     const qh = config.quietHours as Record<string, unknown>;

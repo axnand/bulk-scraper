@@ -200,14 +200,19 @@ async function findThreadByProviderUserId(
 // ─── Inbound message received ─────────────────────────────────────────────────
 
 async function handleNewMessage(data: any) {
-  const chatId = data?.chat_id ?? data?.chatId;
-  const isInbound = data?.is_from_me === false || data?.from_me === false;
+  const chatId = data?.chat_id ?? data?.chatId ?? data?.chat?.id;
+  // is_from_me/from_me can be absent (treat as inbound), true (outbound echo), or false (inbound)
+  const fromMeRaw = data?.is_from_me ?? data?.from_me ?? data?.sender?.is_me;
+  const isInbound = fromMeRaw !== true; // absent = inbound; explicit true = outbound
 
   if (!chatId) {
-    console.warn("[Webhook/Unipile] new_message: no chat_id in payload");
+    console.warn("[Webhook/Unipile] new_message: no chat_id in payload — full data:", JSON.stringify(data));
     return;
   }
-  if (!isInbound) return; // outbound echo — ignore
+  if (!isInbound) {
+    console.log(`[Webhook/Unipile] new_message: outbound echo for chatId=${chatId} — ignoring`);
+    return;
+  }
 
   const thread = await prisma.channelThread.findFirst({
     where: {

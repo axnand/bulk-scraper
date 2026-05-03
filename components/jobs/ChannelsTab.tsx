@@ -92,6 +92,8 @@ function channelToFormValues(channel: Channel): ChannelFormValues {
       ...base,
       emailRules: (cfg.emailRules as EmailFormValues["emailRules"]) ?? [],
       followups:  (cfg.followups  as EmailFormValues["followups"])  ?? [],
+      contactRetryMinutes: (cfg.contactRetryMinutes as number) ?? 60,
+      contactRetryMaxDays: (cfg.contactRetryMaxDays as number) ?? 7,
     } satisfies EmailFormValues;
   }
 
@@ -102,6 +104,8 @@ function channelToFormValues(channel: Channel): ChannelFormValues {
     followups: (cfg.followups as WAFormValues["followups"]) ?? [],
     quietHoursEnabled: (cfg.quietHoursEnabled as boolean) ?? true,
     quietHours: (cfg.quietHours as WAFormValues["quietHours"]) ?? { startHour: 21, endHour: 8, tz: "Asia/Kolkata" },
+    contactRetryMinutes: (cfg.contactRetryMinutes as number) ?? 60,
+    contactRetryMaxDays: (cfg.contactRetryMaxDays as number) ?? 7,
   } satisfies WAFormValues;
 }
 
@@ -124,13 +128,20 @@ function formValuesToApiBody(values: ChannelFormValues, type: ChannelType) {
       followups: rest.followups,
     };
   } else if (type === "EMAIL") {
-    body.config = { emailRules: rest.emailRules, followups: rest.followups };
+    body.config = {
+      emailRules: rest.emailRules,
+      followups: rest.followups,
+      contactRetryMinutes: rest.contactRetryMinutes,
+      contactRetryMaxDays: rest.contactRetryMaxDays,
+    };
   } else {
     body.config = {
       waRules: rest.waRules,
       followups: rest.followups,
       quietHoursEnabled: rest.quietHoursEnabled,
       quietHours: rest.quietHours,
+      contactRetryMinutes: rest.contactRetryMinutes,
+      contactRetryMaxDays: rest.contactRetryMaxDays,
     };
   }
 
@@ -240,13 +251,20 @@ export function ChannelsTab({ requisitionId }: Props) {
         followups: rest.followups,
       };
     } else if (ui.channel.type === "EMAIL") {
-      body.config = { emailRules: rest.emailRules, followups: rest.followups };
+      body.config = {
+        emailRules: rest.emailRules,
+        followups: rest.followups,
+        contactRetryMinutes: rest.contactRetryMinutes,
+        contactRetryMaxDays: rest.contactRetryMaxDays,
+      };
     } else {
       body.config = {
         waRules: rest.waRules,
         followups: rest.followups,
         quietHoursEnabled: rest.quietHoursEnabled,
         quietHours: rest.quietHours,
+        contactRetryMinutes: rest.contactRetryMinutes,
+        contactRetryMaxDays: rest.contactRetryMaxDays,
       };
     }
 

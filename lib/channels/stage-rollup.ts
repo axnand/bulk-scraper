@@ -40,7 +40,7 @@ export async function recomputeTaskStage(
     }),
     tx.channelThread.findMany({
       where: { taskId },
-      select: { status: true, providerState: true },
+      select: { status: true, providerState: true, lastMessageAt: true },
     }),
   ]);
 
@@ -100,10 +100,12 @@ export async function recomputeTaskStage(
       const ps = (thread.providerState as Record<string, string> | null) ?? {};
       if (ps.phase === "INVITE_PENDING") {
         threadStage = "CONTACT_REQUESTED";
-      } else if (ps.phase === "CONNECTED") {
+      } else if (ps.phase === "CONNECTED" && !thread.lastMessageAt) {
+        // Connected on LinkedIn but no DM has been sent yet
         threadStage = "CONNECTED";
       } else {
-        // INMAIL_SENT, EMAIL SENT, WA SENT — all count as MESSAGED
+        // Anything else (INMAIL_SENT, SENT, DELIVERED, MESSAGED, or CONNECTED+lastMessageAt)
+        // means a message has been sent → MESSAGED
         threadStage = "MESSAGED";
       }
       if (STAGE_PRIORITY[threadStage] > STAGE_PRIORITY[derived]) {

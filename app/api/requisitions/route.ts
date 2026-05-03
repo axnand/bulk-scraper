@@ -25,9 +25,17 @@ export async function GET(req: NextRequest) {
               status: true,
               totalTasks: true,
               processedCount: true,
-              successCount: true,
               failedCount: true,
               createdAt: true,
+              _count: {
+                select: {
+                  tasks: {
+                    where: {
+                      OR: [{ result: { not: null } }, { analysisResult: { not: null } }],
+                    },
+                  },
+                },
+              },
             },
             orderBy: { createdAt: "desc" },
           },
@@ -39,7 +47,7 @@ export async function GET(req: NextRequest) {
     const shaped = requisitions.map(r => {
       const runs = r.jobs;
       const totalCandidates = runs.reduce((s, j) => s + j.totalTasks, 0);
-      const analyzedCount = runs.reduce((s, j) => s + j.successCount, 0);
+      const analyzedCount = runs.reduce((s, j) => s + j._count.tasks, 0);
       const activeRun = runs.find(j => j.status === "PENDING" || j.status === "PROCESSING");
       const lastRun = runs[0] || null;
 

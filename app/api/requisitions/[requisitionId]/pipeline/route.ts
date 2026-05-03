@@ -24,7 +24,11 @@ export async function GET(
     const tasks = await prisma.task.findMany({
       where: {
         jobId: { in: runs.map(r => r.id) },
-        status: "DONE",
+        OR: [
+          { status: "DONE" },
+          { status: "CANCELLED", result: { not: null } },
+          { status: "CANCELLED", analysisResult: { not: null } },
+        ],
       },
       select: {
         id: true,
@@ -46,8 +50,7 @@ export async function GET(
     for (const t of tasks) {
       const analysis = t.analysisResult ? JSON.parse(t.analysisResult) : null;
       const profile = t.result ? JSON.parse(t.result) : null;
-      // Legacy MESSAGED rows roll up into CONNECTED in the new stage model
-      const stage = t.stage === "MESSAGED" ? "CONNECTED" : t.stage;
+      const stage = t.stage;
 
       const scrapedName = profile
         ? [profile.first_name, profile.last_name].filter(Boolean).join(" ")

@@ -78,8 +78,8 @@ export async function acquireAccounts(count: number = 1, type: AccountType = Acc
 /**
  * Convenience wrapper: acquire a single account or null.
  */
-export async function acquireAccount(): Promise<Account | null> {
-  const accounts = await acquireAccounts(1);
+export async function acquireAccount(accountType?: import("@prisma/client").AccountType): Promise<Account | null> {
+  const accounts = await acquireAccounts(1, accountType);
   return accounts[0] ?? null;
 }
 

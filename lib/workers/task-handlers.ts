@@ -494,7 +494,7 @@ export async function handleLinkedInJobs(jobs: JobWithMetadata<TaskJobData>[]): 
       continue;
     }
 
-    const account = await acquireAccount();
+    const account = await acquireAccount("LINKEDIN");
     if (!account) {
       console.warn(`${tag} No accounts available — throwing to retry`);
       throw new Error("No accounts available");
