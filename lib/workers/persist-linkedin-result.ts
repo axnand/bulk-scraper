@@ -154,6 +154,11 @@ export async function persistLinkedInResult(args: {
         result: profileJson,
         analysisResult: analysisResultJson,
         accountId,
+        // P1 #37 / EC-13.1 — explicit analysis sub-state. OK when we have a
+        // parsed result; PENDING when analysis was skipped (no JD configured),
+        // so the recruiter UI can distinguish "analyzed clean" from "analysis
+        // not run yet" without inferring from analysisResult IS NULL.
+        analysisStatus: analysisResult ? "OK" : "PENDING",
         // Bind Task to the canonical CandidateProfile (for cross-task identity)
         ...(candidateProfileId ? { candidateProfileId } : {}),
       },

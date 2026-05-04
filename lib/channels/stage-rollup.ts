@@ -3,10 +3,31 @@
 // Task.stage is a materialized rollup of all ChannelThread statuses for that task.
 // Call recomputeTaskStage() after ANY thread status or providerState change.
 // It respects manualStage (set by the recruiter for INTERVIEW / HIRED / REJECTED).
+//
+// P1 #16 / #17 — the function returns a typed event contract
+// `{ stage, changed, fromStage, source }` so future downstream consumers
+// (Slack notifications, ATS sync, analytics) can subscribe to a single
+// event source and dedupe naturally instead of double-firing on
+// system-rollup-after-manual. Source identifies who triggered the
+// recompute. Pass `source` from the caller (defaults to SYSTEM); manual
+// recruiter routes pass MANUAL, webhook handlers pass WEBHOOK.
 
 import { prisma } from "@/lib/prisma";
 import { CandidateStage } from "@prisma/client";
 import { markStageEventExplicit } from "@/lib/channels/stage-event-context";
+
+export type StageRollupSource = "SYSTEM" | "MANUAL" | "WEBHOOK";
+
+export interface StageRollupResult {
+  /** The current task.stage after the rollup (always populated). */
+  stage: CandidateStage;
+  /** True only when this rollup write actually changed the stored stage. */
+  changed: boolean;
+  /** What the stage was before this rollup, if it changed. Undefined when unchanged. */
+  fromStage?: CandidateStage;
+  /** Who triggered this rollup. Useful for downstream effect dedupe. */
+  source: StageRollupSource;
+}
 
 // Stages a recruiter sets manually — these always win over any derived state.
 // ARCHIVED is included so that a recruiter dragging a candidate to ARCHIVED
@@ -37,8 +58,11 @@ type TxClient = Omit<
 
 export async function recomputeTaskStage(
   taskId: string,
-  tx: TxClient = prisma,
-): Promise<CandidateStage> {
+  options: { tx?: TxClient; source?: StageRollupSource } = {},
+): Promise<StageRollupResult> {
+  const tx: TxClient = options.tx ?? prisma;
+  const source: StageRollupSource = options.source ?? "SYSTEM";
+
   const [task, threads] = await Promise.all([
     tx.task.findUnique({
       where: { id: taskId },
@@ -59,12 +83,15 @@ export async function recomputeTaskStage(
         where: { id: taskId },
         data: { stage: task.manualStage, stageUpdatedAt: new Date() },
       });
+      return { stage: task.manualStage, changed: true, fromStage: task.stage, source };
     }
-    return task.manualStage;
+    return { stage: task.manualStage, changed: false, source };
   }
 
   // No threads yet — leave stage as-is (SOURCED or SHORTLISTED)
-  if (threads.length === 0) return task.stage;
+  if (threads.length === 0) {
+    return { stage: task.stage, changed: false, source };
+  }
 
   // All threads archived → task is archived
   if (threads.every(t => t.status === "ARCHIVED")) {
@@ -88,12 +115,33 @@ export async function recomputeTaskStage(
           },
         });
       });
+      return { stage: "ARCHIVED", changed: true, fromStage: task.stage, source };
     }
-    return "ARCHIVED";
+    return { stage: "ARCHIVED", changed: false, source };
   }
 
-  // Derive the highest stage from active/paused threads
-  let derived: CandidateStage = "SHORTLISTED";
+  // P2 #5 / EC-5.5 — initialize from the current task.stage rather than
+  // hardcoded SHORTLISTED. With the previous baseline, a task in a higher
+  // stage (CONNECTED / MESSAGED / REPLIED) whose threads were all PAUSED
+  // would silently downgrade to SHORTLISTED on the next rollup, because
+  // PAUSED threads don't bump `derived`. Initializing from task.stage
+  // means rollup only RAISES the stage; downgrades require an explicit
+  // archive or recruiter override (manualStage).
+  let derived: CandidateStage = task.stage;
+  // Special case: if the current stage is one of the "manual-only" terminals
+  // (ARCHIVED handled above; INTERVIEW/HIRED/REJECTED only via manualStage,
+  // and we only get here when manualStage was NOT in MANUAL_WINS), then the
+  // recruiter has cleared the manual override and we should redo the
+  // derivation from the floor. Otherwise stale terminal stages stick.
+  const TERMINAL_FLOORS = new Set<CandidateStage>([
+    CandidateStage.INTERVIEW,
+    CandidateStage.HIRED,
+    CandidateStage.REJECTED,
+    CandidateStage.ARCHIVED,
+  ]);
+  if (TERMINAL_FLOORS.has(derived)) {
+    derived = "SHORTLISTED";
+  }
 
   for (const thread of threads) {
     if (thread.status === "ARCHIVED") continue;
@@ -144,7 +192,8 @@ export async function recomputeTaskStage(
         },
       });
     });
+    return { stage: derived, changed: true, fromStage: task.stage, source };
   }
 
-  return derived;
+  return { stage: derived, changed: false, source };
 }

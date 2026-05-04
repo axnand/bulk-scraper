@@ -23,6 +23,11 @@ async function resetExpiredWindows() {
       where: { dailyResetAt: { lt: now }, dailyCount: { gt: 0 } },
       data: { dailyCount: 0, dailyResetAt: null },
     }),
+    // P1 #27 — reset weekly counters where the 7-day window has expired
+    prisma.account.updateMany({
+      where: { weeklyResetAt: { lt: now }, weeklyCount: { gt: 0 } },
+      data: { weeklyCount: 0, weeklyResetAt: null },
+    }),
     // Refresh expired cooldowns
     prisma.account.updateMany({
       where: { status: "COOLDOWN", cooldownUntil: { lt: now } },

@@ -4,6 +4,14 @@ export const CONFIG = {
   // Rate limiting per account
   MAX_REQUESTS_PER_MINUTE: 10,
   DAILY_SAFE_LIMIT: 100,
+  // P1 #27 / EC-13.6 — LinkedIn weekly invite limit (~100/week per account).
+  // Tracked separately from daily so a recruiter sending 80 Mon + 30 Tue
+  // doesn't get 429s on Tuesday despite under-daily.
+  WEEKLY_SAFE_LIMIT: 100,
+  // P1 #27 / EC-13.8 — fresh-account warmup. While Account.warmupUntil > now,
+  // the worker uses this lower daily cap instead of the configured channel
+  // cap to avoid LinkedIn / email-provider bans on accounts with no history.
+  WARMUP_DAILY_CAP: 10,
 
   // Anti-detection jitter (random delay before each API call)
   JITTER_MIN_MS: 200,

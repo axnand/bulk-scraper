@@ -91,6 +91,31 @@ export function PipelineTab({ requisitionId }: Props) {
     };
   }, []);
 
+  // P1 #48 / EC-13.21 — when the server returns 409 (concurrency conflict)
+  // or 422 (transition refused), animate the card back to its original
+  // column and toast a specific reason. Plain network failures fall back
+  // to the generic "Failed to update stage." Refetches on 409 so the UI
+  // reloads the latest snapshot before the recruiter retries.
+  async function readStageError(res: Response): Promise<{ status: number; message: string }> {
+    let parsed: any = null;
+    try { parsed = await res.json(); } catch { /* ignore */ }
+
+    if (res.status === 409) {
+      return {
+        status: 409,
+        message: "This candidate was modified by another user. Refreshing…",
+      };
+    }
+    if (res.status === 422) {
+      const reason = parsed?.reason ?? "Move not allowed";
+      return { status: 422, message: reason };
+    }
+    return {
+      status: res.status,
+      message: parsed?.error ?? `Failed (HTTP ${res.status})`,
+    };
+  }
+
   async function handleStageChange(taskId: string, newStage: CandidateStage) {
     let fromStage: CandidateStage | null = null;
     let movedTask: PipelineTask | null = null;
@@ -110,12 +135,58 @@ export function PipelineTab({ requisitionId }: Props) {
       return next;
     });
 
+    // NOTE: we deliberately don't send If-Match here. In a single-recruiter
+    // setup, the only thing that "edits" a candidate concurrently is the
+    // outreach worker's own rollup (sending an invite advances the stage
+    // SHORTLISTED → CONTACT_REQUESTED on its own), and the recruiter's
+    // intent should always win over that. The server still SUPPORTS If-Match
+    // for any future multi-user / scripted client; we just don't opt-in
+    // from the kanban UI.
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+
     try {
       const res = await fetch(
         `/api/requisitions/${requisitionId}/candidates/${taskId}`,
-        { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stage: newStage }) }
+        { method: "PATCH", headers, body: JSON.stringify({ stage: newStage }) }
       );
-      if (!res.ok) throw new Error("Update failed");
+      if (!res.ok) {
+        const { status, message } = await readStageError(res);
+        // Always animate back: server didn't apply the change.
+        setStages(prev => {
+          const next = { ...prev };
+          next[newStage] = (next[newStage] ?? []).filter(t => t.id !== taskId);
+          next[fromStage!] = [movedTask!, ...(next[fromStage!] ?? [])];
+          return next;
+        });
+        if (status === 422) {
+          toast.error(message);
+        } else if (status === 409) {
+          toast.warning(message);
+          // Reload from the server so the recruiter sees the actual current state.
+          fetchPipeline();
+        } else {
+          toast.error(message);
+        }
+        return;
+      }
+
+      // On success update our local stageUpdatedAt so subsequent drags
+      // include the fresh If-Match value.
+      try {
+        const updated = await res.json();
+        if (updated?.stageUpdatedAt) {
+          setStages(prev => {
+            const next = { ...prev };
+            next[newStage] = (next[newStage] ?? []).map(t =>
+              t.id === taskId
+                ? ({ ...t, stageUpdatedAt: updated.stageUpdatedAt } as PipelineTask)
+                : t,
+            );
+            return next;
+          });
+        }
+      } catch { /* response body parsing is best-effort */ }
+
       toast.success(`Moved to ${STAGE_CONFIG[newStage].label}`);
     } catch {
       setStages(prev => {
@@ -165,11 +236,29 @@ export function PipelineTab({ requisitionId }: Props) {
     return map;
   }, [stages, selectedIds]);
 
+  // P1 #47 / EC-11.17 — single bulk endpoint replaces parallel PATCH calls.
+  // Server processes each task in its own transaction and returns per-task
+  // outcomes; UI reverts only the cards that failed.
   async function handleBulkMove(newStage: CandidateStage) {
     const taskIds = [...selectedIds];
     if (!taskIds.length) return;
-    // Optimistically move all
-    const snapshot = { ...stages };
+
+    // Snapshot original stage per task so we can selectively revert failures.
+    // Same reasoning as handleStageChange: we don't send `expected` (per-task
+    // If-Match) because the only realistic "concurrent edit" is the system's
+    // own rollup, and recruiter intent should always win over that.
+    const originalStageByTask: Record<string, CandidateStage> = {};
+    for (const id of taskIds) {
+      for (const s of PIPELINE_STAGES) {
+        const found = (stages[s] ?? []).find(t => t.id === id);
+        if (found) {
+          originalStageByTask[id] = s;
+          break;
+        }
+      }
+    }
+
+    // Optimistic UI: move all selected to the target column.
     setStages(prev => {
       const next = { ...prev };
       for (const id of taskIds) {
@@ -191,19 +280,96 @@ export function PipelineTab({ requisitionId }: Props) {
     clearSelection();
 
     try {
-      await Promise.all(
-        taskIds.map(id =>
-          fetch(`/api/requisitions/${requisitionId}/candidates/${id}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ stage: newStage }),
-          }),
-        ),
-      );
-      toast.success(`Moved ${taskIds.length} candidate${taskIds.length !== 1 ? "s" : ""} to ${STAGE_CONFIG[newStage].label}`);
+      const res = await fetch(`/api/requisitions/${requisitionId}/candidates/bulk-stage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskIds, stage: newStage }),
+      });
+      if (!res.ok) {
+        // Hard failure — revert everything.
+        setStages(prev => {
+          const next = { ...prev };
+          for (const id of taskIds) {
+            const orig = originalStageByTask[id];
+            if (!orig) continue;
+            const idx = (next[newStage] ?? []).findIndex(t => t.id === id);
+            if (idx === -1) continue;
+            const task = next[newStage]![idx];
+            next[newStage] = (next[newStage] ?? []).filter(t => t.id !== id);
+            next[orig] = [{ ...task, stage: orig }, ...(next[orig] ?? [])];
+          }
+          return next;
+        });
+        toast.error("Failed to move candidates");
+        return;
+      }
+
+      const data = await res.json();
+      const outcomes: Array<{
+        taskId: string;
+        ok: boolean;
+        kind?: string;
+        reason?: string;
+        task?: { stageUpdatedAt: string };
+      }> = data.outcomes ?? [];
+
+      const failed = outcomes.filter(o => !o.ok);
+
+      // Revert only the failed tasks; leave the rest in their target column.
+      // Update stageUpdatedAt on the successful ones for next-drag concurrency.
+      setStages(prev => {
+        const next = { ...prev };
+        for (const o of outcomes) {
+          if (o.ok) {
+            const newTs = o.task?.stageUpdatedAt;
+            if (!newTs) continue;
+            next[newStage] = (next[newStage] ?? []).map(t =>
+              t.id === o.taskId ? ({ ...t, stageUpdatedAt: newTs } as PipelineTask) : t,
+            );
+          } else {
+            const orig = originalStageByTask[o.taskId];
+            if (!orig) continue;
+            const idx = (next[newStage] ?? []).findIndex(t => t.id === o.taskId);
+            if (idx === -1) continue;
+            const task = next[newStage]![idx];
+            next[newStage] = (next[newStage] ?? []).filter(t => t.id !== o.taskId);
+            next[orig] = [{ ...task, stage: orig }, ...(next[orig] ?? [])];
+          }
+        }
+        return next;
+      });
+
+      const okCount = outcomes.length - failed.length;
+      if (failed.length === 0) {
+        toast.success(`Moved ${okCount} candidate${okCount !== 1 ? "s" : ""} to ${STAGE_CONFIG[newStage].label}`);
+      } else {
+        const conflicts = failed.filter(f => f.kind === "concurrency_conflict").length;
+        const refused = failed.filter(f => f.kind === "transition_refused").length;
+        const otherErrors = failed.length - conflicts - refused;
+        const parts: string[] = [];
+        if (okCount > 0) parts.push(`${okCount} moved`);
+        if (conflicts > 0) parts.push(`${conflicts} modified by another user`);
+        if (refused > 0) parts.push(`${refused} not allowed`);
+        if (otherErrors > 0) parts.push(`${otherErrors} failed`);
+        toast.warning(parts.join(", "));
+        if (conflicts > 0) fetchPipeline();
+      }
     } catch {
-      setStages(snapshot);
-      toast.error("Failed to move some candidates");
+      // Network error: revert everything to be safe.
+      setStages(prev => {
+        const next = { ...prev };
+        for (const id of taskIds) {
+          const orig = originalStageByTask[id];
+          if (!orig) continue;
+          const idx = (next[newStage] ?? []).findIndex(t => t.id === id);
+          if (idx === -1) continue;
+          const task = next[newStage]![idx];
+          next[newStage] = (next[newStage] ?? []).filter(t => t.id !== id);
+          next[orig] = [{ ...task, stage: orig }, ...(next[orig] ?? [])];
+        }
+        return next;
+      });
+      toast.error("Failed to move candidates");
     }
   }
 

@@ -27,8 +27,17 @@ export async function GET(
       return NextResponse.json({ tasks: [] });
     }
 
+    // P1 #37 — `?needsReview=true` filters down to Tasks where the AI
+    // analysis sub-step failed (analysisStatus = 'FAILED'). Recruiter UI
+    // surfaces this as a "needs manual review" bucket.
+    const url = new URL(_req.url);
+    const needsReview = url.searchParams.get("needsReview") === "true";
+
     const tasks = await prisma.task.findMany({
-      where: { jobId: { in: jobIds } },
+      where: {
+        jobId: { in: jobIds },
+        ...(needsReview ? { analysisStatus: "FAILED" } : {}),
+      },
       orderBy: { createdAt: "asc" },
       select: {
         id: true,
@@ -38,6 +47,7 @@ export async function GET(
         sourceFileName: true,
         sourceFileUrl: true,
         status: true,
+        analysisStatus: true,
         result: true,
         analysisResult: true,
         errorMessage: true,
@@ -65,6 +75,7 @@ export async function GET(
         sourceFileName: t.sourceFileName ?? null,
         hasResume: !!t.sourceFileUrl,
         status: t.status,
+        analysisStatus: t.analysisStatus,
         result: t.result ? JSON.parse(t.result) : null,
         analysisResult: t.analysisResult ? JSON.parse(t.analysisResult) : null,
         errorMessage: t.errorMessage ?? null,

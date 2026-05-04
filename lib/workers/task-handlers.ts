@@ -36,7 +36,11 @@ async function getJobConfig(jobId: string): Promise<AnalysisConfig | null> {
 async function markTaskFailed(taskId: string, jobId: string, errorMessage: string) {
   await prisma.task.update({
     where: { id: taskId },
-    data: { status: "FAILED", errorMessage },
+    // P1 #37 — surface terminal failures in the recruiter "needs review"
+    // bucket. Whether the failure was scrape vs analysis isn't always
+    // distinguishable here, but the recruiter signal is the same: "this
+    // task has no usable output, look at it manually."
+    data: { status: "FAILED", analysisStatus: "FAILED", errorMessage },
   });
   const updatedJob = await prisma.job.update({
     where: { id: jobId },
@@ -346,7 +350,12 @@ async function processResumeTask(
 
     await prisma.task.update({
       where: { id: task.id },
-      data: { status: "DONE", analysisResult: analysisResultJson },
+      data: {
+        status: "DONE",
+        analysisResult: analysisResultJson,
+        // P1 #37 — analysis succeeded for this resume.
+        analysisStatus: "OK",
+      },
     });
     await updateJobProgress(task.jobId, true);
     await maybeAutoShortlist(task.id, task.jobId, preloaded, analysisResult);
@@ -373,12 +382,14 @@ async function processResumeTask(
       console.log(JSON.stringify({ event: "task_done", taskId: task.id, jobId: task.jobId, source: "resume", outcome: "failed", reason: "retries_exhausted" }));
       await prisma.task.update({
         where: { id: task.id },
-        data: { status: "FAILED", errorMessage: err.message || "Analysis failed" },
+        // P1 #37 — terminal AI/processing failure → surface for manual review.
+        data: { status: "FAILED", analysisStatus: "FAILED", errorMessage: err.message || "Analysis failed" },
       });
       await updateJobProgress(task.jobId, false);
     } else {
       await prisma.task.update({
         where: { id: task.id },
+        // Still retrying — analysisStatus stays PENDING.
         data: { status: "PENDING", errorMessage: err.message || "Analysis failed" },
       });
       throw err; // pg-boss reschedules with backoff

@@ -49,7 +49,8 @@ async function markTaskFailed(
 ) {
   await prisma.task.update({
     where: { id: taskId },
-    data: { status: "FAILED", errorMessage },
+    // P1 #37 — surface in needs-review bucket (see task-handlers.markTaskFailed).
+    data: { status: "FAILED", analysisStatus: "FAILED", errorMessage },
   });
 
   const updatedJob = await prisma.job.update({
@@ -378,6 +379,8 @@ async function processResumeTask(
       data: {
         status: "DONE",
         analysisResult: analysisResultJson,
+        // P1 #37 — analysis succeeded.
+        analysisStatus: "OK",
       },
     });
 
@@ -406,7 +409,8 @@ async function processResumeTask(
     console.error(`${tag} FAILED: ${err.message}`);
     await prisma.task.update({
       where: { id: task.id },
-      data: { status: "FAILED", errorMessage: err.message || "Analysis failed" },
+      // P1 #37 — terminal AI/processing failure → surface for manual review.
+      data: { status: "FAILED", analysisStatus: "FAILED", errorMessage: err.message || "Analysis failed" },
     });
     await updateJobProgress(task.jobId, false);
   }

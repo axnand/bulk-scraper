@@ -12,6 +12,49 @@ import { ChannelType } from "@prisma/client";
 import { matchRule, type LinkedInConfig, type EmailConfig, type WAConfig } from "./types";
 import { triggerOutreach } from "@/lib/trigger";
 
+// P1 #14 / EC-9.2 — pick a sending account for a new ChannelThread.
+//
+// Selection order:
+//   1. ChannelAccountPool entries for this channel (highest priority first;
+//      tiebreaker: account with fewest existing bound threads — round-robin).
+//      Excludes soft-deleted, DISABLED, and over-cap accounts.
+//   2. Fall back to channel.sendingAccountId (legacy single-account binding).
+//   3. Return null when nothing usable exists; caller can still create the
+//      thread (worker will archive at first tick with a clear reason).
+async function pickAccountForChannel(
+  channelId: string,
+  fallbackSendingAccountId: string | null,
+): Promise<string | null> {
+  const pool = await prisma.channelAccountPool.findMany({
+    where: {
+      channelId,
+      account: {
+        deletedAt: null,
+        status: { not: "DISABLED" },
+      },
+    },
+    orderBy: [{ priority: "desc" }],
+    select: {
+      accountId: true,
+      account: {
+        select: { id: true, _count: { select: { threadsBound: true } } },
+      },
+    },
+  });
+
+  if (pool.length > 0) {
+    // Round-robin within priority tier: pick the account with the fewest
+    // bound threads. Prisma can't sort by a nested aggregate so we do it
+    // in JS.
+    const sorted = [...pool].sort((a, b) => {
+      return (a.account._count.threadsBound ?? 0) - (b.account._count.threadsBound ?? 0);
+    });
+    return sorted[0].accountId;
+  }
+
+  return fallbackSendingAccountId;
+}
+
 export async function fanOutToChannels(taskId: string, jobId: string): Promise<void> {
   const job = await prisma.job.findUnique({
     where: { id: jobId },
@@ -75,6 +118,12 @@ export async function fanOutToChannels(taskId: string, jobId: string): Promise<v
       followupsTotal = (cfg.followups ?? []).length;
     }
 
+    // P1 #14 — pick a bound account at thread creation, so the worker has a
+    // sticky account from the very first tick rather than re-resolving via
+    // channel.sendingAccount each time. Empty pool → fall back to the
+    // legacy single-account binding.
+    const boundAccountId = await pickAccountForChannel(channel.id, channel.sendingAccountId);
+
     try {
       await prisma.channelThread.create({
         data: {
@@ -84,6 +133,7 @@ export async function fanOutToChannels(taskId: string, jobId: string): Promise<v
           matchedRuleKey,
           followupsTotal,
           nextActionAt: new Date(),
+          ...(boundAccountId ? { accountId: boundAccountId } : {}),
         },
       });
     } catch (err: any) {

@@ -94,36 +94,60 @@ enum TaskStatus {
   FAILED
 }
 
+// Phase 8 / EC-13.1 — AI analysis sub-state, distinct from Task.status.
+//   PENDING  - not yet run, OR running, OR skipped because no JD was configured.
+//   OK       - analysis ran and produced a parsable scored result.
+//   FAILED   - analysis attempted but errored after retries are exhausted
+//              (provider down, malformed JSON, OOM, etc.). Surface to the UI
+//              as "needs manual review" so candidates aren't stranded silently.
+enum AnalysisStatus {
+  PENDING
+  OK
+  FAILED
+}
+
 enum ThreadMessageStatus {
   SENT
   FAILED
 }
 
 model Account {
-  id             String          @id @default(cuid())
-  accountId      String          @unique // Unipile account_id
-  name           String          @default("") // Friendly label
-  type           AccountType     @default(LINKEDIN) // Which channel this account belongs to
-  dsn            String? // Optional per-account override
-  apiKey         String? // Optional per-account override
-  status         AccountStatus   @default(ACTIVE)
-  lastUsedAt     DateTime?
-  requestCount   Int             @default(0) // rolling counter
-  dailyCount     Int             @default(0) // daily usage counter
-  dailyResetAt   DateTime? // when to reset dailyCount
-  minuteCount    Int             @default(0) // requests in current minute window
-  minuteResetAt  DateTime? // when the current minute window expires
-  cooldownUntil  DateTime? // null = not in cooldown
+  id              String               @id @default(cuid())
+  accountId       String               @unique // Unipile account_id
+  name            String               @default("") // Friendly label
+  type            AccountType          @default(LINKEDIN) // Which channel this account belongs to
+  dsn             String? // Optional per-account override
+  apiKey          String? // Optional per-account override
+  status          AccountStatus        @default(ACTIVE)
+  lastUsedAt      DateTime?
+  requestCount    Int                  @default(0) // rolling counter
+  dailyCount      Int                  @default(0) // daily usage counter
+  dailyResetAt    DateTime? // when to reset dailyCount
+  // P1 #27 / EC-13.6 — LinkedIn enforces a separate WEEKLY invite limit
+  // (~100/week) on top of the daily cap. Tracking it here so the worker
+  // can refuse to send invites once the weekly count reaches the limit
+  // even when the daily counter still has room.
+  weeklyCount     Int                  @default(0)
+  weeklyResetAt   DateTime?
+  // P1 #27 / EC-13.8 — fresh accounts must ramp gradually or LinkedIn /
+  // email-providers ban them. While now < warmupUntil, the effective daily
+  // cap is the warmup-ramp value (lib/channels/warmup.ts) instead of the
+  // configured cap. Set on account creation; expires automatically.
+  warmupUntil     DateTime?
+  minuteCount     Int                  @default(0) // requests in current minute window
+  minuteResetAt   DateTime? // when the current minute window expires
+  cooldownUntil   DateTime? // null = not in cooldown
   // EC-9.6 — soft delete. Deleted accounts are excluded from selection but
   // referenced rows (channels, threads, messages) keep the FK so historical
   // attribution survives. A heal job warns admins when channels lose their
   // sender via this column.
-  deletedAt      DateTime?
-  createdAt      DateTime        @default(now())
-  tasks          Task[]
-  channels       Channel[]
-  threadsBound   ChannelThread[]
-  threadMessages ThreadMessage[]
+  deletedAt       DateTime?
+  createdAt       DateTime             @default(now())
+  tasks           Task[]
+  channels        Channel[]
+  threadsBound    ChannelThread[]
+  threadMessages  ThreadMessage[]
+  poolMemberships ChannelAccountPool[]
 
   @@index([deletedAt])
 }
@@ -186,6 +210,12 @@ model Task {
   status         TaskStatus      @default(PENDING)
   result         String?         @db.Text // JSON string (raw Unipile profile data)
   analysisResult String?         @db.Text // JSON string (AI scoring output)
+  // Phase 8 / EC-13.1 — explicit signal for the analysis sub-step. Distinct
+  // from `status`, which tracks the whole task lifecycle (scrape + analyze).
+  // PENDING = not yet run / running / skipped (no JD). OK = parsable scored
+  // result. FAILED = retries exhausted; surface in a recruiter "needs review"
+  // queue so candidates aren't stranded at SOURCED forever.
+  analysisStatus AnalysisStatus  @default(PENDING)
   errorMessage   String?         @db.Text // failure reason
   retryCount     Int             @default(0)
   accountId      String? // assigned at processing time
@@ -223,6 +253,9 @@ model Task {
   @@index([contentHash])
   @@index([deletedAt])
   @@index([candidateProfileId])
+  // Index supporting the "needs review" recruiter query
+  // (jobId + analysisStatus = FAILED).
+  @@index([jobId, analysisStatus])
 }
 
 model DuplicatePair {
@@ -294,12 +327,35 @@ model Channel {
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
-  requisition    Requisition     @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
-  sendingAccount Account?        @relation(fields: [sendingAccountId], references: [id])
+  requisition    Requisition          @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  sendingAccount Account?             @relation(fields: [sendingAccountId], references: [id])
   threads        ChannelThread[]
+  accountPool    ChannelAccountPool[]
 
   @@index([requisitionId, type, status])
   @@index([sendingAccountId])
+}
+
+// P1 #14 / EC-9.2 — per-channel pool of allowed sending accounts. Fan-out
+// picks from this pool by priority + round-robin (fewest threads first).
+// Empty pool → fall back to channel.sendingAccount (legacy single-account
+// binding). Doesn't activate until rows are inserted; safe additive change.
+model ChannelAccountPool {
+  id        String   @id @default(cuid())
+  channelId String
+  accountId String
+  // Higher priority = picked first when multiple accounts have headroom.
+  priority  Int      @default(0)
+  // Reserved for future weighted-random selection. Not used yet but reserves
+  // the column so the API doesn't break later.
+  weight    Int      @default(1)
+  createdAt DateTime @default(now())
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, accountId])
+  @@index([channelId, priority])
 }
 
 // One ChannelThread per (task, channel) — tracks the full per-candidate lifecycle
@@ -334,6 +390,17 @@ model ChannelThread {
   // breaks reply tracking and leaks identity to recipients. The worker reads
   // this field if set; otherwise falls back to channel.sendingAccount.
   accountId            String?
+  // P1 #41 / EC-13.13 — count of consecutive send failures. Incremented in
+  // the catch path; reset to 0 on a successful commit. When >= threshold
+  // (5 by default) the worker archives the thread with a structured reason
+  // so a single broken candidate doesn't doom-loop and waste retries.
+  consecutiveFailures  Int          @default(0)
+  // P1 #39 / EC-13.7 — most recent inbound message timestamp (any channel,
+  // but practically meaningful for WhatsApp). The 24h rolling free-form
+  // messaging window: outside it Meta requires an approved Business
+  // template, so the worker checks `now - lastInboundAt > 24h` before WA
+  // sends and pauses-with-reason rather than failing/charging premium.
+  lastInboundAt        DateTime?
   createdAt            DateTime     @default(now())
 
   task     Task            @relation(fields: [taskId], references: [id], onDelete: Cascade)
@@ -394,6 +461,25 @@ model WebhookEvent {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+
+// P1 #34 / EC-12.5 — daily stage-distribution snapshot for incident
+// detection. A scheduled job (app/api/cron/stage-snapshot) writes one row
+// per (requisitionId, stage) per day. Anomaly detection compares the latest
+// snapshot to recent ones — large day-over-day drops in any stage count
+// (e.g., 100 SHORTLISTED yesterday, 12 today) indicate a destructive
+// migration / cron / mass-update gone wrong, the kind of incident the
+// 2026-04-29 mass-stage-reset would have produced.
+model StageSnapshot {
+  id            String         @id @default(cuid())
+  capturedAt    DateTime       @default(now())
+  requisitionId String?
+  stage         CandidateStage
+  count         Int
+
+  @@unique([capturedAt, requisitionId, stage])
+  @@index([requisitionId, capturedAt])
+  @@index([capturedAt, stage])
+}
 
 model StageEvent {
   id        String          @id @default(cuid())

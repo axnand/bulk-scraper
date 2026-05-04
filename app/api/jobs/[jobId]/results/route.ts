@@ -27,6 +27,10 @@ export async function GET(
       id: task.id,
       url: task.url,
       status: task.status,
+      // P1 #37 — expose explicit analysis sub-state so the UI can render a
+      // "needs review" filter (analysisStatus === 'FAILED') without inferring
+      // from null analysisResult + non-null errorMessage.
+      analysisStatus: task.analysisStatus,
       result: task.result ? JSON.parse(task.result) : null,
       analysisResult: task.analysisResult ? JSON.parse(task.analysisResult) : null,
       errorMessage: task.errorMessage || null,

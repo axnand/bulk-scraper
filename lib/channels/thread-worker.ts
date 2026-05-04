@@ -14,6 +14,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { ChannelType, OutreachType, CandidateStage, type Prisma } from "@prisma/client";
+import { CONFIG } from "@/lib/config";
 import {
   sendInvitation,
   sendInMail,
@@ -112,6 +113,9 @@ async function commitSentMessage(
       accountId,
       pendingSendKey: null,
       pendingSendStartedAt: null,
+      // P1 #41 — successful commit resets the circuit-breaker counter so
+      // recoverable transient failures don't accumulate forever.
+      consecutiveFailures: 0,
     };
     const res = await tx.channelThread.updateMany({
       where: { id: threadId, status: { in: ["PENDING", "ACTIVE"] } },
@@ -142,6 +146,49 @@ async function commitSentMessage(
       }
       throw err;
     }
+    // P1 #24 / EC-9.7 — outreach path bumps Account.dailyCount so a single
+    // account shared across multiple channels can't exceed the provider's
+    // overall daily allotment. The scraping path already does this; the
+    // outreach path was previously invisible to the counter, leading to
+    // 429s when the channel cap was technically not yet reached.
+    //
+    // We also (re-)set dailyResetAt to end-of-day so the reset cron knows
+    // when to roll the counter back to 0. The cron's WHERE clause requires
+    // dailyResetAt < now AND dailyCount > 0; without this set, the counter
+    // would grow indefinitely.
+    //
+    // P1 #27 — also bump weekly counter (only meaningful for LinkedIn, but
+    // we increment unconditionally since the weekly cap check itself only
+    // applies to LinkedIn channels — this keeps the helper signature
+    // simple). Set weeklyResetAt to 7 days from now if not already set.
+    const now = new Date();
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+    const weekFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    await tx.account.update({
+      where: { id: accountId },
+      data: {
+        dailyCount: { increment: 1 },
+        weeklyCount: { increment: 1 },
+        requestCount: { increment: 1 },
+        lastUsedAt: now,
+        dailyResetAt: endOfDay,
+        // Only push weeklyResetAt forward if it's null or in the past — once
+        // set within an active 7-day window we leave it alone so the window
+        // tracks the FIRST send in the current week, not the most recent.
+        weeklyResetAt: undefined, // placeholder; we set below conditionally
+      },
+    });
+    // Conditional weeklyResetAt: set only when null or expired. Done as a
+    // separate update because Prisma doesn't support conditional column
+    // updates in a single update call.
+    await tx.account.updateMany({
+      where: {
+        id: accountId,
+        OR: [{ weeklyResetAt: null }, { weeklyResetAt: { lt: now } }],
+      },
+      data: { weeklyResetAt: weekFromNow },
+    });
     return true;
   });
 }
@@ -245,6 +292,35 @@ export async function processThread(threadId: string): Promise<void> {
     return;
   }
 
+  // P1 #24 / EC-9.7 — account-wide daily cap enforcement. The channel-level
+  // dailyCap (enforced inside processLinkedIn/Email/WhatsApp) only counts
+  // ThreadMessage rows for that channel. When one account is shared across
+  // multiple channels, the channel checks all pass independently while the
+  // ACCOUNT-side allotment (Unipile rate-limit) gets blown through. Gate at
+  // the account level too — reschedule to next daily reset window.
+  //
+  // P1 #27 — also gate on warmup-adjusted daily cap. Fresh accounts ramp
+  // from CONFIG.WARMUP_DAILY_CAP up to CONFIG.DAILY_SAFE_LIMIT after the
+  // warmupUntil window expires.
+  const accountDailyCap = effectiveAccountDailyCap(account);
+  if (account.dailyCount >= accountDailyCap) {
+    await guardedThreadUpdate(thread.id, { nextActionAt: startOfNextDay() });
+    console.log(`[ThreadWorker] Thread ${threadId}: account ${account.accountId} dailyCount=${account.dailyCount} ≥ ${accountDailyCap}${account.warmupUntil && account.warmupUntil > new Date() ? " (warmup)" : ""} — rescheduled to next day`);
+    return;
+  }
+
+  // P1 #27 / EC-13.6 — LinkedIn weekly invite cap. Only applies to LinkedIn
+  // (other providers have no weekly notion). Reschedule to the weekly reset
+  // window if hit.
+  if (thread.channelType === ChannelType.LINKEDIN && account.weeklyCount >= CONFIG.WEEKLY_SAFE_LIMIT) {
+    const nextAt = account.weeklyResetAt && account.weeklyResetAt > new Date()
+      ? account.weeklyResetAt
+      : startOfNextWeek();
+    await guardedThreadUpdate(thread.id, { nextActionAt: nextAt });
+    console.log(`[ThreadWorker] Thread ${threadId}: account ${account.accountId} weeklyCount=${account.weeklyCount} ≥ ${CONFIG.WEEKLY_SAFE_LIMIT} — rescheduled to ${nextAt.toISOString()}`);
+    return;
+  }
+
   // Build template vars from stored profile + analysis
   const profile = thread.task.result ? JSON.parse(thread.task.result as string) : {};
   const analysis = thread.task.analysisResult ? JSON.parse(thread.task.analysisResult as string) : {};
@@ -271,8 +347,51 @@ export async function processThread(threadId: string): Promise<void> {
     await recomputeTaskStage(thread.taskId);
   } catch (err: any) {
     console.error(`${tag} Error: ${err.message}`);
+
+    // P1 #41 / EC-13.13 — circuit breaker. Increment the consecutive-failure
+    // counter and archive the thread if we've blown past the threshold.
+    // Stops a single broken candidate from doom-looping forever (each failure
+    // costs an API call + retry slot). The counter resets on a successful
+    // commit (see commitSentMessage).
+    try {
+      const updated = await prisma.channelThread.update({
+        where: { id: thread.id },
+        data: { consecutiveFailures: { increment: 1 } },
+        select: { consecutiveFailures: true },
+      });
+      if (updated.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        const reason = `Circuit breaker: ${updated.consecutiveFailures} consecutive failures (${(err.message ?? "unknown").slice(0, 180)})`;
+        console.warn(`${tag} ${reason} — archiving thread`);
+        await archiveThread(thread.id, reason);
+        // Don't re-throw — the thread is now ARCHIVED and the cron should not
+        // retry it. Returning normally lets pg-boss / outreach-tick treat
+        // this as "handled."
+        return;
+      }
+    } catch (counterErr: any) {
+      // Counter update itself failed (e.g., the thread row was deleted).
+      // Just log and re-throw the original error so cron handles it.
+      console.warn(`${tag} consecutiveFailures bump failed: ${counterErr.message}`);
+    }
+
     throw err; // let the cron handle retry scheduling
   }
+}
+
+// P1 #41 — circuit breaker threshold. After this many consecutive failures
+// on a single thread, we archive rather than retry. Picked by feel: 5 means
+// ~25 minutes of retry attempts (cron resets nextActionAt to now+5min on
+// each failure) before the thread is shut down.
+const MAX_CONSECUTIVE_FAILURES = 5;
+
+// P1 #27 — effective daily cap honoring warmup ramp. While warmup is active,
+// the account is constrained to CONFIG.WARMUP_DAILY_CAP regardless of how
+// large the configured channel cap is.
+function effectiveAccountDailyCap(account: AccountRow): number {
+  const inWarmup = account.warmupUntil && account.warmupUntil > new Date();
+  return inWarmup
+    ? Math.min(CONFIG.DAILY_SAFE_LIMIT, CONFIG.WARMUP_DAILY_CAP)
+    : CONFIG.DAILY_SAFE_LIMIT;
 }
 
 // ─── LinkedIn ─────────────────────────────────────────────────────────────────
@@ -529,15 +648,19 @@ async function sendLinkedInInvite(
       err.statusCode === 409;
 
     if (alreadyConnected) {
-      console.log(`${tag} Already connected — skipping invite, sending DM now`);
-      const reschedOk = await guardedThreadUpdate(thread.id, {
+      // P2 #8 / EC-4.3 — was: `await processThread(thread.id)` recursively.
+      // Self-recursion bypasses the cron claim lock — a concurrent tick or
+      // a parallel worker could pick up the same thread before the recursive
+      // call's transaction commits, leading to two simultaneous processings.
+      // Replaced with `nextActionAt = now()` so the next claim cycle picks
+      // it up via the proper SKIP LOCKED claim. The marginal latency (≤1
+      // tick interval) is worth the concurrency safety.
+      console.log(`${tag} Already connected — skipping invite, queued for next tick to send DM`);
+      await guardedThreadUpdate(thread.id, {
         status: "ACTIVE",
         providerState: { phase: "CONNECTED" },
-        nextActionAt: null,
+        nextActionAt: new Date(),
       });
-      // Only recurse if we actually re-pointed the row; otherwise a webhook
-      // beat us and the thread is already in a terminal state.
-      if (reschedOk) await processThread(thread.id);
       return;
     }
 
@@ -645,8 +768,11 @@ async function processEmail(
   if (!recipientEmail) {
     const retryMinutes = config.contactRetryMinutes ?? 60;
     const maxDays = config.contactRetryMaxDays ?? 7;
-    const threadCreatedAt = thread.inviteSentAt ?? new Date(Date.now() - 60_000);
-    const gaveUp = (Date.now() - threadCreatedAt.getTime()) > maxDays * 24 * 60 * 60 * 1000;
+    // P1 #25 / EC-8.8 — anchor on thread.createdAt instead of the LinkedIn-specific
+    // thread.inviteSentAt (which is null for email threads, making the previous
+    // fallback `new Date(now - 60s)` push the deadline ~7 days into the future
+    // every retry → threads waiting on email enrichment never archived).
+    const gaveUp = (Date.now() - thread.createdAt.getTime()) > maxDays * 24 * 60 * 60 * 1000;
     if (!gaveUp) {
       await guardedThreadUpdate(thread.id, { nextActionAt: minutesFromNow(retryMinutes) });
       console.log(`${tag} No email yet — retrying in ${retryMinutes}min (max ${maxDays}d)`);
@@ -698,6 +824,21 @@ async function processEmail(
       return;
     }
 
+    // P1 #20 / EC-6.6 — refuse to advance the thread if the provider didn't
+    // give us a thread id back. The webhook handler matches inbound replies
+    // by `providerThreadId === in_reply_to.id`; without a stored id, every
+    // inbound reply on this thread looks like a fresh email and never gets
+    // attributed back to us. Loud failure here is better than silent
+    // reply-tracking loss in prod.
+    if (!result.replyToId) {
+      console.warn(`${tag} Email send returned no provider_id — refusing to advance thread (replies would never be tracked). Archiving with diagnostic.`);
+      await archiveThread(
+        thread.id,
+        "Email provider did not return a thread id (provider_id) — outbound message left but reply tracking is broken. Investigate Unipile email integration.",
+      );
+      return;
+    }
+
     const nextFollowup = config.followups?.[0];
     const nextAt = nextFollowup ? daysFromNow(nextFollowup.afterDays) : null;
 
@@ -707,7 +848,7 @@ async function processEmail(
         status: "ACTIVE",
         providerState: { phase: "SENT" },
         // Store the sent email's provider_id so follow-ups can thread via reply_to
-        providerThreadId: result.replyToId ?? null,
+        providerThreadId: result.replyToId,
         lastMessageAt: new Date(),
         nextActionAt: nextAt,
       },
@@ -802,8 +943,10 @@ async function processWhatsApp(
   if (!phone) {
     const retryMinutes = config.contactRetryMinutes ?? 60;
     const maxDays = config.contactRetryMaxDays ?? 7;
-    const threadCreatedAt = thread.inviteSentAt ?? new Date(Date.now() - 60_000);
-    const gaveUp = (Date.now() - threadCreatedAt.getTime()) > maxDays * 24 * 60 * 60 * 1000;
+    // P1 #25 / EC-8.8 — anchor on thread.createdAt for WA threads (same fix
+    // as the email branch above: thread.inviteSentAt is null for non-LinkedIn
+    // threads, making the deadline never expire on the previous code path).
+    const gaveUp = (Date.now() - thread.createdAt.getTime()) > maxDays * 24 * 60 * 60 * 1000;
     if (!gaveUp) {
       await guardedThreadUpdate(thread.id, { nextActionAt: minutesFromNow(retryMinutes) });
       console.log(`${tag} No phone yet — retrying in ${retryMinutes}min (max ${maxDays}d)`);
@@ -887,6 +1030,23 @@ async function processWhatsApp(
     const followup = config.followups?.[thread.followupsSent];
     if (!followup || !thread.providerChatId) {
       await archiveThread(thread.id, "Missing followup config or chat ID");
+      return;
+    }
+
+    // P1 #39 / EC-13.7 — WhatsApp 24-hour rolling window. Outside the window
+    // Meta requires an approved Business template; sending free-form text
+    // either fails or charges premium. We don't yet support template sends,
+    // so refuse-with-archive instead. Recruiter can re-engage manually via
+    // an approved template.
+    const WA_WINDOW_MS = 24 * 60 * 60 * 1000;
+    const lastInbound = thread.lastInboundAt;
+    const outsideWindow = !lastInbound || (Date.now() - lastInbound.getTime()) > WA_WINDOW_MS;
+    if (outsideWindow) {
+      const reason = lastInbound
+        ? `Outside WhatsApp 24h window (last inbound ${lastInbound.toISOString()}) — needs approved template, not yet supported`
+        : "Outside WhatsApp 24h window (no inbound message ever) — needs approved template, not yet supported";
+      console.log(`${tag} ${reason}`);
+      await archiveThread(thread.id, reason);
       return;
     }
 
@@ -994,9 +1154,12 @@ export async function archiveThread(threadId: string, reason: string): Promise<v
 // generate extra StageEvents.
 export async function markThreadReplied(threadId: string, taskId: string): Promise<void> {
   await prisma.$transaction(async (tx) => {
+    // P1 #39 — also set lastInboundAt on REPLIED so the WA 24h window
+    // calculation in processWhatsApp (followup branch) has a fresh anchor
+    // when the thread gets re-engaged after a "dismiss reply" action.
     const flip = await tx.channelThread.updateMany({
       where: { id: threadId, status: { in: ["PENDING", "ACTIVE"] } },
-      data: { status: "REPLIED", nextActionAt: null },
+      data: { status: "REPLIED", nextActionAt: null, lastInboundAt: new Date() },
     });
     if (flip.count === 0) return; // already REPLIED / PAUSED / ARCHIVED — nothing to do
 
@@ -1097,6 +1260,19 @@ function startOfNextDay(): Date {
   return d;
 }
 
+// P1 #27 — used when the LinkedIn weekly invite cap is hit. We don't track
+// the calendar week boundary in DB; instead we reschedule for the existing
+// weeklyResetAt if set, or start-of-next-week if not. This is good-enough:
+// the weekly reset is set when weeklyCount first goes positive (see
+// commitSentMessage), so the second-and-later sends update it forward.
+function startOfNextWeek(): Date {
+  const d = startOfToday();
+  const dayOfWeek = d.getDay(); // 0 = Sunday
+  const daysUntilNextMonday = (8 - dayOfWeek) % 7 || 7;
+  d.setDate(d.getDate() + daysUntilNextMonday);
+  return d;
+}
+
 // ─── Internal types ───────────────────────────────────────────────────────────
 
 type ProviderState = Record<string, string>;
@@ -1108,6 +1284,14 @@ type AccountRow = {
   apiKey: string | null;
   status: import("@prisma/client").AccountStatus;
   cooldownUntil: Date | null;
+  // P1 #24 — read at processThread time so we can enforce the account-wide
+  // daily cap (shared across channels) without an extra query.
+  dailyCount: number;
+  deletedAt: Date | null;
+  // P1 #27 — weekly cap + warmup tracking.
+  weeklyCount: number;
+  weeklyResetAt: Date | null;
+  warmupUntil: Date | null;
 };
 
 type ContactRow = {
@@ -1128,10 +1312,13 @@ type FullThread = {
   nextActionAt: Date | null;
   inviteSentAt: Date | null;
   lastMessageAt: Date | null;
+  // P1 #39 — most recent inbound message time (any channel; meaningful for WA).
+  lastInboundAt: Date | null;
   followupsSent: number;
   followupsTotal: number;
   providerChatId: string | null;
   providerThreadId: string | null;
+  createdAt: Date;
   channel: {
     id: string;
     dailyCap: number;

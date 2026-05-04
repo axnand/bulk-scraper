@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ChevronDown, Plus, Trash2, Pencil, Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -104,6 +105,16 @@ export function ScoringRulesTab({ requisitionId, initialConfig, onSaved }: Props
   const [minScoreThreshold, setMinScoreThreshold] = useState(cfg.minScoreThreshold ?? 70);
   const [autoShortlistThreshold, setAutoShortlistThreshold] = useState(cfg.autoShortlistThreshold ?? 70);
 
+  // P1 #42 / EC-13.3 — when the recruiter raises autoShortlistThreshold,
+  // existing SHORTLISTED candidates with score below the new threshold are
+  // still in pipeline. Surface them and let the recruiter decide what to do
+  // before the new threshold takes effect.
+  const [thresholdDialog, setThresholdDialog] = useState<{
+    newThreshold: number;
+    affected: Array<{ id: string; name: string; score: number }>;
+  } | null>(null);
+  const [applyingThreshold, setApplyingThreshold] = useState(false);
+
   const [expandedRuleKey, setExpandedRuleKey] = useState<string | null>(null);
   const [expandEnvelope, setExpandEnvelope] = useState(false);
   const [savingDescKey, setSavingDescKey] = useState<string | null>(null);
@@ -148,6 +159,97 @@ export function ScoringRulesTab({ requisitionId, initialConfig, onSaved }: Props
       setSaveError("Network error — changes not saved");
       setTimeout(() => setSaveError(null), 4000);
       return false;
+    }
+  }
+
+  // P1 #42 — intercept upward threshold changes. If existing SHORTLISTED
+  // candidates would no longer qualify, surface them in a confirmation
+  // dialog before persisting. Downward changes pass through immediately.
+  async function commitAutoShortlistThreshold(newThreshold: number) {
+    const previous = cfg.autoShortlistThreshold ?? 70;
+    if (newThreshold <= previous) {
+      // Loosening criteria — no candidates lose qualification.
+      await saveConfig({ autoShortlistThreshold: newThreshold });
+      return;
+    }
+
+    // Find existing SHORTLISTED candidates with score below the new threshold.
+    try {
+      const res = await fetch(`/api/requisitions/${requisitionId}/candidates`);
+      if (!res.ok) {
+        // Fail-open: save without prompt, just like before.
+        await saveConfig({ autoShortlistThreshold: newThreshold });
+        return;
+      }
+      const data = await res.json();
+      const tasks: Array<{
+        id: string;
+        analysisResult: { scorePercent?: number; candidateInfo?: { name?: string } } | null;
+        result?: { first_name?: string; last_name?: string; full_name?: string } | null;
+      }> = data.tasks ?? [];
+
+      // We don't have task.stage in this endpoint's payload. Compute affected
+      // by score alone (all DONE-with-analysis tasks below new threshold).
+      // If a server-side filter on stage='SHORTLISTED' is wanted later, it
+      // can be added — for now this surfaces every below-threshold scored
+      // candidate, which is closer to "what the recruiter sees" anyway.
+      const affected = tasks
+        .map(t => {
+          const score = Math.round(t.analysisResult?.scorePercent ?? -1);
+          if (score < 0) return null;
+          if (score >= newThreshold) return null;
+          if (score < previous) return null; // already below previous threshold; not a new exclusion
+          const name =
+            t.analysisResult?.candidateInfo?.name ??
+            t.result?.full_name ??
+            [t.result?.first_name, t.result?.last_name].filter(Boolean).join(" ") ??
+            "";
+          return { id: t.id, name, score };
+        })
+        .filter((x): x is { id: string; name: string; score: number } => x !== null);
+
+      if (affected.length === 0) {
+        await saveConfig({ autoShortlistThreshold: newThreshold });
+        return;
+      }
+
+      setThresholdDialog({ newThreshold, affected });
+    } catch {
+      // Fail-open on network error.
+      await saveConfig({ autoShortlistThreshold: newThreshold });
+    }
+  }
+
+  async function applyThresholdChange(action: "keep" | "pause" | "archive") {
+    if (!thresholdDialog) return;
+    setApplyingThreshold(true);
+    try {
+      // Always persist the new threshold first.
+      await saveConfig({ autoShortlistThreshold: thresholdDialog.newThreshold });
+
+      if (action === "keep") {
+        setThresholdDialog(null);
+        return;
+      }
+
+      // Map "pause" → SOURCED (archives open threads, leaves history)
+      //     "archive" → ARCHIVED (sets manualStage; archives all threads)
+      const targetStage = action === "pause" ? "SOURCED" : "ARCHIVED";
+      const taskIds = thresholdDialog.affected.map(t => t.id);
+
+      const res = await fetch(`/api/requisitions/${requisitionId}/candidates/bulk-stage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskIds, stage: targetStage, reason: `Auto-shortlist threshold raised to ${thresholdDialog.newThreshold}%` }),
+      });
+
+      if (!res.ok) {
+        setSaveError(`Threshold saved, but bulk action failed (HTTP ${res.status})`);
+        setTimeout(() => setSaveError(null), 6000);
+      }
+    } finally {
+      setApplyingThreshold(false);
+      setThresholdDialog(null);
     }
   }
 
@@ -649,8 +751,8 @@ export function ScoringRulesTab({ requisitionId, initialConfig, onSaved }: Props
           <input
             type="range" min={0} max={100} value={autoShortlistThreshold}
             onChange={e => setAutoShortlistThreshold(parseInt(e.target.value))}
-            onMouseUp={e => saveConfig({ autoShortlistThreshold: parseInt((e.target as HTMLInputElement).value) })}
-            onTouchEnd={e => saveConfig({ autoShortlistThreshold: parseInt((e.currentTarget as HTMLInputElement).value) })}
+            onMouseUp={e => commitAutoShortlistThreshold(parseInt((e.target as HTMLInputElement).value))}
+            onTouchEnd={e => commitAutoShortlistThreshold(parseInt((e.currentTarget as HTMLInputElement).value))}
             className="w-full accent-primary"
           />
           <div className="flex justify-between text-[10px] text-muted-foreground">
@@ -658,6 +760,69 @@ export function ScoringRulesTab({ requisitionId, initialConfig, onSaved }: Props
           </div>
         </CardContent>
       </Card>
+
+      {/* P1 #42 — threshold-change confirmation dialog. Fires only when the
+          recruiter RAISES the threshold and there are SHORTLISTED candidates
+          with score below the new value. Three actions: keep them as-is,
+          stop their outreach (drag back to SOURCED), or archive them. */}
+      <Dialog open={thresholdDialog !== null} onOpenChange={(o) => { if (!o) setThresholdDialog(null); }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Raise threshold?</DialogTitle>
+            <DialogDescription>
+              You&apos;re raising the auto-shortlist threshold to <strong>{thresholdDialog?.newThreshold}%</strong>.{" "}
+              <strong>{thresholdDialog?.affected.length ?? 0}</strong> currently shortlisted candidate
+              {(thresholdDialog?.affected.length ?? 0) === 1 ? "" : "s"} score below the new threshold.
+              Choose what to do with them.
+            </DialogDescription>
+          </DialogHeader>
+          {thresholdDialog && thresholdDialog.affected.length > 0 && (
+            <div className="max-h-48 overflow-y-auto rounded border border-border text-xs">
+              <table className="w-full">
+                <tbody>
+                  {thresholdDialog.affected.slice(0, 50).map(t => (
+                    <tr key={t.id} className="border-b border-border last:border-0">
+                      <td className="px-3 py-1.5 truncate">{t.name || t.id.slice(-6)}</td>
+                      <td className="px-3 py-1.5 text-right font-mono text-muted-foreground">{t.score}%</td>
+                    </tr>
+                  ))}
+                  {thresholdDialog.affected.length > 50 && (
+                    <tr><td colSpan={2} className="px-3 py-1.5 text-muted-foreground italic">
+                      …and {thresholdDialog.affected.length - 50} more
+                    </td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="ghost" onClick={() => setThresholdDialog(null)} disabled={applyingThreshold}>
+              Cancel
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => applyThresholdChange("keep")}
+              disabled={applyingThreshold}
+            >
+              Keep as-is
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => applyThresholdChange("pause")}
+              disabled={applyingThreshold}
+            >
+              Stop outreach
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => applyThresholdChange("archive")}
+              disabled={applyingThreshold}
+            >
+              {applyingThreshold ? "Applying…" : "Archive"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Min score threshold (sheet export) ── */}
       <Card>

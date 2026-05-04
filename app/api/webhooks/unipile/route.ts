@@ -6,13 +6,18 @@ import { recomputeTaskStage } from "@/lib/channels/stage-rollup";
 
 export const dynamic = "force-dynamic";
 
-// ─── Signature verification ───────────────────────────────────────────────────
+// ─── Shared-secret header verification ────────────────────────────────────────
+//
+// Unipile's webhook API does not natively HMAC-sign payloads. The supported
+// auth mechanism is a static shared-secret header configured per webhook via
+// the `headers` field on POST /api/v1/webhooks. We register every webhook with
+// `x-unipile-secret: $UNIPILE_WEBHOOK_SECRET` and verify it here.
 
-async function verifySignature(req: NextRequest, rawBody: string): Promise<boolean> {
-  const secret = process.env.UNIPILE_WEBHOOK_SECRET;
-  if (!secret) {
+function verifySecret(req: NextRequest): boolean {
+  const expected = process.env.UNIPILE_WEBHOOK_SECRET;
+  if (!expected) {
     // Fail-closed in production: a missing secret in prod is a misconfiguration,
-    // not a license to accept unsigned traffic. Allow only in non-prod env.
+    // not a license to accept unauthenticated traffic. Allow only in non-prod env.
     if (process.env.NODE_ENV === "production") {
       console.error("[Webhook/Unipile] UNIPILE_WEBHOOK_SECRET unset in production — rejecting");
       return false;
@@ -20,26 +25,11 @@ async function verifySignature(req: NextRequest, rawBody: string): Promise<boole
     return true;
   }
 
-  const sig = req.headers.get("x-unipile-signature") ?? "";
-  if (!sig.startsWith("sha256=")) return false;
-
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const mac = await crypto.subtle.sign("HMAC", key, enc.encode(rawBody));
-  const hex = Array.from(new Uint8Array(mac))
-    .map(b => b.toString(16).padStart(2, "0"))
-    .join("");
-
-  return timingSafeEqual(sig, `sha256=${hex}`);
+  const got = req.headers.get("x-unipile-secret") ?? "";
+  return timingSafeEqual(got, expected);
 }
 
-// Constant-time string comparison to prevent timing-attack signature leakage.
+// Constant-time string comparison to prevent timing-attack secret leakage.
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let mismatch = 0;
@@ -53,6 +43,35 @@ function timingSafeEqual(a: string, b: string): boolean {
 //
 // Unipile retries failed deliveries. We deduplicate using WebhookEvent.id
 // (the provider's own event ID). Returns true if this is a fresh event.
+
+// P2 #7 / EC-3.5 — per-event-type dedupe key. Each event has a known
+// canonical ID field; using it explicitly avoids cross-event collisions
+// the old waterfall-fallback could produce (e.g., picking chat_id from
+// new_message, then later picking the same chat_id from a chat-level
+// status event and treating them as the same delivery).
+function extractDedupeId(eventType: string, data: any): string | null {
+  if (!data) return null;
+  switch (eventType) {
+    case "users.new_relation":
+    case "users_relations.invitation_accepted":
+    case "new_relation":
+      // Invitation acceptance: invitation_id is the unique-per-acceptance key.
+      return data.invitation_id ?? data.event_id ?? null;
+    case "messaging.message_received":
+    case "messaging.new_message":
+    case "message_received":
+      // Inbound message: message_id is unique per message.
+      return data.message_id ?? data.event_id ?? null;
+    case "mail_received":
+    case "emails.mail_received":
+      // Inbound email: provider_id is the unique mail identifier.
+      return data.message_id ?? data.provider_id ?? data.event_id ?? null;
+    default:
+      // Unknown event type: prefer event_id (most specific) and fall back
+      // to nothing rather than a generic `id` that may collide.
+      return data.event_id ?? null;
+  }
+}
 
 async function dedupeEvent(provider: string, eventType: string, eventId: string | null): Promise<boolean> {
   if (!eventId) return true; // no id to dedupe on — process it
@@ -73,12 +92,12 @@ async function dedupeEvent(provider: string, eventType: string, eventId: string 
 // ─── Main handler ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-  const rawBody = await req.text();
-
-  if (!(await verifySignature(req, rawBody))) {
-    console.warn("[Webhook/Unipile] Invalid signature");
-    return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+  if (!verifySecret(req)) {
+    console.warn("[Webhook/Unipile] Invalid or missing x-unipile-secret header");
+    return NextResponse.json({ error: "Invalid secret" }, { status: 401 });
   }
+
+  const rawBody = await req.text();
 
   let event: { type: string; data: any };
   try {
@@ -89,13 +108,13 @@ export async function POST(req: NextRequest) {
 
   console.log(`[Webhook/Unipile] event=${event.type} data=${JSON.stringify(event.data)}`);
 
-  // Deduplicate using the most specific available ID
-  const eventId =
-    event.data?.event_id ??
-    event.data?.message_id ??
-    event.data?.invitation_id ??
-    event.data?.id ??
-    null;
+  // P2 #7 / EC-3.5 / EC-6.2 — per-event-type dedupe key extraction. The
+  // previous implementation walked a generic fallback chain
+  // (event_id ?? message_id ?? invitation_id ?? id), which could pick a
+  // chat-level `id` for a `message_received` event and collide with an
+  // unrelated chat-level event later. Each event type has a known ID field;
+  // pick the right one explicitly so distinct events never share dedupe keys.
+  const eventId = extractDedupeId(event.type, event.data);
 
   const isDuplicate = !(await dedupeEvent("unipile", event.type, eventId ? `${event.type}:${eventId}` : null));
   if (isDuplicate) {
@@ -198,7 +217,7 @@ async function handleThreadInviteAccepted(threadId: string): Promise<void> {
   });
   if (res.count === 0) return;
 
-  await recomputeTaskStage(thread.taskId);
+  await recomputeTaskStage(thread.taskId, { source: "WEBHOOK" });
   console.log(`[Webhook/Unipile] Thread ${threadId.slice(-6)} → CONNECTED`);
 }
 
@@ -263,13 +282,51 @@ async function handleNewMessage(data: any) {
   });
 
   if (threads.length === 0) {
+    // P1 #18 / EC-3.2 — out-of-order webhook backfill.
+    //
+    // We get here when `messaging.message_received` arrives BEFORE
+    // `users.new_relation` (candidate accepts the invite and replies in quick
+    // succession). At that moment the thread is still INVITE_PENDING and has
+    // no `providerChatId` stored, so the lookup-by-chat-id returns nothing.
+    //
+    // Fallback: pull the sender's provider_id from the payload and try to
+    // match an INVITE_PENDING thread for the same account. If we find one,
+    // backfill `providerChatId` on the thread, mark it CONNECTED → REPLIED,
+    // and propagate. This recovers the reply that would otherwise be lost.
+    const senderProviderId: string | undefined =
+      data?.sender?.provider_id ??
+      data?.from?.provider_id ??
+      data?.attendee?.provider_id ??
+      data?.author?.provider_id;
+
+    if (senderProviderId) {
+      const fallback = await findThreadByProviderUserId(senderProviderId, accountIdFromPayload);
+      if (fallback) {
+        // Backfill the chat id on the thread row, then propagate as a REPLIED.
+        await prisma.channelThread.updateMany({
+          where: { id: fallback.id, status: { in: ["ACTIVE", "PENDING"] } },
+          data: { providerChatId: chatId, providerState: { phase: "CONNECTED" } },
+        });
+        const t = await prisma.channelThread.findUnique({
+          where: { id: fallback.id },
+          select: { id: true, taskId: true },
+        });
+        if (t) {
+          await markThreadReplied(t.id, t.taskId);
+          await recomputeTaskStage(t.taskId, { source: "WEBHOOK" });
+          console.log(`[Webhook/Unipile] Backfilled out-of-order reply: thread ${t.id.slice(-6)} (chatId=${chatId}, provider_id=${senderProviderId}) → REPLIED`);
+          return;
+        }
+      }
+    }
+
     console.log(`[Webhook/Unipile] new_message: no active thread for chatId=${chatId} (account=${accountIdFromPayload ?? "unknown"}) — ignoring`);
     return;
   }
 
   for (const t of threads) {
     await markThreadReplied(t.id, t.taskId);
-    await recomputeTaskStage(t.taskId);
+    await recomputeTaskStage(t.taskId, { source: "WEBHOOK" });
     console.log(`[Webhook/Unipile] Thread ${t.id.slice(-6)} → REPLIED (chatId=${chatId})`);
   }
   if (threads.length > 1) {
@@ -312,7 +369,7 @@ async function handleMailReceived(data: any) {
 
   for (const t of threads) {
     await markThreadReplied(t.id, t.taskId);
-    await recomputeTaskStage(t.taskId);
+    await recomputeTaskStage(t.taskId, { source: "WEBHOOK" });
     console.log(`[Webhook/Unipile] Email thread ${t.id.slice(-6)} → REPLIED`);
   }
 }

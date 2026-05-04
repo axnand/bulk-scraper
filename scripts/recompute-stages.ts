@@ -20,9 +20,9 @@ async function main() {
 
   for (const task of tasks) {
     try {
-      const newStage = await recomputeTaskStage(task.id);
-      if (newStage !== task.stage) {
-        console.log(`  ${task.id.slice(-6)} ${task.stage} → ${newStage}`);
+      const result = await recomputeTaskStage(task.id);
+      if (result.changed) {
+        console.log(`  ${task.id.slice(-6)} ${result.fromStage} → ${result.stage}`);
         changed++;
       }
     } catch (err: any) {
