@@ -17,15 +17,17 @@ export async function startBoss(): Promise<PgBoss> {
   // pg-connection-string v2.6+ treats sslmode=require as verify-full,
   // which rejects self-signed certs on Railway/Supabase/Neon.
   let cleanedUrl = connectionString;
+  let sslDisabled = false;
   try {
     const u = new URL(connectionString);
+    sslDisabled = u.searchParams.get("sslmode") === "disable";
     u.searchParams.delete("sslmode");
     cleanedUrl = u.toString();
   } catch { /* not a parseable URL, use as-is */ }
 
   instance = new PgBoss({
     connectionString: cleanedUrl,
-    ssl: { rejectUnauthorized: false },
+    ...(sslDisabled ? {} : { ssl: { rejectUnauthorized: false } }),
     // Dedicated pool for pg-boss internals — separate from Prisma's pool.
     // Keep this low: Supabase PgBouncer Session mode has a hard pool_size limit
     // (15 on free tier). Budget: pg-boss=3 + Prisma worker slots=5 → total 8.
