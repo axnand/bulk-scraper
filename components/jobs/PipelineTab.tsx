@@ -5,7 +5,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 import {
   RefreshCw, LayoutGrid, Search, X, ExternalLink,
-  ChevronDown, Zap,
+  ChevronDown, Zap, Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,7 +30,16 @@ import {
   ACTIVE_STAGES,
   ARCHIVE_STAGES,
   PIPELINE_STAGES,
+  OUTREACH_ACTIVE_STAGES,
 } from "@/components/outreach/stage-config";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 interface Props {
   requisitionId: string;
@@ -49,6 +58,72 @@ function matchesQuery(task: PipelineTask, q: string) {
   );
 }
 
+// A transition is "destructive" (needs confirmation) when it would archive
+// thread state that can't be cheaply recovered. Three categories:
+//   - terminal targets (REJECTED, ARCHIVED) — archives ALL threads
+//   - SHORTLISTED from active outreach — archives live threads + restarts
+//   - SOURCED from SHORTLISTED or active outreach — archives live threads
+function needsConfirmation(fromStage: CandidateStage, toStage: CandidateStage): boolean {
+  if (fromStage === toStage) return false;
+  if (toStage === "REJECTED" || toStage === "ARCHIVED") return true;
+  if (toStage === "SHORTLISTED" && OUTREACH_ACTIVE_STAGES.has(fromStage)) return true;
+  if (
+    toStage === "SOURCED" &&
+    (fromStage === "SHORTLISTED" || OUTREACH_ACTIVE_STAGES.has(fromStage))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+// Per-target copy for the confirmation dialog. `hasActiveOutreach` tweaks the
+// body to be honest about whether anything will actually be archived (a
+// candidate sitting in SHORTLISTED has no live threads yet).
+function dialogCopy(
+  toStage: CandidateStage,
+  subjectLabel: string,
+  hasActiveOutreach: boolean,
+): { title: string; body: string; confirmLabel: string } {
+  switch (toStage) {
+    case "REJECTED":
+      return {
+        title: "Reject candidate?",
+        body: hasActiveOutreach
+          ? `${subjectLabel} will be moved to Rejected. Their active invite/messages will be archived.`
+          : `${subjectLabel} will be moved to Rejected.`,
+        confirmLabel: "Reject",
+      };
+    case "ARCHIVED":
+      return {
+        title: "Archive candidate?",
+        body: hasActiveOutreach
+          ? `${subjectLabel} will be moved to Archived. Their active invite/messages will be archived.`
+          : `${subjectLabel} will be moved to Archived.`,
+        confirmLabel: "Archive",
+      };
+    case "SHORTLISTED":
+      return {
+        title: "Restart outreach?",
+        body: `${subjectLabel} has outreach in progress. Moving back to Shortlisted will archive the current invite/messages and start a fresh sequence, potentially from a different account.`,
+        confirmLabel: "Yes, restart",
+      };
+    case "SOURCED":
+      return {
+        title: "Move back to Sourced?",
+        body: hasActiveOutreach
+          ? `${subjectLabel} will be moved back to Sourced. Their active invite/messages will be archived.`
+          : `${subjectLabel} will be moved back to Sourced. They will need to be shortlisted again to resume outreach.`,
+        confirmLabel: "Yes, move back",
+      };
+    default:
+      return {
+        title: "Confirm move?",
+        body: `${subjectLabel} will be moved to ${toStage}.`,
+        confirmLabel: "Confirm",
+      };
+  }
+}
+
 export function PipelineTab({ requisitionId }: Props) {
   const [stages, setStages] = useState<StageMap>({});
   const [total, setTotal] = useState(0);
@@ -60,6 +135,32 @@ export function PipelineTab({ requisitionId }: Props) {
   // Bulk selection
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [enriching, setEnriching] = useState(false);
+
+  // Pending destructive transition — set when the recruiter triggers a move
+  // that archives thread state (→ REJECTED, → ARCHIVED, → SHORTLISTED from an
+  // active stage, → SOURCED from an active stage). Cleared on confirm/cancel.
+  const [pendingTransition, setPendingTransition] = useState<
+    | {
+        kind: "single";
+        taskId: string;
+        fromStage: CandidateStage;
+        toStage: CandidateStage;
+        candidateName: string;
+        hasActiveOutreach: boolean;
+      }
+    | {
+        kind: "bulk";
+        taskIds: string[];
+        toStage: CandidateStage;
+        activeCount: number; // selected tasks currently in an active outreach stage
+        totalCount: number;
+      }
+    | null
+  >(null);
+
+  // Pending GDPR erase — set when recruiter clicks the Delete button.
+  const [pendingErase, setPendingErase] = useState<{ taskIds: string[]; count: number } | null>(null);
+  const [erasing, setErasing] = useState(false);
 
   const fetchPipeline = useCallback(async () => {
     try {
@@ -116,6 +217,56 @@ export function PipelineTab({ requisitionId }: Props) {
     };
   }
 
+  // Core API call — called after any confirmation gates have passed.
+  async function commitStageChange(taskId: string, fromStage: CandidateStage, newStage: CandidateStage, movedTask: PipelineTask) {
+    setStages(prev => {
+      const next = { ...prev };
+      next[fromStage] = (next[fromStage] ?? []).filter(t => t.id !== taskId);
+      next[newStage] = [{ ...movedTask, stage: newStage, stageUpdatedAt: new Date().toISOString() }, ...(next[newStage] ?? [])];
+      return next;
+    });
+
+    try {
+      const res = await fetch(
+        `/api/requisitions/${requisitionId}/candidates/${taskId}`,
+        { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stage: newStage }) },
+      );
+      if (!res.ok) {
+        const { status, message } = await readStageError(res);
+        setStages(prev => {
+          const next = { ...prev };
+          next[newStage] = (next[newStage] ?? []).filter(t => t.id !== taskId);
+          next[fromStage] = [movedTask, ...(next[fromStage] ?? [])];
+          return next;
+        });
+        if (status === 409) { toast.warning(message); fetchPipeline(); }
+        else toast.error(message);
+        return;
+      }
+      try {
+        const updated = await res.json();
+        if (updated?.stageUpdatedAt) {
+          setStages(prev => {
+            const next = { ...prev };
+            next[newStage] = (next[newStage] ?? []).map(t =>
+              t.id === taskId ? ({ ...t, stageUpdatedAt: updated.stageUpdatedAt } as PipelineTask) : t,
+            );
+            return next;
+          });
+        }
+      } catch { /* best-effort */ }
+      toast.success(`Moved to ${STAGE_CONFIG[newStage].label}`);
+    } catch {
+      setStages(prev => {
+        const next = { ...prev };
+        next[newStage] = (next[newStage] ?? []).filter(t => t.id !== taskId);
+        next[fromStage] = [movedTask, ...(next[fromStage] ?? [])];
+        return next;
+      });
+      toast.error("Failed to update stage");
+    }
+  }
+
   async function handleStageChange(taskId: string, newStage: CandidateStage) {
     let fromStage: CandidateStage | null = null;
     let movedTask: PipelineTask | null = null;
@@ -127,76 +278,19 @@ export function PipelineTab({ requisitionId }: Props) {
 
     if (!fromStage || !movedTask || fromStage === newStage) return;
 
-    setStages(prev => {
-      const next = { ...prev };
-      next[fromStage!] = (next[fromStage!] ?? []).filter(t => t.id !== taskId);
-      const updated: PipelineTask = { ...movedTask!, stage: newStage, stageUpdatedAt: new Date().toISOString() };
-      next[newStage] = [updated, ...(next[newStage] ?? [])];
-      return next;
-    });
-
-    // NOTE: we deliberately don't send If-Match here. In a single-recruiter
-    // setup, the only thing that "edits" a candidate concurrently is the
-    // outreach worker's own rollup (sending an invite advances the stage
-    // SHORTLISTED → CONTACT_REQUESTED on its own), and the recruiter's
-    // intent should always win over that. The server still SUPPORTS If-Match
-    // for any future multi-user / scripted client; we just don't opt-in
-    // from the kanban UI.
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-
-    try {
-      const res = await fetch(
-        `/api/requisitions/${requisitionId}/candidates/${taskId}`,
-        { method: "PATCH", headers, body: JSON.stringify({ stage: newStage }) }
-      );
-      if (!res.ok) {
-        const { status, message } = await readStageError(res);
-        // Always animate back: server didn't apply the change.
-        setStages(prev => {
-          const next = { ...prev };
-          next[newStage] = (next[newStage] ?? []).filter(t => t.id !== taskId);
-          next[fromStage!] = [movedTask!, ...(next[fromStage!] ?? [])];
-          return next;
-        });
-        if (status === 422) {
-          toast.error(message);
-        } else if (status === 409) {
-          toast.warning(message);
-          // Reload from the server so the recruiter sees the actual current state.
-          fetchPipeline();
-        } else {
-          toast.error(message);
-        }
-        return;
-      }
-
-      // On success update our local stageUpdatedAt so subsequent drags
-      // include the fresh If-Match value.
-      try {
-        const updated = await res.json();
-        if (updated?.stageUpdatedAt) {
-          setStages(prev => {
-            const next = { ...prev };
-            next[newStage] = (next[newStage] ?? []).map(t =>
-              t.id === taskId
-                ? ({ ...t, stageUpdatedAt: updated.stageUpdatedAt } as PipelineTask)
-                : t,
-            );
-            return next;
-          });
-        }
-      } catch { /* response body parsing is best-effort */ }
-
-      toast.success(`Moved to ${STAGE_CONFIG[newStage].label}`);
-    } catch {
-      setStages(prev => {
-        const next = { ...prev };
-        next[newStage] = (next[newStage] ?? []).filter(t => t.id !== taskId);
-        next[fromStage!] = [movedTask!, ...(next[fromStage!] ?? [])];
-        return next;
+    if (needsConfirmation(fromStage, newStage)) {
+      setPendingTransition({
+        kind: "single",
+        taskId,
+        fromStage,
+        toStage: newStage,
+        candidateName: movedTask.name || "this candidate",
+        hasActiveOutreach: OUTREACH_ACTIVE_STAGES.has(fromStage),
       });
-      toast.error("Failed to update stage");
+      return;
     }
+
+    await commitStageChange(taskId, fromStage, newStage, movedTask);
   }
 
   // Selection helpers
@@ -239,10 +333,8 @@ export function PipelineTab({ requisitionId }: Props) {
   // P1 #47 / EC-11.17 — single bulk endpoint replaces parallel PATCH calls.
   // Server processes each task in its own transaction and returns per-task
   // outcomes; UI reverts only the cards that failed.
-  async function handleBulkMove(newStage: CandidateStage) {
-    const taskIds = [...selectedIds];
-    if (!taskIds.length) return;
-
+  // Core bulk API — called after any confirmation gates have passed.
+  async function executeBulkMove(taskIds: string[], newStage: CandidateStage) {
     // Snapshot original stage per task so we can selectively revert failures.
     // Same reasoning as handleStageChange: we don't send `expected` (per-task
     // If-Match) because the only realistic "concurrent edit" is the system's
@@ -373,6 +465,49 @@ export function PipelineTab({ requisitionId }: Props) {
     }
   }
 
+  async function handleBulkMove(newStage: CandidateStage) {
+    const taskIds = [...selectedIds];
+    if (!taskIds.length) return;
+
+    // Determine if any selected task would trigger a destructive transition
+    // into newStage. For SHORTLISTED/SOURCED we count tasks in OUTREACH_ACTIVE
+    // (or SHORTLISTED, for SOURCED). For REJECTED/ARCHIVED every selected task
+    // counts (terminal targets are always destructive).
+    const needsBulkConfirm =
+      newStage === "REJECTED" ||
+      newStage === "ARCHIVED" ||
+      newStage === "SHORTLISTED" ||
+      newStage === "SOURCED";
+
+    if (needsBulkConfirm) {
+      const activeCount = taskIds.filter(id => {
+        for (const s of OUTREACH_ACTIVE_STAGES) {
+          if (stages[s]?.some(t => t.id === id)) return true;
+        }
+        // For SOURCED, SHORTLISTED tasks also count as "will lose state".
+        if (newStage === "SOURCED" && stages.SHORTLISTED?.some(t => t.id === id)) return true;
+        return false;
+      }).length;
+
+      // For REJECTED/ARCHIVED, always confirm — even SOURCED candidates being
+      // terminally closed deserves an "are you sure".
+      const triggerForTerminal = newStage === "REJECTED" || newStage === "ARCHIVED";
+
+      if (activeCount > 0 || triggerForTerminal) {
+        setPendingTransition({
+          kind: "bulk",
+          taskIds,
+          toStage: newStage,
+          activeCount,
+          totalCount: taskIds.length,
+        });
+        return;
+      }
+    }
+
+    await executeBulkMove(taskIds, newStage);
+  }
+
   async function handleBulkEnrich() {
     const taskIds = [...selectedIds];
     if (!taskIds.length) return;
@@ -395,6 +530,39 @@ export function PipelineTab({ requisitionId }: Props) {
       toast.error("Network error during enrichment");
     } finally {
       setEnriching(false);
+    }
+  }
+
+  async function commitErase(taskIds: string[]) {
+    setErasing(true);
+    try {
+      const res = await fetch(`/api/requisitions/${requisitionId}/candidates/bulk-erase`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskIds }),
+      });
+      const d = await res.json();
+      if (!res.ok) {
+        toast.error(d.error ?? "Delete failed");
+        return;
+      }
+      // Remove erased tasks from local state
+      setStages(prev => {
+        const next = { ...prev };
+        for (const stage of PIPELINE_STAGES) {
+          if (next[stage]) {
+            next[stage] = next[stage]!.filter(t => !taskIds.includes(t.id));
+          }
+        }
+        return next;
+      });
+      setTotal(prev => Math.max(0, prev - (d.erased ?? 0)));
+      clearSelection();
+      toast.success(`${d.erased} candidate${d.erased !== 1 ? "s" : ""} permanently deleted`);
+    } catch {
+      toast.error("Network error — delete failed");
+    } finally {
+      setErasing(false);
     }
   }
 
@@ -557,6 +725,100 @@ export function PipelineTab({ requisitionId }: Props) {
         </TabsContent>
       </Tabs>
 
+      {/* Destructive-transition confirmation dialog */}
+      <Dialog
+        open={!!pendingTransition}
+        onOpenChange={open => { if (!open) setPendingTransition(null); }}
+      >
+        <DialogContent className="max-w-sm">
+          {pendingTransition && (() => {
+            const subject =
+              pendingTransition.kind === "single"
+                ? pendingTransition.candidateName
+                : pendingTransition.kind === "bulk"
+                ? `${pendingTransition.totalCount} candidate${pendingTransition.totalCount !== 1 ? "s" : ""}`
+                : "this candidate";
+            const hasActive =
+              pendingTransition.kind === "single"
+                ? pendingTransition.hasActiveOutreach
+                : pendingTransition.activeCount > 0;
+            const copy = dialogCopy(pendingTransition.toStage, subject, hasActive);
+            const bulkSuffix =
+              pendingTransition.kind === "bulk" && pendingTransition.activeCount > 0
+                ? ` (${pendingTransition.activeCount} have active outreach)`
+                : "";
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle>{copy.title}</DialogTitle>
+                  <DialogDescription className="pt-1">
+                    {copy.body}{bulkSuffix}
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter className="gap-2 sm:gap-0">
+                  <Button variant="outline" size="sm" onClick={() => setPendingTransition(null)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={async () => {
+                      const p = pendingTransition;
+                      setPendingTransition(null);
+                      if (!p) return;
+                      if (p.kind === "single") {
+                        const movedTask = stages[p.fromStage]?.find(t => t.id === p.taskId);
+                        if (movedTask) await commitStageChange(p.taskId, p.fromStage, p.toStage, movedTask);
+                      } else {
+                        await executeBulkMove(p.taskIds, p.toStage);
+                      }
+                    }}
+                  >
+                    {copy.confirmLabel}
+                  </Button>
+                </DialogFooter>
+              </>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* GDPR erasure confirmation dialog */}
+      <Dialog
+        open={!!pendingErase}
+        onOpenChange={open => { if (!open) setPendingErase(null); }}
+      >
+        <DialogContent className="max-w-sm">
+          {pendingErase && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Permanently delete {pendingErase.count} candidate{pendingErase.count !== 1 ? "s" : ""}?</DialogTitle>
+                <DialogDescription className="pt-1">
+                  This will erase all data — profile, outreach history, notes, and stage history — from the database. <strong>This cannot be undone.</strong>
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter className="gap-2 sm:gap-0">
+                <Button variant="outline" size="sm" onClick={() => setPendingErase(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={erasing}
+                  onClick={async () => {
+                    const ids = pendingErase.taskIds;
+                    setPendingErase(null);
+                    await commitErase(ids);
+                  }}
+                >
+                  {erasing ? "Deleting…" : "Delete permanently"}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
       {/* Floating bulk action bar */}
       {selectedIds.size > 0 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-background border border-border rounded-2xl shadow-2xl px-4 py-2.5 animate-in slide-in-from-bottom-2 duration-150">
@@ -597,6 +859,18 @@ export function PipelineTab({ requisitionId }: Props) {
             disabled={enriching}
           >
             {enriching ? <><RefreshCw className="h-3 w-3 animate-spin" />Enriching…</> : <><Zap className="h-3 w-3" />Enrich Contacts</>}
+          </Button>
+
+          <div className="w-px h-5 bg-border mx-1" />
+
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs gap-1 text-destructive hover:text-destructive hover:bg-destructive/10"
+            onClick={() => setPendingErase({ taskIds: [...selectedIds], count: selectedIds.size })}
+          >
+            <Trash2 className="h-3 w-3" />
+            Delete
           </Button>
 
           <button

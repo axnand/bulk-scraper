@@ -5,6 +5,7 @@ import {
   validateEmailConfig,
   validateWAConfig,
 } from "@/lib/channels/types";
+import { recomputeTaskStage } from "@/lib/channels/stage-rollup";
 
 export const dynamic = "force-dynamic";
 
@@ -104,10 +105,57 @@ export async function PATCH(
       return NextResponse.json({ error: "No fields to update" }, { status: 400 });
     }
 
+    const accountChanging =
+      body.sendingAccountId !== undefined &&
+      existing?.type !== undefined;
+
     const channel = await prisma.channel.update({
       where: { id: channelId },
       data,
     });
+
+    // When the sending account changes, every live thread on this channel is
+    // bound to the old account — the LinkedIn conversation / email thread-id
+    // chain lives there and cannot be transferred. Archive them so the worker
+    // doesn't try to continue a conversation from a different identity, and so
+    // the popover stops showing stale "Messaged" state from the old account.
+    // Stage rollup for each affected task fires async so the kanban board
+    // reflects the reset without blocking this response.
+    if (accountChanging) {
+      const now = new Date();
+      const affected = await prisma.channelThread.findMany({
+        where: {
+          channelId,
+          status: { in: ["PENDING", "ACTIVE", "PAUSED"] },
+        },
+        select: { taskId: true },
+      });
+
+      if (affected.length > 0) {
+        await prisma.channelThread.updateMany({
+          where: {
+            channelId,
+            status: { in: ["PENDING", "ACTIVE", "PAUSED"] },
+          },
+          data: {
+            status: "ARCHIVED",
+            archivedAt: now,
+            archivedReason: "account_changed",
+            nextActionAt: null,
+            pendingSendKey: null,
+            pendingSendStartedAt: null,
+          },
+        });
+
+        const uniqueTaskIds = [...new Set(affected.map(t => t.taskId))];
+        // Fire-and-forget — if a recompute fails it's non-fatal; the rollup
+        // will self-correct on the next webhook or worker tick.
+        Promise.all(uniqueTaskIds.map(id => recomputeTaskStage(id, { source: "SYSTEM" })))
+          .catch(err => console.error("[Channel PATCH] recomputeTaskStage batch failed:", err));
+
+        console.log(`[Channel PATCH] account changed on channel ${channelId} — archived ${affected.length} live threads across ${uniqueTaskIds.length} tasks`);
+      }
+    }
 
     return NextResponse.json({ channel });
   } catch (err: any) {

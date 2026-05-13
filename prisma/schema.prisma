@@ -660,3 +660,14 @@ model SheetIntegration {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+// GDPR erasure audit log — one row per bulk-erase action.
+// Stores a snapshot of key identifiers before hard-deletion so there is a
+// permanent record that the erasure happened (the data itself is gone).
+model GdprErasure {
+  id           String   @id @default(cuid())
+  erasedAt     DateTime @default(now())
+  erasedBy     String   @default("recruiter") // actor email/id — extend when auth is added
+  taskCount    Int
+  snapshotJson String   @db.Text // JSON: array of { taskId, url, name, stage }
+}

@@ -125,3 +125,13 @@ export const ARCHIVE_STAGES: CandidateStage[] = [
 
 // Alias to keep existing imports working
 export const PRIMARY_STAGES = ACTIVE_STAGES;
+
+// Stages where active outreach has been sent. Moving a candidate BACK to
+// SHORTLISTED from any of these will archive their live threads and restart —
+// the UI should warn the recruiter before proceeding.
+export const OUTREACH_ACTIVE_STAGES = new Set<CandidateStage>([
+  "CONTACT_REQUESTED",
+  "CONNECTED",
+  "MESSAGED",
+  "REPLIED",
+]);

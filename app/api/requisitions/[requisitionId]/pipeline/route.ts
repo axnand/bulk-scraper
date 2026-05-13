@@ -43,6 +43,7 @@ export async function GET(
             status: true,
             providerState: true,
             lastMessageAt: true,
+            archivedReason: true,
           },
         },
       },
@@ -105,6 +106,7 @@ export async function GET(
           status: ct.status,
           providerState: ct.providerState as Record<string, unknown> | null,
           lastMessageAt: ct.lastMessageAt?.toISOString() ?? null,
+          archivedReason: ct.archivedReason ?? null,
         })),
       };
 

@@ -71,9 +71,17 @@ interface Props {
 }
 
 export function ChannelStatusPopover({ threads }: Props) {
-  if (threads.length === 0) return null;
+  // Split: live threads drive the main "Channel Status" section; archived
+  // ones surface as "Previous Attempts" so recruiters can see at a glance
+  // that this candidate had outreach reset (account_changed / manual_reset).
+  const liveDisplays = threads
+    .filter(t => t.status !== "ARCHIVED")
+    .map(deriveThreadDisplay);
+  const archivedDisplays = threads
+    .filter(t => t.status === "ARCHIVED")
+    .map(deriveThreadDisplay);
 
-  const displays = threads.map(deriveThreadDisplay);
+  if (liveDisplays.length === 0 && archivedDisplays.length === 0) return null;
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -89,26 +97,49 @@ export function ChannelStatusPopover({ threads }: Props) {
         <TooltipContent
           side="top"
           align="start"
-          className="py-2.5 min-w-[170px] max-w-[220px]"
+          className="py-2.5 min-w-[180px] max-w-[260px]"
         >
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 px-0.5">
-            Channel Status
-          </p>
-          <div className="space-y-1.5">
-            {displays.map((d, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <ChannelIcon channelType={d.channelType} active={d.isActive} />
-                <span
-                  className={cn(
-                    "text-xs leading-none",
-                    d.isActive ? "text-popover-foreground" : "text-muted-foreground/50",
-                  )}
-                >
-                  {d.label}
-                </span>
+          {liveDisplays.length > 0 && (
+            <>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 px-0.5">
+                Channel Status
+              </p>
+              <div className="space-y-1.5">
+                {liveDisplays.map((d, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <ChannelIcon channelType={d.channelType} active={d.isActive} />
+                    <span
+                      className={cn(
+                        "text-xs leading-none",
+                        d.isActive ? "text-popover-foreground" : "text-muted-foreground/50",
+                      )}
+                    >
+                      {d.label}
+                    </span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </>
+          )}
+
+          {archivedDisplays.length > 0 && (
+            <>
+              {liveDisplays.length > 0 && <div className="my-2 border-t border-border/40" />}
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 px-0.5">
+                Previous Attempts
+              </p>
+              <div className="space-y-1.5">
+                {archivedDisplays.map((d, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <ChannelIcon channelType={d.channelType} active={false} />
+                    <span className="text-xs leading-none text-muted-foreground/60">
+                      {d.label}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>

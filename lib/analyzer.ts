@@ -238,8 +238,13 @@ Any ambiguity → NO growth
    YOU MUST FOLLOW THESE TWO STEPS IN ORDER:
 
    STEP 1 — CLASSIFY THE DEGREE TYPE:
-   - "BTech/BE-equivalent" means ONLY: BTech, B.Tech, BE, B.E., BS/BSc in Computer Science or Engineering (4-year engineering/technology degrees).
-   - "Non-BTech" means ALL other undergrad degrees: BCA, BBA, BCom, BA, BSc (non-CS/non-engineering), B.Sc IT, BMS, Management, Finance, Arts, etc. These are NOT equivalent to BTech/BE even if the institution is prestigious. A Bachelor of Management is Non-BTech. A Bachelor of Commerce is Non-BTech.
+   - "BTech/BE-equivalent" means: BTech, B.Tech, BE, B.E., BS/BSc in Computer Science or Engineering (4-year engineering/technology degrees).
+   - For 5-year integrated / Dual Degree programs, classify based on the UNDERGRADUATE component of the degree:
+     * If the undergrad component is BTech/BE/Engineering (e.g., B.Tech + M.Tech, B.Tech + MBA, B.E. + MS) → classify as BTech/BE-equivalent
+     * If the undergrad component is non-engineering (e.g., Integrated MBA, Integrated MCA, B.Sc + M.Sc, BBA + MBA) → classify as Non-BTech
+     * When the degree title does not clearly state both components, look at the FIRST degree listed — that is the undergraduate component.
+   - "Non-BTech" means ALL other undergrad degrees: BCA, BBA, BCom, BA, BSc (non-CS/non-engineering), B.Sc IT, BMS, Management, Finance, Arts, Integrated MBA, Integrated MCA, etc. These are NOT equivalent to BTech/BE even if the institution is prestigious.
+   - RULE: The classification follows the undergraduate component, not the postgraduate one. A B.Tech + MBA Dual Degree is BTech/BE-equivalent because the undergraduate part is B.Tech.
 
    STEP 2 — CLASSIFY THE INSTITUTION TIER, THEN LOOK UP SCORE:
    **STRICT TIER CLASSIFICATION RULES (DO NOT GUESS)**
@@ -266,12 +271,12 @@ Any ambiguity → NO growth
    | BTech/BE    | gradTier1=15      | gradTier2=10      | both "" |
    | Non-BTech   | gradTier1=7       | gradTier2=5       | both "" |
 
-   IMPORTANT: Non-BTech from Tier 2 is ALWAYS 5, never 10. Only BTech/BE from Tier 2 gets 10. If the degree is BBA, BCom, BMS, Management, Finance, or anything other than BTech/BE/BS-Engineering, the maximum possible Tier 2 score is 5.`,
+   IMPORTANT: Non-BTech from Tier 2 is ALWAYS 5, never 10. Only BTech/BE from Tier 2 gets 10. If the degree is BBA, BCom, BMS, Management, Finance, Integrated MBA, Integrated MCA, or anything other than BTech/BE/BS-Engineering, the maximum possible Tier 2 score is 5. For Dual Degree programs, classify by the undergraduate component: B.Tech + M.Tech and B.Tech + MBA both follow the BTech/BE row; Integrated MBA and BBA + MBA follow the Non-BTech row.`,
     scoreParameters: [
       { key: "gradTier1", label: "Tier 1", allowedValuesHint: '<15 or 7 or "">', maxPoints: 15 },
       { key: "gradTier2", label: "Tier 2", allowedValuesHint: '<10 or 5 or "">', maxPoints: 10 },
     ],
-    logFormat: "<MUST state: 1) degree name, 2) BTech/BE or Non-BTech classification, 3) institution name, 4) Tier 1/Tier 2/Neither, 5) score from lookup table. Example: 'BBA (Non-BTech) from De La Salle University (Tier 2) → gradTier2=5'>",
+    logFormat: "<MUST state: 1) degree name, 2) undergraduate component identified, 3) BTech/BE or Non-BTech classification, 4) institution name, 5) Tier 1/Tier 2/Neither, 6) score from lookup table. Examples: 'BBA (Non-BTech) from De La Salle University (Tier 2) → gradTier2=5', 'B.Tech + M.Tech Dual Degree (undergrad=B.Tech → BTech/BE-equivalent) from IIT Bombay (Tier 1) → gradTier1=15', 'B.Tech + MBA Dual Degree (undergrad=B.Tech → BTech/BE-equivalent) from VIT (Tier 2) → gradTier2=10'>",
   },
   companyType: {
     key: "companyType",

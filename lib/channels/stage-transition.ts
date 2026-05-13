@@ -39,7 +39,8 @@ export type ThreadEffect =
   | "archiveOpen"
   | "pauseActive"
   | "archiveAll"
-  | "resurrectAndFanOut";
+  | "resurrectAndFanOut"
+  | "archiveAndFanOut"; // recruiter drags back to SHORTLISTED from an active outreach stage — start over
 
 export type Transition =
   | { kind: "allow"; effect: ThreadEffect; setManualStage: CandidateStage | null }
@@ -54,10 +55,23 @@ export function evaluateTransition(from: CandidateStage, to: CandidateStage): Tr
     };
   }
 
+  // Refuse direct drags between two system-derived stages. These stages are
+  // materialized from ChannelThread state — writing `task.stage` here doesn't
+  // change anything in the underlying thread, so the next rollup (worker tick
+  // or webhook) would correct it back. The drag would silently revert,
+  // confusing the recruiter. Direct them to use SHORTLISTED as the reset
+  // mechanism if they actually want to restart outreach.
+  if (SYSTEM_DERIVED.has(from) && SYSTEM_DERIVED.has(to)) {
+    return {
+      kind: "refuse",
+      reason: "This stage is managed automatically by the outreach system. To restart this candidate's outreach, move them to Shortlisted instead.",
+    };
+  }
+
   // Recruiter UI exposes columns for every stage; refusing a drag (even into
-  // system-derived ones) breaks the kanban workflow. Allow the drag, write
-  // the recruiter's intent in `stage`, skip thread side-effects for
-  // system-derived targets, and let the rollup reconcile if it disagrees.
+  // system-derived ones from non-system stages) breaks the kanban workflow.
+  // Allow the drag, write the recruiter's intent in `stage`, skip thread
+  // side-effects for system-derived targets, and let the rollup reconcile.
 
   let effect: ThreadEffect = "none";
 
@@ -78,6 +92,12 @@ export function evaluateTransition(from: CandidateStage, to: CandidateStage): Tr
   } else if (to === CandidateStage.SHORTLISTED) {
     if (from === CandidateStage.SOURCED) {
       effect = "fanOut";
+    } else if (SYSTEM_DERIVED.has(from)) {
+      // Recruiter is explicitly resetting a candidate mid-outreach back to
+      // SHORTLISTED. This is a "start over" signal — the previous invite/DM
+      // sequence is abandoned. Archive all live threads so fan-out creates
+      // fresh ones (potentially on a new account if the channel pool changed).
+      effect = "archiveAndFanOut";
     } else if (
       from === CandidateStage.ARCHIVED ||
       from === CandidateStage.REJECTED ||
@@ -87,7 +107,7 @@ export function evaluateTransition(from: CandidateStage, to: CandidateStage): Tr
       effect = "resurrectAndFanOut";
     }
   }
-  // SYSTEM_DERIVED targets fall through with effect: "none".
+  // Other SYSTEM_DERIVED targets fall through with effect: "none".
 
   return {
     kind: "allow",
@@ -225,6 +245,22 @@ export async function applyStageTransition(input: ApplyTransitionInput): Promise
             data: { status: "ACTIVE", nextActionAt: now },
           });
           break;
+        case "archiveAndFanOut":
+          // Archive every live thread — recruiter is starting this candidate
+          // over from scratch. Fan-out (below) will create fresh threads, which
+          // will pick the current account pool (may differ from the old threads).
+          await tx.channelThread.updateMany({
+            where: { taskId, status: { in: ["PENDING", "ACTIVE", "PAUSED"] } },
+            data: {
+              status: "ARCHIVED",
+              archivedAt: now,
+              archivedReason: "manual_reset",
+              nextActionAt: null,
+              pendingSendKey: null,
+              pendingSendStartedAt: null,
+            },
+          });
+          break;
         case "fanOut":
           // Run outside the transaction (below) — fanOutToChannels has its
           // own queries that wouldn't share this tx client.
@@ -235,7 +271,7 @@ export async function applyStageTransition(input: ApplyTransitionInput): Promise
     });
 
     if (
-      (transition.effect === "fanOut" || transition.effect === "resurrectAndFanOut") &&
+      (transition.effect === "fanOut" || transition.effect === "resurrectAndFanOut" || transition.effect === "archiveAndFanOut") &&
       updated.jobId
     ) {
       fanOutToChannels(taskId, updated.jobId).catch(err =>

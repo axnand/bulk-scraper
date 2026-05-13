@@ -67,7 +67,13 @@ export async function fanOutToChannels(taskId: string, jobId: string): Promise<v
       where: { id: taskId },
       select: {
         analysisResult: true,
-        channelThreads: { select: { channelId: true } },
+        // Only non-ARCHIVED threads block fan-out. ARCHIVED threads from a
+        // previous outreach round (manual_reset, account_changed, timeout)
+        // must not prevent fresh threads being created for the same channel.
+        channelThreads: {
+          where: { status: { not: "ARCHIVED" } },
+          select: { channelId: true },
+        },
       },
     }),
     prisma.channel.findMany({
