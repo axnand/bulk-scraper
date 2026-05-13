@@ -78,6 +78,14 @@ export async function POST(
     const vars = buildVars(profile ?? {}, analysis ?? {});
     const text = renderTemplate(firstFollowup.template, vars);
 
+    // Find the LinkedIn ChannelThread for this task — we MUST update it with
+    // providerChatId so future reply webhooks can match. Without this the
+    // rollup also snaps Task.stage back to CONNECTED on the next tick.
+    const thread = await prisma.channelThread.findFirst({
+      where: { taskId, channelId: channel.id, status: { in: ["ACTIVE", "PENDING"] } },
+      orderBy: { createdAt: "desc" },
+    });
+
     const { chatId, messageId } = await startChat({
       accountId: account.accountId,
       providerUserId,
@@ -87,6 +95,8 @@ export async function POST(
     });
 
     const now = new Date();
+    const nextFollowup = cfg?.followups?.[1];
+    const nextAt = nextFollowup ? new Date(now.getTime() + (nextFollowup.afterDays ?? 0) * 86_400_000) : null;
 
     await prisma.$transaction([
       stageEventExplicit(),
@@ -116,7 +126,39 @@ export async function POST(
           reason: "LinkedIn first DM sent",
         },
       }),
+      ...(thread
+        ? [
+            prisma.channelThread.update({
+              where: { id: thread.id },
+              data: {
+                status: "ACTIVE",
+                providerState: { phase: "MESSAGED" },
+                providerChatId: chatId || thread.providerChatId,
+                lastMessageAt: now,
+                followupsSent: Math.max(thread.followupsSent, 1),
+                nextActionAt: nextAt,
+                accountId: thread.accountId ?? account.id,
+              },
+            }),
+            prisma.threadMessage.create({
+              data: {
+                threadId: thread.id,
+                type: "FIRST_DM",
+                status: "SENT",
+                renderedBody: text,
+                sentAt: now,
+                providerMessageId: messageId || null,
+                providerChatId: chatId || null,
+                accountId: account.id,
+              },
+            }),
+          ]
+        : []),
     ]);
+
+    if (!thread) {
+      console.warn(`[send-dm] No ChannelThread found for taskId=${taskId} channelId=${channel.id} — Task.stage updated but webhook matching may fail`);
+    }
 
     return NextResponse.json({ ok: true, chatId, messageId });
   } catch (error: any) {

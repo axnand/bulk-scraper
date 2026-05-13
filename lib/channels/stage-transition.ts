@@ -281,17 +281,32 @@ export async function applyStageTransition(input: ApplyTransitionInput): Promise
           break;
         case "syncConnected":
           // Recruiter manually synced ahead of webhook. Update providerState so
-          // the rollup derives CONNECTED on its next tick and won't snap back.
+          // the rollup derives CONNECTED on its next tick. Set nextActionAt=now
+          // so the worker picks up the thread and sends the first DM — without
+          // this, the thread sits idle (nextActionAt was the invite timeout, far
+          // in the future) and no providerChatId is ever created, which means
+          // future reply webhooks can't match the thread.
           await tx.channelThread.updateMany({
-            where: { taskId, status: "ACTIVE" },
-            data: { providerState: { phase: "CONNECTED" }, lastMessageAt: null },
+            where: { taskId, status: { in: ["ACTIVE", "PENDING"] } },
+            data: {
+              status: "ACTIVE",
+              providerState: { phase: "CONNECTED" },
+              lastMessageAt: null,
+              nextActionAt: now,
+            },
           });
           break;
         case "syncMessaged":
-          // Set lastMessageAt so the rollup sees MESSAGED.
+          // Set lastMessageAt so the rollup sees MESSAGED. Also nudge the worker
+          // so any follow-up scheduling re-evaluates against the new timestamp.
           await tx.channelThread.updateMany({
-            where: { taskId, status: "ACTIVE" },
-            data: { lastMessageAt: now },
+            where: { taskId, status: { in: ["ACTIVE", "PENDING"] } },
+            data: {
+              status: "ACTIVE",
+              providerState: { phase: "MESSAGED" },
+              lastMessageAt: now,
+              nextActionAt: now,
+            },
           });
           break;
         case "syncReplied":

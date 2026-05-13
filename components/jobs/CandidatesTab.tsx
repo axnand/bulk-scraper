@@ -101,10 +101,10 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
       const isFailed = task.status === "FAILED" || (task as any).analysisStatus === "FAILED";
       const isRetrying = task.status === "PENDING" && !!task.errorMessage;
       if (isFailed) {
-        toast.error(`${label}: ${task.errorMessage || "Analysis failed"}`, { duration: Infinity });
+        toast.error(`${label}: ${task.errorMessage || "Analysis failed"}`, { duration: 1000 * 60 * 60 * 24 });
         notifiedFailedTasks.current.add(task.id);
       } else if (isRetrying) {
-        toast.warning(`Retrying analysis for ${label}: ${task.errorMessage}`, { duration: Infinity });
+        toast.warning(`Retrying analysis for ${label}: ${task.errorMessage}`, { duration: 1000 * 60 * 60 * 24 });
         // Don't add to notified set — if it fails permanently we want the error toast too
       }
     });
