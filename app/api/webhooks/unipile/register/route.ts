@@ -74,6 +74,10 @@ export async function POST(req: NextRequest) {
 
     const requestUrl = `${appUrl.replace(/\/$/, "")}/api/webhooks/unipile`;
     const accountIdsField = accountIds.length > 0 ? { account_ids: accountIds } : {};
+    const webhookSecret = process.env.UNIPILE_WEBHOOK_SECRET;
+    const headersField = webhookSecret
+      ? { headers: [{ key: "x-unipile-secret", value: webhookSecret }] }
+      : {};
 
     const [messaging, relations] = await Promise.all([
       unipileRequest("POST", "/api/v1/webhooks", {
@@ -84,6 +88,7 @@ export async function POST(req: NextRequest) {
         enabled: true,
         events: ["message_received"],
         ...accountIdsField,
+        ...headersField,
       }),
       unipileRequest("POST", "/api/v1/webhooks", {
         source: "users",
@@ -93,6 +98,7 @@ export async function POST(req: NextRequest) {
         enabled: true,
         events: ["new_relation"],
         ...accountIdsField,
+        ...headersField,
       }),
     ]);
 
