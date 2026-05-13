@@ -243,14 +243,20 @@ async function findThreadByProviderUserId(
   accountId?: string,
 ): Promise<{ id: string } | null> {
   // Search threads that haven't had a chat yet (providerChatId null) — covers
-  // both INVITE_PENDING and CONNECTED phases. If the new_relation webhook already
-  // fired and moved the thread to CONNECTED but no DM was sent yet, we'd miss
-  // it if we only search INVITE_PENDING.
+  // both INVITE_PENDING and CONNECTED phases. Match the sending account via
+  // either the channel's default sending account OR the sticky per-thread
+  // accountId (set at first send). Both must be checked because the sticky
+  // field is set once the invite is dispatched and is the authoritative binding.
   const threads = await prisma.channelThread.findMany({
     where: {
       providerChatId: null,
       status: { in: ["ACTIVE", "PENDING"] },
-      ...(accountId ? { channel: { sendingAccount: { accountId } } } : {}),
+      ...(accountId
+        ? { OR: [
+            { channel: { sendingAccount: { accountId } } },
+            { account: { accountId } },
+          ] }
+        : {}),
     },
     select: {
       id: true,
@@ -326,10 +332,11 @@ async function handleNewMessage(data: any) {
       senderAttendee?.provider_id ??
       senderAttendee?.attendee_id;
 
+    console.log(`[Webhook/Unipile] new_message fallback: chatId=${chatId} account=${accountIdFromPayload ?? "none"} senderProviderId=${senderProviderId ?? "none"} attendees=${JSON.stringify(attendeeList)}`);
+
     if (senderProviderId) {
       const fallback = await findThreadByProviderUserId(senderProviderId, accountIdFromPayload);
       if (fallback) {
-        // Backfill the chat id on the thread row, then propagate as a REPLIED.
         await prisma.channelThread.updateMany({
           where: { id: fallback.id, status: { in: ["ACTIVE", "PENDING"] } },
           data: { providerChatId: chatId, providerState: { phase: "CONNECTED" } },
@@ -341,9 +348,41 @@ async function handleNewMessage(data: any) {
         if (t) {
           await markThreadReplied(t.id, t.taskId);
           await recomputeTaskStage(t.taskId, { source: "WEBHOOK" });
-          console.log(`[Webhook/Unipile] Backfilled out-of-order reply: thread ${t.id.slice(-6)} (chatId=${chatId}, provider_id=${senderProviderId}) → REPLIED`);
+          console.log(`[Webhook/Unipile] Backfilled out-of-order reply: thread ${t.id.slice(-6)} (chatId=${chatId}, senderProviderId=${senderProviderId}) → REPLIED`);
           return;
         }
+      }
+    }
+
+    // Last resort: if there is exactly one ACTIVE/PENDING thread with no chat yet
+    // for this account, it must be the reply — no ambiguity. Voyager-format
+    // attendee_ids ("V...") don't match ACoAA... URNs stored in profiles so
+    // provider-id matching fails even when the candidate is correct.
+    if (accountIdFromPayload) {
+      const singleCandidates = await prisma.channelThread.findMany({
+        where: {
+          providerChatId: null,
+          status: { in: ["ACTIVE", "PENDING"] },
+          OR: [
+            { channel: { sendingAccount: { accountId: accountIdFromPayload } } },
+            { account: { accountId: accountIdFromPayload } },
+          ],
+        },
+        select: { id: true, taskId: true },
+      });
+      if (singleCandidates.length === 1) {
+        const t = singleCandidates[0];
+        await prisma.channelThread.updateMany({
+          where: { id: t.id, status: { in: ["ACTIVE", "PENDING"] } },
+          data: { providerChatId: chatId, providerState: { phase: "CONNECTED" } },
+        });
+        await markThreadReplied(t.id, t.taskId);
+        await recomputeTaskStage(t.taskId, { source: "WEBHOOK" });
+        console.log(`[Webhook/Unipile] Single-thread fallback: thread ${t.id.slice(-6)} (chatId=${chatId}) → REPLIED`);
+        return;
+      }
+      if (singleCandidates.length > 1) {
+        console.log(`[Webhook/Unipile] new_message: ${singleCandidates.length} ambiguous unmatched threads for account=${accountIdFromPayload}, need sender match to assign chatId=${chatId}`);
       }
     }
 
