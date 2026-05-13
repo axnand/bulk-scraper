@@ -123,7 +123,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  console.log(`[Webhook/Unipile] event=${event.type} data=${JSON.stringify(event.data).slice(0, 300)}`);
+  console.log(`[Webhook/Unipile] event=${event.type} data=${JSON.stringify(event.data)}`);
 
   // P2 #7 / EC-3.5 / EC-6.2 — per-event-type dedupe key extraction. The
   // previous implementation walked a generic fallback chain
