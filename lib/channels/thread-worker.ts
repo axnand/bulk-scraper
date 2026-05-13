@@ -329,6 +329,7 @@ export async function processThread(threadId: string): Promise<void> {
 
   const config = thread.channel.config as Record<string, unknown>;
   const tag = `[ThreadWorker ${thread.channelType} ${threadId.slice(-6)}]`;
+  console.log(`${tag} Processing thread — status=${thread.status} taskId=${thread.taskId} channelType=${thread.channelType} profileLoaded=${!!thread.task.result} analysisLoaded=${!!thread.task.analysisResult}`);
 
   try {
     switch (thread.channelType) {
@@ -407,7 +408,10 @@ async function processLinkedIn(
   const providerState = (thread.providerState as ProviderState | null) ?? {};
   const providerUserId = String(profile.provider_id || profile.public_identifier || "");
 
+  console.log(`${tag} processLinkedIn start — status=${thread.status} phase=${providerState.phase ?? "none"} providerUserId=${providerUserId || "MISSING"} network_distance=${String(profile.network_distance ?? "n/a")} is_relationship=${String(profile.is_relationship ?? "n/a")} lastMessageAt=${thread.lastMessageAt?.toISOString() ?? "null"} followupsSent=${thread.followupsSent}/${thread.followupsTotal}`);
+
   if (!providerUserId) {
+    console.log(`${tag} Archiving — no LinkedIn provider ID on profile`);
     await archiveThread(thread.id, "No LinkedIn provider ID on task profile");
     return;
   }
@@ -418,9 +422,10 @@ async function processLinkedIn(
     // Push to tomorrow 00:01 so it's picked up after reset
     const tomorrow = startOfNextDay();
     await guardedThreadUpdate(thread.id, { nextActionAt: tomorrow });
-    console.log(`${tag} Daily cap reached — rescheduled to ${tomorrow.toISOString()}`);
+    console.log(`${tag} Channel daily cap reached — rescheduled to ${tomorrow.toISOString()}`);
     return;
   }
+  console.log(`${tag} Daily cap OK`);
 
   // ── Phase: PENDING — send initial message ──────────────────────────────────
   if (thread.status === "PENDING") {
@@ -430,9 +435,12 @@ async function processLinkedIn(
     ) ?? config.inviteRules.find(r => r.key === thread.matchedRuleKey);
 
     if (!rule) {
+      console.log(`${tag} Archiving — rule key "${thread.matchedRuleKey}" not found in config (${config.inviteRules?.length ?? 0} rules)`);
       await archiveThread(thread.id, `Matched rule key "${thread.matchedRuleKey}" not found in config`);
       return;
     }
+
+    console.log(`${tag} PENDING phase — matched rule key="${rule.key}" inviteType=${rule.inviteType}`);
 
     if (rule.inviteType === "CONNECTION_REQUEST") {
       // Skip the invite API call if the profile already shows a 1st-degree
@@ -442,8 +450,10 @@ async function processLinkedIn(
         profile.network_distance === "DISTANCE_1" ||
         profile.is_relationship === true;
 
+      console.log(`${tag} Already-connected check: network_distance="${String(profile.network_distance ?? "")}" is_relationship=${String(profile.is_relationship ?? "")} → alreadyConnected=${alreadyConnected}`);
+
       if (alreadyConnected) {
-        console.log(`${tag} Profile shows already connected — skipping invite, queuing DM`);
+        console.log(`${tag} Already connected — skipping invite, setting CONNECTED phase for DM`);
         await guardedThreadUpdate(thread.id, {
           status: "ACTIVE",
           providerState: { phase: "CONNECTED" },
@@ -451,8 +461,10 @@ async function processLinkedIn(
         });
         return;
       }
+      console.log(`${tag} Not already connected — sending CONNECTION_REQUEST invite to providerUserId=${providerUserId}`);
       await sendLinkedInInvite(thread, rule, vars, account, config, providerUserId, tag);
     } else {
+      console.log(`${tag} InMail path — sending InMail to providerUserId=${providerUserId}`);
       await sendLinkedInInMail(thread, rule, vars, account, config, providerUserId, tag);
     }
     return;
@@ -462,17 +474,19 @@ async function processLinkedIn(
   if (providerState.phase === "INVITE_PENDING") {
     // nextActionAt was set to inviteSentAt + archiveAfterInviteDays by the invite send.
     // Reaching here means it has expired without webhook firing — cancel and archive.
+    console.log(`${tag} INVITE_PENDING — invite timed out, cancelling and archiving`);
     await cancelPendingInvite(account, providerUserId, tag);
-    console.log(`${tag} Invite timed out — archiving`);
     await archiveThread(thread.id, "Invite acceptance timeout");
     return;
   }
 
   // ── Phase: ACTIVE + CONNECTED — send first DM ────────────────────────────
   if (providerState.phase === "CONNECTED" && !thread.lastMessageAt) {
+    console.log(`${tag} CONNECTED phase — no DM sent yet, preparing first DM`);
     const firstDmTemplate = config.followups?.[0];
     if (!firstDmTemplate) {
       // No DM configured — thread is done (connected but no messages to send)
+      console.log(`${tag} No followup templates configured — thread complete (connected, no DM)`);
       await guardedThreadUpdate(thread.id, { nextActionAt: null });
       return;
     }
@@ -491,6 +505,7 @@ async function processLinkedIn(
     }
 
     const text = renderTemplate(firstDmTemplate.template, vars);
+    console.log(`${tag} Sending first DM via startChat to providerUserId=${providerUserId} (text length=${text.length})`);
     let chatId: string;
     let messageId: string;
     try {
@@ -501,10 +516,11 @@ async function processLinkedIn(
         accountDsn: account.dsn ?? undefined,
         accountApiKey: account.apiKey ?? undefined,
       }));
+      console.log(`${tag} startChat succeeded — chatId=${chatId} messageId=${messageId}`);
     } catch (err: any) {
       // Not actually connected yet — reset to PENDING so the invite gets sent
       if ((err.message ?? "").toLowerCase().includes("no_connection_with_recipient")) {
-        console.log(`${tag} DM failed: not connected yet — resetting to PENDING to send invite`);
+        console.log(`${tag} DM failed: not connected yet (no_connection_with_recipient) — resetting to PENDING to send invite`);
         await guardedThreadUpdate(thread.id, {
           status: "PENDING",
           providerState: {},
@@ -543,8 +559,10 @@ async function processLinkedIn(
 
   // ── Phase: ACTIVE — send follow-up ────────────────────────────────────────
   if (thread.status === "ACTIVE" && thread.followupsSent < thread.followupsTotal) {
+    console.log(`${tag} ACTIVE follow-up phase — followup ${thread.followupsSent + 1}/${thread.followupsTotal} providerChatId=${thread.providerChatId ?? "MISSING"}`);
     const followup = config.followups?.[thread.followupsSent];
     if (!followup || !thread.providerChatId) {
+      console.log(`${tag} Archiving — missing followup config (followup=${!!followup}) or chatId (chatId=${thread.providerChatId ?? "null"})`);
       await archiveThread(thread.id, "Missing followup config or chat ID");
       return;
     }
@@ -601,6 +619,7 @@ async function processLinkedIn(
 
   // All followups sent — archive
   if (thread.followupsSent >= thread.followupsTotal) {
+    console.log(`${tag} All follow-ups exhausted (${thread.followupsSent}/${thread.followupsTotal}) — archiving`);
     await archiveThread(thread.id, "All follow-ups exhausted — no reply received");
   }
 }

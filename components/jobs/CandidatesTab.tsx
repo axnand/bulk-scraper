@@ -94,16 +94,18 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
       return;
     }
 
-    // Show a toast for tasks that failed analysis during polling
+    // Show a toast for tasks that failed or are retrying after an error
     data.tasks.forEach(task => {
-      if (
-        (task.status === "FAILED" || (task as any).analysisStatus === "FAILED") &&
-        !notifiedFailedTasks.current.has(task.id)
-      ) {
-        if (task.errorMessage) {
-          toast.error(`Analysis failed for ${task.sourceFileName || task.url || "candidate"}: ${task.errorMessage}`);
-        }
+      if (notifiedFailedTasks.current.has(task.id)) return;
+      const label = task.sourceFileName || task.url || "candidate";
+      const isFailed = task.status === "FAILED" || (task as any).analysisStatus === "FAILED";
+      const isRetrying = task.status === "PENDING" && !!task.errorMessage;
+      if (isFailed) {
+        toast.error(`${label}: ${task.errorMessage || "Analysis failed"}`, { duration: Infinity });
         notifiedFailedTasks.current.add(task.id);
+      } else if (isRetrying) {
+        toast.warning(`Retrying analysis for ${label}: ${task.errorMessage}`, { duration: Infinity });
+        // Don't add to notified set — if it fails permanently we want the error toast too
       }
     });
   }, [data.tasks]);
