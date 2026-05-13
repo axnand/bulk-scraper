@@ -435,6 +435,22 @@ async function processLinkedIn(
     }
 
     if (rule.inviteType === "CONNECTION_REQUEST") {
+      // Skip the invite API call if the profile already shows a 1st-degree
+      // connection. Avoids a wasted API round-trip + error recovery loop.
+      const alreadyConnected =
+        profile.network_distance === "FIRST_DEGREE" ||
+        profile.network_distance === "DISTANCE_1" ||
+        profile.is_relationship === true;
+
+      if (alreadyConnected) {
+        console.log(`${tag} Profile shows already connected — skipping invite, queuing DM`);
+        await guardedThreadUpdate(thread.id, {
+          status: "ACTIVE",
+          providerState: { phase: "CONNECTED" },
+          nextActionAt: new Date(),
+        });
+        return;
+      }
       await sendLinkedInInvite(thread, rule, vars, account, config, providerUserId, tag);
     } else {
       await sendLinkedInInMail(thread, rule, vars, account, config, providerUserId, tag);

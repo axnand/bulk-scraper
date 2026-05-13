@@ -291,6 +291,10 @@ async function handleNewMessage(data: any) {
     console.log(`[Webhook/Unipile] new_message: outbound echo for chatId=${chatId} — ignoring`);
     return;
   }
+  if (data?.is_group === true || data?.is_group === 1) {
+    console.log(`[Webhook/Unipile] new_message: group chat message (subject="${data?.subject ?? ""}") — ignoring`);
+    return;
+  }
 
   // Phase 3 #16 / EC-3.7 / EC-10.2 — when the same Unipile account messages
   // the same person from two different requisitions, LinkedIn returns the
@@ -321,16 +325,18 @@ async function handleNewMessage(data: any) {
     // match an INVITE_PENDING thread for the same account. If we find one,
     // backfill `providerChatId` on the thread, mark it CONNECTED → REPLIED,
     // and propagate. This recovers the reply that would otherwise be lost.
-    // Unipile flat format puts attendees in an array; find the non-self attendee.
+    // Resolve the actual sender object. Unipile flat format may include a
+    // top-level `sender` object (preferred) or bury it in an attendees array.
+    // For WhatsApp the ID fields are `attendee_provider_id` / `attendee_public_identifier`;
+    // for LinkedIn they may be `provider_id`. Check both forms.
     const attendeeList: any[] = Array.isArray(data?.attendees) ? data.attendees : [];
-    const senderAttendee = attendeeList.find((a: any) => !a.is_me);
+    const explicitSender = data?.sender ?? data?.from ?? data?.author;
+    const senderAttendee = explicitSender ?? attendeeList.find((a: any) => !a.is_me);
     const senderProviderId: string | undefined =
-      data?.sender?.provider_id ??
-      data?.from?.provider_id ??
-      data?.attendee?.provider_id ??
-      data?.author?.provider_id ??
       senderAttendee?.provider_id ??
-      senderAttendee?.attendee_id;
+      senderAttendee?.attendee_provider_id ??
+      senderAttendee?.attendee_id ??
+      senderAttendee?.attendee_public_identifier;
 
     console.log(`[Webhook/Unipile] new_message fallback: chatId=${chatId} account=${accountIdFromPayload ?? "none"} senderProviderId=${senderProviderId ?? "none"} attendees=${JSON.stringify(attendeeList)}`);
 
@@ -354,39 +360,7 @@ async function handleNewMessage(data: any) {
       }
     }
 
-    // Last resort: if there is exactly one ACTIVE/PENDING thread with no chat yet
-    // for this account, it must be the reply — no ambiguity. Voyager-format
-    // attendee_ids ("V...") don't match ACoAA... URNs stored in profiles so
-    // provider-id matching fails even when the candidate is correct.
-    if (accountIdFromPayload) {
-      const singleCandidates = await prisma.channelThread.findMany({
-        where: {
-          providerChatId: null,
-          status: { in: ["ACTIVE", "PENDING"] },
-          OR: [
-            { channel: { sendingAccount: { accountId: accountIdFromPayload } } },
-            { account: { accountId: accountIdFromPayload } },
-          ],
-        },
-        select: { id: true, taskId: true },
-      });
-      if (singleCandidates.length === 1) {
-        const t = singleCandidates[0];
-        await prisma.channelThread.updateMany({
-          where: { id: t.id, status: { in: ["ACTIVE", "PENDING"] } },
-          data: { providerChatId: chatId, providerState: { phase: "CONNECTED" } },
-        });
-        await markThreadReplied(t.id, t.taskId);
-        await recomputeTaskStage(t.taskId, { source: "WEBHOOK" });
-        console.log(`[Webhook/Unipile] Single-thread fallback: thread ${t.id.slice(-6)} (chatId=${chatId}) → REPLIED`);
-        return;
-      }
-      if (singleCandidates.length > 1) {
-        console.log(`[Webhook/Unipile] new_message: ${singleCandidates.length} ambiguous unmatched threads for account=${accountIdFromPayload}, need sender match to assign chatId=${chatId}`);
-      }
-    }
-
-    console.log(`[Webhook/Unipile] new_message: no active thread for chatId=${chatId} (account=${accountIdFromPayload ?? "unknown"}) — ignoring`);
+    console.log(`[Webhook/Unipile] new_message: no active thread for chatId=${chatId} senderProviderId=${senderProviderId ?? "none"} (account=${accountIdFromPayload ?? "unknown"}) — ignoring`);
     return;
   }
 
