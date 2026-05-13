@@ -40,7 +40,10 @@ export type ThreadEffect =
   | "pauseActive"
   | "archiveAll"
   | "resurrectAndFanOut"
-  | "archiveAndFanOut"; // recruiter drags back to SHORTLISTED from an active outreach stage — start over
+  | "archiveAndFanOut"  // recruiter drags back to SHORTLISTED from an active outreach stage — start over
+  | "syncConnected"     // manual forward-sync: mark thread phase CONNECTED so rollup agrees
+  | "syncMessaged"      // manual forward-sync: set lastMessageAt so rollup sees MESSAGED
+  | "syncReplied";      // manual forward-sync: mark thread REPLIED + pause siblings
 
 export type Transition =
   | { kind: "allow"; effect: ThreadEffect; setManualStage: CandidateStage | null }
@@ -55,17 +58,32 @@ export function evaluateTransition(from: CandidateStage, to: CandidateStage): Tr
     };
   }
 
-  // Refuse direct drags between two system-derived stages. These stages are
-  // materialized from ChannelThread state — writing `task.stage` here doesn't
-  // change anything in the underlying thread, so the next rollup (worker tick
-  // or webhook) would correct it back. The drag would silently revert,
-  // confusing the recruiter. Direct them to use SHORTLISTED as the reset
-  // mechanism if they actually want to restart outreach.
+  // Within the system-derived chain, only allow forward moves (manual sync for
+  // webhook lag — Unipile polls invite acceptance up to 8 h late). Backward
+  // moves are refused: the rollup would revert them on the next tick anyway,
+  // confusing the recruiter. Each forward effect also patches the underlying
+  // ChannelThread so the rollup agrees and won't snap back.
+  const SD_ORDER: CandidateStage[] = [
+    CandidateStage.CONTACT_REQUESTED,
+    CandidateStage.CONNECTED,
+    CandidateStage.MESSAGED,
+    CandidateStage.REPLIED,
+  ];
   if (SYSTEM_DERIVED.has(from) && SYSTEM_DERIVED.has(to)) {
-    return {
-      kind: "refuse",
-      reason: "This stage is managed automatically by the outreach system. To restart this candidate's outreach, move them to Shortlisted instead.",
-    };
+    const fromIdx = SD_ORDER.indexOf(from);
+    const toIdx = SD_ORDER.indexOf(to);
+    if (toIdx <= fromIdx) {
+      return {
+        kind: "refuse",
+        reason: "Cannot move backwards within automated stages — the system will update this automatically.",
+      };
+    }
+    // Forward sync: pick the most advanced effect needed.
+    let effect: ThreadEffect;
+    if (to === CandidateStage.REPLIED) effect = "syncReplied";
+    else if (to === CandidateStage.MESSAGED) effect = "syncMessaged";
+    else effect = "syncConnected";
+    return { kind: "allow", effect, setManualStage: null };
   }
 
   // Recruiter UI exposes columns for every stage; refusing a drag (even into
@@ -259,6 +277,33 @@ export async function applyStageTransition(input: ApplyTransitionInput): Promise
               pendingSendKey: null,
               pendingSendStartedAt: null,
             },
+          });
+          break;
+        case "syncConnected":
+          // Recruiter manually synced ahead of webhook. Update providerState so
+          // the rollup derives CONNECTED on its next tick and won't snap back.
+          await tx.channelThread.updateMany({
+            where: { taskId, status: "ACTIVE" },
+            data: { providerState: { phase: "CONNECTED" }, lastMessageAt: null },
+          });
+          break;
+        case "syncMessaged":
+          // Set lastMessageAt so the rollup sees MESSAGED.
+          await tx.channelThread.updateMany({
+            where: { taskId, status: "ACTIVE" },
+            data: { lastMessageAt: now },
+          });
+          break;
+        case "syncReplied":
+          // Mark active thread(s) as REPLIED; pause any remaining PENDING ones.
+          // Mirrors what the webhook-driven path does via sibling-pause in recomputeTaskStage.
+          await tx.channelThread.updateMany({
+            where: { taskId, status: "ACTIVE" },
+            data: { status: "REPLIED" },
+          });
+          await tx.channelThread.updateMany({
+            where: { taskId, status: "PENDING" },
+            data: { status: "PAUSED", nextActionAt: null },
           });
           break;
         case "fanOut":

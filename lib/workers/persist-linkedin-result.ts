@@ -41,6 +41,7 @@ export async function persistLinkedInResult(args: {
   // ── External: AI analysis ──
   let analysisResultJson: string | null = null;
   let analysisResult: AnalysisResult | null = null;
+  let analysisError: string | null = null;
 
   if (jobConfig?.jobDescription) {
     const t0 = Date.now();
@@ -53,7 +54,8 @@ export async function persistLinkedInResult(args: {
         `score=${analysisResult.scorePercent}% (${analysisResult.totalScore}/${analysisResult.maxScore}) → ${analysisResult.recommendation}`
       );
     } catch (err: any) {
-      console.warn(`${tag} [2/3] Analysis FAILED after ${Date.now() - t0}ms: ${err.message}`);
+      analysisError = err.message || "Unknown analysis error";
+      console.warn(`${tag} [2/3] Analysis FAILED after ${Date.now() - t0}ms: ${analysisError}`);
     }
   } else {
     console.log(`${tag} [2/3] Analysis SKIPPED — no jobDescription in config`);
@@ -158,7 +160,8 @@ export async function persistLinkedInResult(args: {
         // parsed result; PENDING when analysis was skipped (no JD configured),
         // so the recruiter UI can distinguish "analyzed clean" from "analysis
         // not run yet" without inferring from analysisResult IS NULL.
-        analysisStatus: analysisResult ? "OK" : "PENDING",
+        analysisStatus: analysisResult ? "OK" : analysisError ? "FAILED" : "PENDING",
+        errorMessage: analysisError,
         // Bind Task to the canonical CandidateProfile (for cross-task identity)
         ...(candidateProfileId ? { candidateProfileId } : {}),
       },

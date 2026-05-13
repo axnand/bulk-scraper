@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import { estimateCost, formatCost } from "@/lib/model-pricing";
 import { getEffectiveRules } from "@/lib/analyzer";
 import { FilterBar, FilterDivider, FilterPills, FilterText, FilterNumber, SortSelect, FilterSelect } from "@/components/ui/filter-bar";
@@ -77,6 +78,35 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
       .then(setSheetIntegrations)
       .catch(() => {});
   }, []);
+
+  const notifiedFailedTasks = useRef<Set<string>>(new Set());
+  const initialLoadRef = useRef(true);
+
+  useEffect(() => {
+    if (initialLoadRef.current) {
+      // On initial load, just record the already failed tasks so we don't spam toasts
+      data.tasks.forEach(task => {
+        if (task.status === "FAILED" || (task as any).analysisStatus === "FAILED") {
+          notifiedFailedTasks.current.add(task.id);
+        }
+      });
+      initialLoadRef.current = false;
+      return;
+    }
+
+    // Show a toast for tasks that failed analysis during polling
+    data.tasks.forEach(task => {
+      if (
+        (task.status === "FAILED" || (task as any).analysisStatus === "FAILED") &&
+        !notifiedFailedTasks.current.has(task.id)
+      ) {
+        if (task.errorMessage) {
+          toast.error(`Analysis failed for ${task.sourceFileName || task.url || "candidate"}: ${task.errorMessage}`);
+        }
+        notifiedFailedTasks.current.add(task.id);
+      }
+    });
+  }, [data.tasks]);
 
   function toggleSelect(id: string) {
     setSelectedIds(prev => {
