@@ -37,6 +37,14 @@ export async function GET(
         sourceFileName: true,
         createdAt: true,
         outreachMessages: { select: { channel: true, status: true } },
+        channelThreads: {
+          select: {
+            channelType: true,
+            status: true,
+            providerState: true,
+            lastMessageAt: true,
+          },
+        },
       },
       orderBy: { stageUpdatedAt: "desc" },
     });
@@ -92,6 +100,12 @@ export async function GET(
         profilePictureUrl: profile?.profile_picture_url || null,
         publicId: profile?.public_identifier || null,
         outreachMessages: t.outreachMessages ?? [],
+        channelThreads: (t.channelThreads ?? []).map(ct => ({
+          channelType: ct.channelType,
+          status: ct.status,
+          providerState: ct.providerState as Record<string, unknown> | null,
+          lastMessageAt: ct.lastMessageAt?.toISOString() ?? null,
+        })),
       };
 
       if (!grouped[stage]) grouped[stage] = [];

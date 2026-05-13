@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { useState } from "react";
 import { toast } from "sonner";
-import { Briefcase, Building2, ExternalLink, MoreHorizontal, Send, Loader2, Mail, Link2Icon, MessageSquare } from "lucide-react";
+import { Briefcase, Building2, ExternalLink, MoreHorizontal, Send, Loader2, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ChannelStatusPopover } from "./ChannelStatusPopover";
+import type { ThreadForDisplay } from "@/lib/channel-display";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -36,6 +38,7 @@ export interface PipelineTask {
   source: string;
   addedAt: string;
   outreachMessages?: { channel: string; status: string }[];
+  channelThreads?: ThreadForDisplay[];
 }
 
 interface Props {
@@ -101,11 +104,7 @@ export function CandidateKanbanCard({
       ? "border-amber-500/40 bg-amber-500/10 text-amber-500"
       : "border-rose-500/40 bg-rose-500/10 text-rose-500";
 
-  const msgs = task.outreachMessages || [];
-  const hasEmail = msgs.some(m => m.channel === "EMAIL");
-  const emailReplied = msgs.some(m => m.channel === "EMAIL" && m.status === "REPLIED");
-  const hasLinkedIn = msgs.some(m => m.channel.startsWith("LINKEDIN"));
-  const liReplied = msgs.some(m => m.channel.startsWith("LINKEDIN") && m.status === "REPLIED");
+  const threads = task.channelThreads ?? [];
 
   async function handleSendInvite(e: React.MouseEvent) {
     e.stopPropagation();
@@ -270,19 +269,10 @@ export function CandidateKanbanCard({
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs text-muted-foreground/60 flex items-center gap-1.5">
               {timeAgo(task.stageUpdatedAt || task.addedAt)}
-              
-              {/* Channel Indicators */}
-              {(hasEmail || hasLinkedIn) && (
+              {threads.length > 0 && (
                 <>
                   <span className="text-muted-foreground/30">•</span>
-                  <div className="flex gap-1" title="Channels">
-                    {hasLinkedIn && (
-                      <Link2Icon className={cn("h-3 w-3", liReplied ? "text-emerald-500 fill-emerald-500/20" : "text-muted-foreground/70")} />
-                    )}
-                    {hasEmail && (
-                      <Mail className={cn("h-3 w-3", emailReplied ? "text-emerald-500" : "text-muted-foreground/70")} />
-                    )}
-                  </div>
+                  <ChannelStatusPopover threads={threads} />
                 </>
               )}
             </span>
