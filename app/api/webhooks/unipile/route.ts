@@ -101,13 +101,29 @@ export async function POST(req: NextRequest) {
 
   let event: { type: string; data: any };
   try {
-    event = JSON.parse(rawBody);
+    const parsed = JSON.parse(rawBody);
+    // Unipile new flat format: { event: "message_received", account_id, chat_id, ... }
+    // Unipile old wrapped format: { type: "messaging.message_received", data: { ... } }
+    // Some flat events (new_relation) omit the event field — derive from webhook_name.
+    if (parsed.type) {
+      event = parsed;
+    } else if (parsed.event) {
+      event = { type: parsed.event, data: parsed };
+    } else if (parsed.webhook_name) {
+      const nameToType: Record<string, string> = {
+        "outreach-relations": "new_relation",
+        "outreach-messaging": "message_received",
+        "outreach-email":     "mail_received",
+      };
+      event = { type: nameToType[parsed.webhook_name] ?? parsed.webhook_name, data: parsed };
+    } else {
+      event = parsed;
+    }
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  console.log(`[Webhook/Unipile] raw=${rawBody.slice(0, 500)}`);
-  console.log(`[Webhook/Unipile] event=${event.type} data=${JSON.stringify(event.data)}`);
+  console.log(`[Webhook/Unipile] event=${event.type} data=${JSON.stringify(event.data).slice(0, 300)}`);
 
   // P2 #7 / EC-3.5 / EC-6.2 — per-event-type dedupe key extraction. The
   // previous implementation walked a generic fallback chain
@@ -252,7 +268,7 @@ async function findThreadByProviderUserId(
 async function handleNewMessage(data: any) {
   const chatId = data?.chat_id ?? data?.chatId ?? data?.chat?.id;
   // is_from_me/from_me can be absent (treat as inbound), true (outbound echo), or false (inbound)
-  const fromMeRaw = data?.is_from_me ?? data?.from_me ?? data?.sender?.is_me;
+  const fromMeRaw = data?.is_from_me ?? data?.from_me ?? data?.sender?.is_me ?? data?.is_sender;
   const isInbound = fromMeRaw !== true; // absent = inbound; explicit true = outbound
   const accountIdFromPayload: string | undefined = data?.account_id;
 
