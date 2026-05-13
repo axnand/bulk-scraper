@@ -242,9 +242,14 @@ async function findThreadByProviderUserId(
   providerUserId: string,
   accountId?: string,
 ): Promise<{ id: string } | null> {
+  // Search threads that haven't had a chat yet (providerChatId null) — covers
+  // both INVITE_PENDING and CONNECTED phases. If the new_relation webhook already
+  // fired and moved the thread to CONNECTED but no DM was sent yet, we'd miss
+  // it if we only search INVITE_PENDING.
   const threads = await prisma.channelThread.findMany({
     where: {
-      providerState: { path: ["phase"], equals: "INVITE_PENDING" },
+      providerChatId: null,
+      status: { in: ["ACTIVE", "PENDING"] },
       ...(accountId ? { channel: { sendingAccount: { accountId } } } : {}),
     },
     select: {
@@ -310,11 +315,16 @@ async function handleNewMessage(data: any) {
     // match an INVITE_PENDING thread for the same account. If we find one,
     // backfill `providerChatId` on the thread, mark it CONNECTED → REPLIED,
     // and propagate. This recovers the reply that would otherwise be lost.
+    // Unipile flat format puts attendees in an array; find the non-self attendee.
+    const attendeeList: any[] = Array.isArray(data?.attendees) ? data.attendees : [];
+    const senderAttendee = attendeeList.find((a: any) => !a.is_me);
     const senderProviderId: string | undefined =
       data?.sender?.provider_id ??
       data?.from?.provider_id ??
       data?.attendee?.provider_id ??
-      data?.author?.provider_id;
+      data?.author?.provider_id ??
+      senderAttendee?.provider_id ??
+      senderAttendee?.attendee_id;
 
     if (senderProviderId) {
       const fallback = await findThreadByProviderUserId(senderProviderId, accountIdFromPayload);
