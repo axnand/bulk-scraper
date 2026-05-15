@@ -1,9 +1,8 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { toast } from "sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -13,7 +12,7 @@ import {
 import {
   ChevronRight, UserPlus, Users, LayoutDashboard, SlidersHorizontal, Settings2,
   Plus, Upload, Pause, Play, XCircle, Building2, Calendar, History, UploadCloud,
-  Kanban, AlertTriangle, Radio, RefreshCw,
+  Kanban, AlertTriangle, Radio,
 } from "lucide-react";
 import { CandidatesTab } from "@/components/jobs/CandidatesTab";
 import { DashboardTab } from "@/components/jobs/DashboardTab";
@@ -134,38 +133,6 @@ export default function RequisitionDetailPage() {
   const [showUploadResumes, setShowUploadResumes] = useState(false);
   const [duplicatePairs, setDuplicatePairs] = useState<DuplicatePair[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const notifiedFailedTasks = useRef<Set<string>>(new Set());
-  const initialTaskLoadDone = useRef(false);
-  const [pollLoading, setPollLoading] = useState(false);
-  const [pollCooldownSecs, setPollCooldownSecs] = useState<number>(0);
-  const pollCooldownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    if (!data?.tasks) return;
-    if (!initialTaskLoadDone.current) {
-      // Suppress toasts for failures already present on first load.
-      data.tasks.forEach(task => {
-        const isFailed = task.status === "FAILED" || (task as any).analysisStatus === "FAILED";
-        if (isFailed) notifiedFailedTasks.current.add(`${task.id}:F:${task.errorMessage ?? ""}`);
-      });
-      initialTaskLoadDone.current = true;
-      return;
-    }
-    data.tasks.forEach(task => {
-      const label = (task as any).sourceFileName || task.url || "candidate";
-      const isFailed = task.status === "FAILED" || (task as any).analysisStatus === "FAILED";
-      const isRetrying = task.status === "PENDING" && !!task.errorMessage;
-      if (!isFailed && !isRetrying) return;
-      const key = `${task.id}:${isFailed ? "F" : "R"}:${task.errorMessage ?? ""}`;
-      if (notifiedFailedTasks.current.has(key)) return;
-      notifiedFailedTasks.current.add(key);
-      if (isFailed) {
-        toast.error(`${label}: ${task.errorMessage || "Analysis failed"}`, { duration: 1000 * 60 * 60 * 24 });
-      } else {
-        toast.warning(`Retrying analysis for ${label}: ${task.errorMessage}`, { duration: 1000 * 60 * 60 * 24 });
-      }
-    });
-  }, [data?.tasks]);
 
   useEffect(() => {
     if (tabParam && VALID_TABS.has(tabParam)) {
@@ -240,48 +207,6 @@ export default function RequisitionDetailPage() {
   async function handleRunAction(action: "pause" | "resume" | "cancel") {
     if (!data?.activeRun) return;
     await handleRunActionById(data.activeRun.id, action);
-  }
-
-  function startCooldownTick(secs: number) {
-    if (pollCooldownTimer.current) clearInterval(pollCooldownTimer.current);
-    setPollCooldownSecs(secs);
-    pollCooldownTimer.current = setInterval(() => {
-      setPollCooldownSecs(prev => {
-        if (prev <= 1) {
-          clearInterval(pollCooldownTimer.current!);
-          pollCooldownTimer.current = null;
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  }
-
-  async function handlePollAcceptances() {
-    setPollLoading(true);
-    try {
-      const res = await fetch(`/api/requisitions/${requisitionId}/poll-acceptances`, { method: "POST" });
-      const json = await res.json();
-      if (res.status === 429) {
-        startCooldownTick(json.retryAfterSecs ?? 3600);
-        toast.info(`Already checked recently. Try again in ${Math.ceil((json.retryAfterSecs ?? 3600) / 60)} min.`);
-        return;
-      }
-      if (!json.ok) {
-        toast.error(`Poll failed: ${json.error ?? "unknown error"}`);
-        return;
-      }
-      if (json.accepted > 0) {
-        toast.success(`${json.accepted} candidate${json.accepted === 1 ? "" : "s"} moved to Connected — will message automatically within 1 min.`);
-        await fetchAll();
-      } else {
-        toast.info("No new acceptances found.");
-      }
-    } catch {
-      toast.error("Failed to check acceptances.");
-    } finally {
-      setPollLoading(false);
-    }
   }
 
   if (loading) {
@@ -392,21 +317,6 @@ export default function RequisitionDetailPage() {
                 </Button>
               </>
             )}
-
-            {/* Check invite acceptances */}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handlePollAcceptances}
-              disabled={pollLoading || pollCooldownSecs > 0}
-              className="gap-1.5"
-              title="Poll LinkedIn for accepted invites and move them to Connected"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${pollLoading ? "animate-spin" : ""}`} />
-              {pollCooldownSecs > 0
-                ? `Check (${pollCooldownSecs}s)`
-                : "Check Acceptances"}
-            </Button>
 
             {/* Add Candidates */}
             <DropdownMenu>

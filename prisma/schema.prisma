@@ -401,11 +401,6 @@ model ChannelThread {
   // template, so the worker checks `now - lastInboundAt > 24h` before WA
   // sends and pauses-with-reason rather than failing/charging premium.
   lastInboundAt        DateTime?
-  // Set at LinkedIn invite send time (providerUserId passed to sendInvitation).
-  // Indexed for O(1) webhook matching on new_relation acceptance events.
-  // NULL for threads sent before this column was added; webhook handler falls
-  // back to JSON scan of task.result for those rows.
-  candidateProviderId  String?
   createdAt            DateTime     @default(now())
 
   task     Task            @relation(fields: [taskId], references: [id], onDelete: Cascade)
@@ -417,7 +412,6 @@ model ChannelThread {
   @@index([status, nextActionAt]) // hot path: scheduler tick
   @@index([channelType, status]) // analytics + channel-level dashboards
   @@index([taskId]) // stage rollup lookup
-  @@index([candidateProviderId, status]) // new_relation webhook O(1) lookup
 }
 
 // Outreach messages belonging to a ChannelThread (new system).

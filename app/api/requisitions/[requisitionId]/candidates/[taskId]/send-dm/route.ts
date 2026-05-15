@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { startChat, extractIdentifier } from "@/lib/services/unipile.service";
 import { buildVars, renderTemplate } from "@/lib/outreach/render-template";
 import { resolveRequisitionId } from "@/lib/resolve-requisition";
-import { recomputeTaskStage } from "@/lib/channels/stage-rollup";
+import { stageEventExplicit } from "@/lib/channels/stage-event-context";
 
 export const dynamic = "force-dynamic";
 
@@ -78,29 +78,13 @@ export async function POST(
     const vars = buildVars(profile ?? {}, analysis ?? {});
     const text = renderTemplate(firstFollowup.template, vars);
 
-    // Find or create the LinkedIn ChannelThread for this task. We MUST have
-    // a thread with providerChatId set so future reply webhooks can match.
-    // Without this the rollup also snaps Task.stage back to CONNECTED on the
-    // next tick. Includes ARCHIVED so we resurrect rather than collide with
-    // the @@unique([taskId, channelId]) constraint.
-    let thread = await prisma.channelThread.findFirst({
-      where: { taskId, channelId: channel.id },
+    // Find the LinkedIn ChannelThread for this task — we MUST update it with
+    // providerChatId so future reply webhooks can match. Without this the
+    // rollup also snaps Task.stage back to CONNECTED on the next tick.
+    const thread = await prisma.channelThread.findFirst({
+      where: { taskId, channelId: channel.id, status: { in: ["ACTIVE", "PENDING"] } },
       orderBy: { createdAt: "desc" },
     });
-    if (!thread) {
-      console.log(`[send-dm] No ChannelThread for taskId=${taskId} channelId=${channel.id} — creating one`);
-      thread = await prisma.channelThread.create({
-        data: {
-          taskId,
-          channelId: channel.id,
-          channelType: "LINKEDIN",
-          status: "ACTIVE",
-          providerState: { phase: "CONNECTED" },
-          followupsTotal: (cfg?.followups ?? []).length,
-          accountId: account.id,
-        },
-      });
-    }
 
     const { chatId, messageId } = await startChat({
       accountId: account.accountId,
@@ -114,11 +98,12 @@ export async function POST(
     const nextFollowup = cfg?.followups?.[1];
     const nextAt = nextFollowup ? new Date(now.getTime() + (nextFollowup.afterDays ?? 0) * 86_400_000) : null;
 
-    // Keep all non-stage side-effects in one atomic transaction.
-    // task.stage is NOT updated here — recomputeTaskStage (called below) derives
-    // it from the ChannelThread state written in this transaction, which is the
-    // correct source of truth (CLAUDE.md: never raw-update task.stage).
     await prisma.$transaction([
+      stageEventExplicit(),
+      prisma.task.update({
+        where: { id: taskId },
+        data: { stage: "MESSAGED", stageUpdatedAt: now },
+      }),
       prisma.outreachMessage.create({
         data: {
           campaignId: `${channel.id}:dm`,
@@ -132,37 +117,48 @@ export async function POST(
           providerChatId: chatId || null,
         },
       }),
-      prisma.channelThread.update({
-        where: { id: thread.id },
+      prisma.stageEvent.create({
         data: {
-          status: "ACTIVE",
-          providerState: { phase: "MESSAGED" },
-          providerChatId: chatId || thread.providerChatId,
-          archivedAt: null,
-          archivedReason: null,
-          lastMessageAt: now,
-          followupsSent: Math.max(thread.followupsSent, 1),
-          nextActionAt: nextAt,
-          accountId: thread.accountId ?? account.id,
+          taskId,
+          fromStage: "CONNECTED",
+          toStage: "MESSAGED",
+          actor: "USER",
+          reason: "LinkedIn first DM sent",
         },
       }),
-      prisma.threadMessage.create({
-        data: {
-          threadId: thread.id,
-          type: "FIRST_DM",
-          status: "SENT",
-          renderedBody: text,
-          sentAt: now,
-          providerMessageId: messageId || null,
-          providerChatId: chatId || null,
-          accountId: account.id,
-        },
-      }),
+      ...(thread
+        ? [
+            prisma.channelThread.update({
+              where: { id: thread.id },
+              data: {
+                status: "ACTIVE",
+                providerState: { phase: "MESSAGED" },
+                providerChatId: chatId || thread.providerChatId,
+                lastMessageAt: now,
+                followupsSent: Math.max(thread.followupsSent, 1),
+                nextActionAt: nextAt,
+                accountId: thread.accountId ?? account.id,
+              },
+            }),
+            prisma.threadMessage.create({
+              data: {
+                threadId: thread.id,
+                type: "FIRST_DM",
+                status: "SENT",
+                renderedBody: text,
+                sentAt: now,
+                providerMessageId: messageId || null,
+                providerChatId: chatId || null,
+                accountId: account.id,
+              },
+            }),
+          ]
+        : []),
     ]);
 
-    // Derive task.stage from the thread state we just committed (providerState.phase
-    // = "MESSAGED" + lastMessageAt set → rollup computes MESSAGED).
-    await recomputeTaskStage(taskId, { source: "MANUAL" });
+    if (!thread) {
+      console.warn(`[send-dm] No ChannelThread found for taskId=${taskId} channelId=${channel.id} — Task.stage updated but webhook matching may fail`);
+    }
 
     return NextResponse.json({ ok: true, chatId, messageId });
   } catch (error: any) {

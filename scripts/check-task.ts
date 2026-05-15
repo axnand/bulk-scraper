@@ -4,7 +4,7 @@ const prisma = new PrismaClient();
 async function checkTask() {
   const tasks = await prisma.task.findMany({
     where: {
-      id: { contains: 'j4ro7x' }
+      id: { contains: '8hugiy' }
     }
   });
   console.log(JSON.stringify(tasks, null, 2));

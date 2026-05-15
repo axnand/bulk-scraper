@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import { estimateCost, formatCost } from "@/lib/model-pricing";
 import { getEffectiveRules } from "@/lib/analyzer";
 import { FilterBar, FilterDivider, FilterPills, FilterText, FilterNumber, SortSelect, FilterSelect } from "@/components/ui/filter-bar";
-import { Users, TrendingUp, Minus, TrendingDown } from "lucide-react";
+import { Users, TrendingUp, Minus, TrendingDown, Award } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -77,6 +78,37 @@ export function CandidatesTab({ data, requisitionId, onRefresh, duplicateTaskIds
       .then(setSheetIntegrations)
       .catch(() => {});
   }, []);
+
+  const notifiedFailedTasks = useRef<Set<string>>(new Set());
+  const initialLoadRef = useRef(true);
+
+  useEffect(() => {
+    if (initialLoadRef.current) {
+      // On initial load, just record the already failed tasks so we don't spam toasts
+      data.tasks.forEach(task => {
+        if (task.status === "FAILED" || (task as any).analysisStatus === "FAILED") {
+          notifiedFailedTasks.current.add(task.id);
+        }
+      });
+      initialLoadRef.current = false;
+      return;
+    }
+
+    // Show a toast for tasks that failed or are retrying after an error
+    data.tasks.forEach(task => {
+      if (notifiedFailedTasks.current.has(task.id)) return;
+      const label = task.sourceFileName || task.url || "candidate";
+      const isFailed = task.status === "FAILED" || (task as any).analysisStatus === "FAILED";
+      const isRetrying = task.status === "PENDING" && !!task.errorMessage;
+      if (isFailed) {
+        toast.error(`${label}: ${task.errorMessage || "Analysis failed"}`, { duration: 1000 * 60 * 60 * 24 });
+        notifiedFailedTasks.current.add(task.id);
+      } else if (isRetrying) {
+        toast.warning(`Retrying analysis for ${label}: ${task.errorMessage}`, { duration: 1000 * 60 * 60 * 24 });
+        // Don't add to notified set — if it fails permanently we want the error toast too
+      }
+    });
+  }, [data.tasks]);
 
   function toggleSelect(id: string) {
     setSelectedIds(prev => {
