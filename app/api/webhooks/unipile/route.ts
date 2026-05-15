@@ -55,7 +55,12 @@ function extractDedupeId(eventType: string, data: any): string | null {
     case "users.new_relation":
     case "users_relations.invitation_accepted":
     case "new_relation":
-      // Invitation acceptance: invitation_id is the unique-per-acceptance key.
+      // The new_relation payload includes account_id + user_provider_id but
+      // NOT invitation_id. Compose a stable dedupe key from both so retries
+      // from Unipile are dropped without hitting the DB handler again.
+      if (data.account_id && data.user_provider_id) {
+        return `${data.account_id}:${data.user_provider_id}`;
+      }
       return data.invitation_id ?? data.event_id ?? null;
     case "messaging.message_received":
     case "messaging.new_message":
@@ -170,7 +175,10 @@ export async function POST(req: NextRequest) {
 
 async function handleInvitationAccepted(data: any) {
   // Try to match a ChannelThread by the stored invitation message ID
-  const invitationId = data?.invitation_id ?? data?.id;
+  // Bug 5: data?.id is an unsafe catch-all — it could pick up an unrelated webhook
+  // envelope ID and produce a spurious DB match. Unipile's new_relation payload
+  // does not include invitation_id; if absent we fall through to the provider-ID path.
+  const invitationId = data?.invitation_id;
   if (invitationId) {
     const threadMsg = await prisma.threadMessage.findFirst({
       where: { providerMessageId: invitationId, type: "INVITE" },
@@ -242,21 +250,38 @@ async function findThreadByProviderUserId(
   providerUserId: string,
   accountId?: string,
 ): Promise<{ id: string } | null> {
-  // Search threads that haven't had a chat yet (providerChatId null) — covers
-  // both INVITE_PENDING and CONNECTED phases. Match the sending account via
-  // either the channel's default sending account OR the sticky per-thread
-  // accountId (set at first send). Both must be checked because the sticky
-  // field is set once the invite is dispatched and is the authoritative binding.
-  const threads = await prisma.channelThread.findMany({
+  const accountFilter = accountId
+    ? { OR: [
+        { channel: { sendingAccount: { accountId } } },
+        { account: { accountId } },
+      ] }
+    : {};
+
+  // Primary path: indexed candidateProviderId column (set at invite send time).
+  // O(1) lookup; covers all threads created after the column was deployed.
+  // Bug 2: include PAUSED so a sibling-pause that happened between invite-send
+  // and acceptance doesn't cause the acceptance webhook to be silently dropped.
+  const indexed = await prisma.channelThread.findFirst({
     where: {
-      providerChatId: null,
-      status: { in: ["ACTIVE", "PENDING"] },
-      ...(accountId
-        ? { OR: [
-            { channel: { sendingAccount: { accountId } } },
-            { account: { accountId } },
-          ] }
-        : {}),
+      candidateProviderId: providerUserId,
+      status: { in: ["ACTIVE", "PENDING", "PAUSED"] },
+      ...accountFilter,
+    },
+    select: { id: true },
+  });
+  if (indexed) return indexed;
+
+  // Fallback: JSON scan of task.result for threads sent before the column was
+  // added (candidateProviderId IS NULL). Covers the migration window.
+  // Bug 2: include PAUSED (same reason as above).
+  // Bug 6: providerChatId: null removed — the primary chatId lookup already
+  // failed by the time we reach this fallback, so excluding threads that
+  // have a chatId stored (e.g. InMail threads) would leave them unrecoverable.
+  const legacy = await prisma.channelThread.findMany({
+    where: {
+      candidateProviderId: null,
+      status: { in: ["ACTIVE", "PENDING", "PAUSED"] },
+      ...accountFilter,
     },
     select: {
       id: true,
@@ -264,7 +289,7 @@ async function findThreadByProviderUserId(
     },
   });
 
-  for (const t of threads) {
+  for (const t of legacy) {
     try {
       const profile = t.task.result ? JSON.parse(t.task.result as string) : null;
       const pid = profile?.provider_id || profile?.public_identifier;
@@ -278,9 +303,15 @@ async function findThreadByProviderUserId(
 
 async function handleNewMessage(data: any) {
   const chatId = data?.chat_id ?? data?.chatId ?? data?.chat?.id;
-  // is_from_me/from_me can be absent (treat as inbound), true (outbound echo), or false (inbound)
-  const fromMeRaw = data?.is_from_me ?? data?.from_me ?? data?.sender?.is_me ?? data?.is_sender;
-  const isInbound = fromMeRaw !== true; // absent = inbound; explicit true = outbound
+  // Unipile flat format: compare account_info.user_id with sender.attendee_provider_id.
+  // If they match, the connected account sent the message (outbound echo from our API or
+  // another device). The legacy boolean fields (is_from_me, from_me, etc.) are NOT present
+  // in Unipile's flat webhook payload and must not be relied upon.
+  const fromMeRaw = data?.is_from_me ?? data?.from_me ?? data?.is_sender;
+  const accountUserId: string | undefined = data?.account_info?.user_id;
+  const senderProviderId: string | undefined = data?.sender?.attendee_provider_id;
+  const isOutboundEcho = !!(accountUserId && senderProviderId && accountUserId === senderProviderId);
+  const isInbound = fromMeRaw !== true && !isOutboundEcho;
   const accountIdFromPayload: string | undefined = data?.account_id;
 
   if (!chatId) {
@@ -302,10 +333,12 @@ async function handleNewMessage(data: any) {
   // as REPLIED. Scope by (providerChatId, account.id) to disambiguate, then
   // update *every* matching thread so all relevant requisitions see the
   // reply. (markThreadReplied is idempotent — see lib/channels/thread-worker.ts.)
+  // Bug 3: include PAUSED — a sibling reply may have paused this thread, but
+  // a reply directly to this chat should still be recorded as REPLIED.
   const threads = await prisma.channelThread.findMany({
     where: {
       providerChatId: chatId,
-      status: { in: ["ACTIVE", "PENDING"] },
+      status: { in: ["ACTIVE", "PENDING", "PAUSED"] },
       ...(accountIdFromPayload
         ? { channel: { sendingAccount: { accountId: accountIdFromPayload } } }
         : {}),
@@ -344,7 +377,7 @@ async function handleNewMessage(data: any) {
       const fallback = await findThreadByProviderUserId(senderProviderId, accountIdFromPayload);
       if (fallback) {
         await prisma.channelThread.updateMany({
-          where: { id: fallback.id, status: { in: ["ACTIVE", "PENDING"] } },
+          where: { id: fallback.id, status: { in: ["ACTIVE", "PENDING", "PAUSED"] } },
           data: { providerChatId: chatId, providerState: { phase: "CONNECTED" } },
         });
         const t = await prisma.channelThread.findUnique({
@@ -391,10 +424,11 @@ async function handleMailReceived(data: any) {
 
   // Same multi-thread / account-scoping treatment as handleNewMessage.
   // providerThreadId holds the provider_id of the email we sent (stored at send time).
+  // Bug 3: include PAUSED for the same reason as in handleNewMessage.
   const threads = await prisma.channelThread.findMany({
     where: {
       providerThreadId: inReplyToId,
-      status: { in: ["ACTIVE", "PENDING"] },
+      status: { in: ["ACTIVE", "PENDING", "PAUSED"] },
       ...(accountIdFromPayload
         ? { channel: { sendingAccount: { accountId: accountIdFromPayload } } }
         : {}),

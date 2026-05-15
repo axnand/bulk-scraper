@@ -84,25 +84,36 @@ export async function runOutreachTick(): Promise<{
 
   console.log(`[OutreachTick] Done — processed=${processed} failed=${failed}`);
 
-  const pollAccepted = await pollInviteAcceptances();
+  const pollAccepted = await pollJobInviteAcceptances();
   const pollReplied = await pollChatReplies();
 
   return { processed, failed, total: claimedIds.length, pollAccepted, pollReplied };
 }
 
-async function pollInviteAcceptances(): Promise<number> {
+// Exported for the on-demand "Check Acceptances" button in the recruiter UI.
+// Pass a requisitionId to scope to one job; omit for the global tick fallback.
+export async function pollJobInviteAcceptances(requisitionId?: string): Promise<number> {
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+
+  // When called from the UI button we skip the 1-hour age filter so recruiters
+  // can check fresh invites immediately during testing / time-sensitive outreach.
+  // The global tick keeps the age filter so it doesn't thrash just-sent invites.
+  const inviteSentFilter = requisitionId ? {} : { inviteSentAt: { lt: oneHourAgo } };
 
   const pendingThreads = await prisma.channelThread.findMany({
     where: {
       status: "ACTIVE",
       providerState: { path: ["phase"], equals: "INVITE_PENDING" },
-      inviteSentAt: { lt: oneHourAgo },
+      ...(requisitionId ? { channel: { requisitionId } } : {}),
+      ...inviteSentFilter,
     },
     select: {
       id: true,
       taskId: true,
+      candidateProviderId: true,
       task: { select: { result: true } },
+      // EC-9.3: prefer thread's sticky account; fall back to channel default.
+      account: { select: { accountId: true, dsn: true, apiKey: true } },
       channel: {
         select: {
           sendingAccount: { select: { accountId: true, dsn: true, apiKey: true } },
@@ -113,19 +124,23 @@ async function pollInviteAcceptances(): Promise<number> {
 
   if (pendingThreads.length === 0) return 0;
 
-  const byAccount = new Map<string, typeof pendingThreads>();
+  // Group by the effective account — thread's sticky account takes precedence
+  // over channel.sendingAccount (EC-9.3: the conversation belongs to the account
+  // that sent the invite, not whatever the channel's current default is).
+  type ThreadRow = typeof pendingThreads[number];
+  type AccRow = NonNullable<ThreadRow["account"]>;
+  const byAccount = new Map<string, { acc: AccRow; threads: ThreadRow[] }>();
   for (const t of pendingThreads) {
-    const acc = t.channel.sendingAccount;
+    const acc = t.account ?? t.channel.sendingAccount;
     if (!acc) continue;
-    const bucket = byAccount.get(acc.accountId) ?? [];
-    bucket.push(t);
+    const bucket = byAccount.get(acc.accountId) ?? { acc, threads: [] };
+    bucket.threads.push(t);
     byAccount.set(acc.accountId, bucket);
   }
 
   let accepted = 0;
 
-  for (const [, threads] of byAccount) {
-    const acc = threads[0].channel.sendingAccount!;
+  for (const { acc, threads } of byAccount.values()) {
     const sentInvites = await listSentInvitations({
       accountId: acc.accountId,
       limit: 200,
@@ -138,9 +153,15 @@ async function pollInviteAcceptances(): Promise<number> {
 
     for (const thread of threads) {
       try {
-        const profile = thread.task.result ? JSON.parse(thread.task.result as string) : null;
-        const pid: string | undefined = profile?.provider_id;
-        const pubId: string | undefined = profile?.public_identifier;
+        // Prefer candidateProviderId (set at send time); fall back to parsing task.result
+        // for threads sent before the column was added.
+        let pid: string | undefined = thread.candidateProviderId ?? undefined;
+        let pubId: string | undefined;
+        if (!pid) {
+          const profile = thread.task.result ? JSON.parse(thread.task.result as string) : null;
+          pid = profile?.provider_id;
+          pubId = profile?.public_identifier;
+        }
 
         const stillPending = (pid && sentProviderIds.has(pid)) || (pubId && sentPublicIds.has(pubId));
         if (stillPending) continue;

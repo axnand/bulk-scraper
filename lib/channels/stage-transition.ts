@@ -124,8 +124,26 @@ export function evaluateTransition(from: CandidateStage, to: CandidateStage): Tr
     ) {
       effect = "resurrectAndFanOut";
     }
+  } else if (SYSTEM_DERIVED.has(to)) {
+    // Cross-category forward drag into a system-derived stage (e.g., SOURCED →
+    // CONNECTED, SHORTLISTED → CONNECTED, INTERVIEW → MESSAGED). This covers:
+    //   • Recruiter marks someone connected because channels aren't active.
+    //   • Recruiter knows the invite was accepted (Unipile webhook lag up to 8h).
+    //   • Recruiter manually advances when the automation has stalled.
+    //
+    // Apply the same sync effects as the within-SD forward-move path so that
+    // any existing ACTIVE/PENDING/PAUSED threads are updated to match the
+    // intended stage. The rollup then agrees on the next tick instead of
+    // snapping the stage back to what the stale threads indicate.
+    //
+    // If there are no threads (channels not configured / paused), the sync
+    // effects are no-ops and the rollup's no-threads path leaves task.stage
+    // at the value we're writing here.
+    if (to === CandidateStage.REPLIED) effect = "syncReplied";
+    else if (to === CandidateStage.MESSAGED) effect = "syncMessaged";
+    else if (to === CandidateStage.CONNECTED) effect = "syncConnected";
+    // CONTACT_REQUESTED: no standard sync effect — leave threads as-is.
   }
-  // Other SYSTEM_DERIVED targets fall through with effect: "none".
 
   return {
     kind: "allow",
@@ -286,8 +304,10 @@ export async function applyStageTransition(input: ApplyTransitionInput): Promise
           // this, the thread sits idle (nextActionAt was the invite timeout, far
           // in the future) and no providerChatId is ever created, which means
           // future reply webhooks can't match the thread.
+          // PAUSED threads are included: a sibling reply may have paused this
+          // thread, but the recruiter's explicit forward drag overrides that.
           await tx.channelThread.updateMany({
-            where: { taskId, status: { in: ["ACTIVE", "PENDING"] } },
+            where: { taskId, status: { in: ["ACTIVE", "PENDING", "PAUSED"] } },
             data: {
               status: "ACTIVE",
               providerState: { phase: "CONNECTED" },
@@ -299,8 +319,9 @@ export async function applyStageTransition(input: ApplyTransitionInput): Promise
         case "syncMessaged":
           // Set lastMessageAt so the rollup sees MESSAGED. Also nudge the worker
           // so any follow-up scheduling re-evaluates against the new timestamp.
+          // PAUSED threads included for the same reason as syncConnected above.
           await tx.channelThread.updateMany({
-            where: { taskId, status: { in: ["ACTIVE", "PENDING"] } },
+            where: { taskId, status: { in: ["ACTIVE", "PENDING", "PAUSED"] } },
             data: {
               status: "ACTIVE",
               providerState: { phase: "MESSAGED" },
