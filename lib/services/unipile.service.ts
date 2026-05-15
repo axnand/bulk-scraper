@@ -64,7 +64,7 @@ export function formatWhatsAppId(phone: string): string {
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 function resolveDsnAndKey(accountDsn?: string, accountApiKey?: string) {
-  const rawDsn = accountDsn || process.env.UNIPILE_DSN;
+  const rawDsn = (accountDsn || process.env.UNIPILE_DSN)?.trim();
   const dsn = rawDsn && !rawDsn.startsWith("http") ? `https://${rawDsn}` : rawDsn;
   const apiKey = accountApiKey || process.env.UNIPILE_API_KEY;
   if (!dsn || !apiKey) {
