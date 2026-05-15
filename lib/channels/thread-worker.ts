@@ -458,6 +458,7 @@ async function processLinkedIn(
           status: "ACTIVE",
           providerState: { phase: "CONNECTED" },
           nextActionAt: new Date(),
+          candidateProviderId: providerUserId,
         });
         return;
       }
@@ -473,8 +474,33 @@ async function processLinkedIn(
   // ── Phase: ACTIVE + INVITE_PENDING — check for timeout ────────────────────
   if (providerState.phase === "INVITE_PENDING") {
     // nextActionAt was set to inviteSentAt + archiveAfterInviteDays by the invite send.
-    // Reaching here means it has expired without webhook firing — cancel and archive.
-    console.log(`${tag} INVITE_PENDING — invite timed out, cancelling and archiving`);
+    // Reaching here means it expired without a webhook firing. Before archiving,
+    // re-fetch the profile to check if they silently accepted (Unipile webhook
+    // can lag up to 8 h; the recruiter may also have manually accepted outside
+    // Unipile's visibility window).
+    console.log(`${tag} INVITE_PENDING — nextActionAt expired, re-checking profile for silent acceptance`);
+    try {
+      const freshProfile = await import("@/lib/services/unipile.service").then(m =>
+        m.fetchProfile(account.accountId, providerUserId, account.dsn ?? undefined, account.apiKey ?? undefined)
+      );
+      const nowConnected =
+        freshProfile?.network_distance === "FIRST_DEGREE" ||
+        freshProfile?.network_distance === "DISTANCE_1" ||
+        freshProfile?.is_relationship === true;
+      console.log(`${tag} Re-fetched profile: network_distance=${freshProfile?.network_distance} is_relationship=${freshProfile?.is_relationship} → nowConnected=${nowConnected}`);
+      if (nowConnected) {
+        console.log(`${tag} Silent acceptance detected — advancing to CONNECTED`);
+        await guardedThreadUpdate(thread.id, {
+          status: "ACTIVE",
+          providerState: { phase: "CONNECTED" },
+          nextActionAt: new Date(),
+        });
+        return;
+      }
+    } catch (profileErr: any) {
+      console.warn(`${tag} Profile re-fetch failed during INVITE_PENDING check: ${profileErr.message} — proceeding with archive`);
+    }
+    console.log(`${tag} INVITE_PENDING — not connected, cancelling invite and archiving`);
     await cancelPendingInvite(account, providerUserId, tag);
     await archiveThread(thread.id, "Invite acceptance timeout");
     return;
@@ -661,14 +687,15 @@ async function sendLinkedInInvite(
   } catch (err: any) {
     const body: string = (err.message ?? "").toLowerCase();
 
-    // Invite already pending (cannot_resend_yet) — treat as INVITE_PENDING, wait for acceptance
-    if (body.includes("cannot_resend_yet") || body.includes("invitation_already")) {
+    // Invite already pending / recently sent — treat as INVITE_PENDING, wait for acceptance
+    if (body.includes("cannot_resend_yet") || body.includes("invitation_already") || body.includes("already_invited_recently")) {
       console.log(`${tag} Invite already pending — reverting to INVITE_PENDING to wait`);
       await guardedThreadUpdate(thread.id, {
         status: "ACTIVE",
         providerState: { phase: "INVITE_PENDING" },
         inviteSentAt: thread.inviteSentAt ?? new Date(),
         nextActionAt: daysFromNow(config.archiveAfterInviteDays ?? 14),
+        candidateProviderId: providerUserId,
       });
       return;
     }
@@ -695,6 +722,7 @@ async function sendLinkedInInvite(
         status: "ACTIVE",
         providerState: { phase: "CONNECTED" },
         nextActionAt: new Date(),
+        candidateProviderId: providerUserId,
       });
       return;
     }
@@ -713,6 +741,7 @@ async function sendLinkedInInvite(
       providerState: { phase: "INVITE_PENDING", inviteSentAt: new Date().toISOString() },
       inviteSentAt: new Date(),
       nextActionAt: timeoutAt,
+      candidateProviderId: providerUserId,
     },
     {
       threadId: thread.id,
@@ -775,6 +804,10 @@ async function sendLinkedInInMail(
       providerChatId: chatId,
       lastMessageAt: new Date(),
       nextActionAt: nextAt,
+      // Bug 6: store candidateProviderId so the webhook fallback's indexed
+      // lookup can find this thread without a JSON scan if the primary
+      // chatId lookup fails (e.g. chatId not stored due to a crash).
+      candidateProviderId: providerUserId,
     },
     {
       threadId: thread.id,
